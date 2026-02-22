@@ -1,12 +1,21 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
-import { Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+    Pressable,
+    RefreshControl,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../../auth/useAuth";
+import { subscribeAdminClients } from "../../data/repositories/clientsRepo"; // ✅ NUEVO
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { DailyEventDoc, UserDoc } from "../../types/models";
+import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models"; // ✅ ClientDoc
 
 type AdminAction = {
     title: string;
@@ -26,7 +35,6 @@ function todayKey() {
     return dayKeyFromDate(new Date());
 }
 
-// Semana Lunes → Domingo
 function weekRangeKeys(base = new Date()) {
     const d = new Date(base);
     d.setHours(0, 0, 0, 0);
@@ -39,15 +47,29 @@ function weekRangeKeys(base = new Date()) {
     return { startKey: dayKeyFromDate(start), endKey: dayKeyFromDate(end) };
 }
 
-/**
- * De-dup “por cliente”: si un cliente cambia 5 veces en el rango,
- * solo cuenta el ÚLTIMO evento de ese cliente.
- */
+function toMs(v: any): number {
+    if (!v) return 0;
+    if (typeof v === "number") return isFinite(v) ? v : 0;
+    if (v instanceof Date) return v.getTime();
+    if (typeof v?.toMillis === "function") return v.toMillis();
+    if (typeof v === "string") {
+        const n = Number(v);
+        return isFinite(n) ? n : 0;
+    }
+    return 0;
+}
+
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
     for (const e of events) {
-        const prev = map.get(e.clientId);
-        if (!prev || (e.createdAt ?? 0) > (prev.createdAt ?? 0)) map.set(e.clientId, e);
+        const cid = (e as any)?.clientId;
+        if (!cid) continue;
+
+        const prev = map.get(cid);
+        const eMs = toMs((e as any)?.createdAt);
+        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
+
+        if (!prev || eMs >= pMs) map.set(cid, e);
     }
     return map;
 }
@@ -63,13 +85,12 @@ export default function AdminHomeScreen() {
     const router = useRouter();
 
     const [users, setUsers] = useState<UserDoc[]>([]);
+    const [clients, setClients] = useState<ClientDoc[]>([]); // ✅ NUEVO
     const [todayEvents, setTodayEvents] = useState<DailyEventDoc[]>([]);
     const [weekEvents, setWeekEvents] = useState<DailyEventDoc[]>([]);
 
-    const { startKey: weekStartKey, endKey: weekEndKey } = useMemo(
-        () => weekRangeKeys(new Date()),
-        []
-    );
+    const [refreshing, setRefreshing] = useState(false);
+    const [refreshTick, setRefreshTick] = useState(0);
 
     const actions: AdminAction[] = useMemo(
         () => [
@@ -89,27 +110,44 @@ export default function AdminHomeScreen() {
         []
     );
 
-    useEffect(() => {
-        (async () => {
-            const u = await listUsers("user");
-            setUsers(u);
-        })();
+    const reloadUsers = useCallback(async () => {
+        const u = await listUsers("user");
+        setUsers(u);
     }, []);
 
+    useEffect(() => {
+        reloadUsers();
+    }, [reloadUsers]);
+
+    // ✅ Clientes realtime (para PENDIENTES reales)
+    useEffect(() => {
+        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
+        return () => unsub();
+    }, []);
+
+    // ✅ Events realtime HOY (resuscribe en refreshTick)
     useEffect(() => {
         const tk = todayKey();
-        const unsub = subscribeDailyEventsByRange(tk, tk, setTodayEvents, (err) => {
-            console.log("[AdminHome] today events err:", err?.code, err?.message);
-        });
+        const unsub = subscribeDailyEventsByRange(
+            tk,
+            tk,
+            (list) => setTodayEvents(list ?? []),
+            (err) => console.log("[AdminHome] today events err:", err?.code, err?.message)
+        );
         return () => unsub();
-    }, []);
+    }, [refreshTick]);
 
+    // ✅ Events realtime SEMANA (resuscribe en refreshTick)
     useEffect(() => {
-        const unsub = subscribeDailyEventsByRange(weekStartKey, weekEndKey, setWeekEvents, (err) => {
-            console.log("[AdminHome] week events err:", err?.code, err?.message);
-        });
+        const { startKey, endKey } = weekRangeKeys(new Date());
+        const unsub = subscribeDailyEventsByRange(
+            startKey,
+            endKey,
+            (list) => setWeekEvents(list ?? []),
+            (err) => console.log("[AdminHome] week events err:", err?.code, err?.message)
+        );
         return () => unsub();
-    }, [weekStartKey, weekEndKey]);
+    }, [refreshTick]);
 
     const userById = useMemo(() => {
         const m = new Map<string, UserDoc>();
@@ -117,12 +155,16 @@ export default function AdminHomeScreen() {
         return m;
     }, [users]);
 
+    // ✅ Pendientes reales (estado actual en clients)
+    const pendingNow = useMemo(() => {
+        return clients.filter((c) => c.status === "pending").length;
+    }, [clients]);
+
     const todayStats = useMemo(() => {
         const latest = latestEventByClient(todayEvents);
 
         let visited = 0;
         let rejected = 0;
-        let pending = 0;
 
         const perUserVisits: Record<string, number> = {};
         const perUserAmount: Record<string, number> = {};
@@ -132,7 +174,6 @@ export default function AdminHomeScreen() {
                 visited += 1;
                 perUserVisits[e.userId] = (perUserVisits[e.userId] ?? 0) + 1;
             } else if (e.type === "rejected") rejected += 1;
-            else if (e.type === "pending") pending += 1;
         }
 
         for (const [uid, cnt] of Object.entries(perUserVisits)) {
@@ -151,7 +192,7 @@ export default function AdminHomeScreen() {
             }
         }
 
-        return { visited, rejected, pending, amountTotal, topUid, topAmount };
+        return { visited, rejected, amountTotal, topUid, topAmount };
     }, [todayEvents, userById]);
 
     const weekStats = useMemo(() => {
@@ -159,7 +200,6 @@ export default function AdminHomeScreen() {
 
         let visited = 0;
         let rejected = 0;
-        let pending = 0;
 
         const perUserVisits: Record<string, number> = {};
         const perUserAmount: Record<string, number> = {};
@@ -169,7 +209,6 @@ export default function AdminHomeScreen() {
                 visited += 1;
                 perUserVisits[e.userId] = (perUserVisits[e.userId] ?? 0) + 1;
             } else if (e.type === "rejected") rejected += 1;
-            else if (e.type === "pending") pending += 1;
         }
 
         for (const [uid, cnt] of Object.entries(perUserVisits)) {
@@ -178,8 +217,7 @@ export default function AdminHomeScreen() {
         }
 
         const amountTotal = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
-
-        return { visited, rejected, pending, amountTotal };
+        return { visited, rejected, amountTotal };
     }, [weekEvents, userById]);
 
     const topUserLabel = useMemo(() => {
@@ -188,6 +226,16 @@ export default function AdminHomeScreen() {
         const name = u?.name?.trim() || "Usuario";
         return `${name} · R$ ${todayStats.topAmount.toFixed(2)}`;
     }, [todayStats.topUid, todayStats.topAmount, userById]);
+
+    const onRefresh = useCallback(async () => {
+        setRefreshing(true);
+        try {
+            await reloadUsers();
+            setRefreshTick((t) => t + 1); // resuscribe events
+        } finally {
+            setRefreshing(false);
+        }
+    }, [reloadUsers]);
 
     const TinyStat = ({
         icon,
@@ -210,123 +258,109 @@ export default function AdminHomeScreen() {
         <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
-            {/* Header (compacto) */}
-            <View style={styles.header}>
-                <View style={styles.headerLeft}>
-                    <Text style={styles.hTitle}>Admin</Text>
-                    <Text style={styles.hSub} numberOfLines={1}>
-                        Hola, <Text style={styles.hSubStrong}>{profile?.name ?? "—"}</Text>
-                    </Text>
+            <ScrollView
+                contentContainerStyle={styles.scrollContent}
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#FFFFFF" />}
+                showsVerticalScrollIndicator={false}
+            >
+                <View style={styles.header}>
+                    <View style={styles.headerLeft}>
+                        <Text style={styles.hTitle}>Admin</Text>
+                        <Text style={styles.hSub} numberOfLines={1}>
+                            Hola, <Text style={styles.hSubStrong}>{profile?.name ?? "—"}</Text>
+                        </Text>
+                    </View>
+
+                    <Pressable onPress={logout} style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed]}>
+                        <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
+                    </Pressable>
                 </View>
 
-                <Pressable
-                    onPress={logout}
-                    style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed]}
-                    accessibilityLabel="Cerrar sesión"
-                >
-                    <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
-                </Pressable>
-            </View>
-
-            {/* Quick cards (minimalistas) */}
-            <View style={styles.quickRow}>
-                {/* HOY */}
-                <Pressable
-                    onPress={() => router.push({ pathname: "/admin/report" as any })}
-                    style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
-                >
-                    <View style={styles.quickTop}>
-                        <Ionicons name="cash-outline" size={18} color={COLORS.text} />
-                        <View style={[styles.badge, styles.badgeOk]}>
-                            <Text style={[styles.badgeText, styles.badgeTextOk]}>HOY</Text>
-                        </View>
-                    </View>
-
-                    <Text style={styles.quickTitle}>Cobranza de hoy</Text>
-                    <Text style={styles.quickMoney} numberOfLines={1}>
-                        R$ {todayStats.amountTotal.toFixed(2)}
-                    </Text>
-
-                    {/* ✅ ICONOS + NÚMEROS (tiny) */}
-                    <View style={styles.tinyRow}>
-                        <TinyStat
-                            icon="checkmark-circle-outline"
-                            color={COLORS.ok}
-                            value={todayStats.visited}
-                            label="Visitados"
-                        />
-                        <TinyStat
-                            icon="close-circle-outline"
-                            color={COLORS.bad}
-                            value={todayStats.rejected}
-                            label="Rechazados"
-                        />
-                        <TinyStat icon="time-outline" color={COLORS.warn} value={todayStats.pending} label="Pendientes" />
-                    </View>
-
-                    <Text style={styles.quickSubMuted} numberOfLines={1}>
-                        Top: {topUserLabel}
-                    </Text>
-                </Pressable>
-
-                {/* SEMANA */}
-                <Pressable
-                    onPress={() => router.push({ pathname: "/admin/history" as any })}
-                    style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
-                >
-                    <View style={styles.quickTop}>
-                        <Ionicons name="calendar-outline" size={18} color={COLORS.text} />
-                        <View style={[styles.badge, styles.badgePrimary]}>
-                            <Text style={[styles.badgeText, styles.badgeTextPrimary]}>SEMANA</Text>
-                        </View>
-                    </View>
-
-                    <Text style={styles.quickTitle}>Cierre semanal</Text>
-                    <Text style={styles.quickMoney} numberOfLines={1}>
-                        R$ {weekStats.amountTotal.toFixed(2)}
-                    </Text>
-
-                    {/* ✅ SIN FECHA ABAJO */}
-                    <View style={styles.tinyRow}>
-                        <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={weekStats.visited} label="Visitados" />
-                        <TinyStat icon="close-circle-outline" color={COLORS.bad} value={weekStats.rejected} label="Rechazados" />
-                        <TinyStat icon="time-outline" color={COLORS.warn} value={weekStats.pending} label="Pendientes" />
-                    </View>
-
-                    {/* opcional: en vez de fecha, un microhint */}
-                    <Text style={styles.quickSubMuted} numberOfLines={1}>
-                        Lunes → Domingo
-                    </Text>
-                </Pressable>
-            </View>
-
-            {/* Actions */}
-            <View style={styles.list}>
-                {actions.map((a) => (
+                <View style={styles.quickRow}>
                     <Pressable
-                        key={a.route}
-                        onPress={() => router.push({ pathname: a.route as any })}
-                        style={({ pressed }) => [styles.item, pressed && styles.pressed]}
+                        onPress={() => router.push({ pathname: "/admin/report" as any })}
+                        style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
                     >
-                        <View style={styles.itemLeft}>
-                            <View style={styles.itemIconWrap}>
-                                <Ionicons name={a.icon} size={20} color={COLORS.text} />
-                            </View>
-
-                            <View style={styles.itemTextWrap}>
-                                <Text style={styles.itemTitle}>{a.title}</Text>
-                                <Text style={styles.itemSub} numberOfLines={1}>
-                                    {a.subtitle}
-                                </Text>
+                        <View style={styles.quickTop}>
+                            <Ionicons name="cash-outline" size={18} color={COLORS.text} />
+                            <View style={[styles.badge, styles.badgeOk]}>
+                                <Text style={[styles.badgeText, styles.badgeTextOk]}>HOY</Text>
                             </View>
                         </View>
 
-                        <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-                    </Pressable>
-                ))}
-            </View>
+                        <Text style={styles.quickTitle}>Cobranza de hoy</Text>
+                        <Text style={styles.quickMoney} numberOfLines={1}>
+                            R$ {todayStats.amountTotal.toFixed(2)}
+                        </Text>
 
-            <Text style={styles.footer}>© {new Date().getFullYear()} TrackGo Admin</Text>
+                        <View style={styles.tinyRow}>
+                            <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={todayStats.visited} label="Visitados" />
+                            <TinyStat icon="close-circle-outline" color={COLORS.bad} value={todayStats.rejected} label="Rechazados" />
+                            {/* ✅ Pendientes reales (clients) */}
+                            <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
+                        </View>
+
+                        <Text style={styles.quickSubMuted} numberOfLines={1}>
+                            Top: {topUserLabel}
+                        </Text>
+                    </Pressable>
+
+                    <Pressable
+                        onPress={() => router.push({ pathname: "/admin/history" as any })}
+                        style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
+                    >
+                        <View style={styles.quickTop}>
+                            <Ionicons name="calendar-outline" size={18} color={COLORS.text} />
+                            <View style={[styles.badge, styles.badgePrimary]}>
+                                <Text style={[styles.badgeText, styles.badgeTextPrimary]}>SEMANA</Text>
+                            </View>
+                        </View>
+
+                        <Text style={styles.quickTitle}>Cierre semanal</Text>
+                        <Text style={styles.quickMoney} numberOfLines={1}>
+                            R$ {weekStats.amountTotal.toFixed(2)}
+                        </Text>
+
+                        <View style={styles.tinyRow}>
+                            <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={weekStats.visited} label="Visitados" />
+                            <TinyStat icon="close-circle-outline" color={COLORS.bad} value={weekStats.rejected} label="Rechazados" />
+                            {/* ✅ Pendientes reales (clients) */}
+                            <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
+                        </View>
+
+                        <Text style={styles.quickSubMuted} numberOfLines={1}>
+                            Lunes → Domingo
+                        </Text>
+                    </Pressable>
+                </View>
+
+                <View style={styles.list}>
+                    {actions.map((a) => (
+                        <Pressable
+                            key={a.route}
+                            onPress={() => router.push({ pathname: a.route as any })}
+                            style={({ pressed }) => [styles.item, pressed && styles.pressed]}
+                        >
+                            <View style={styles.itemLeft}>
+                                <View style={styles.itemIconWrap}>
+                                    <Ionicons name={a.icon} size={20} color={COLORS.text} />
+                                </View>
+
+                                <View style={styles.itemTextWrap}>
+                                    <Text style={styles.itemTitle}>{a.title}</Text>
+                                    <Text style={styles.itemSub} numberOfLines={1}>
+                                        {a.subtitle}
+                                    </Text>
+                                </View>
+                            </View>
+
+                            <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
+                        </Pressable>
+                    ))}
+                </View>
+
+                <Text style={styles.footer}>© {new Date().getFullYear()} TrackGo Admin</Text>
+            </ScrollView>
         </SafeAreaView>
     );
 }
@@ -347,6 +381,7 @@ const COLORS = {
 
 const styles = StyleSheet.create({
     safe: { flex: 1, backgroundColor: COLORS.bg, paddingHorizontal: 16 },
+    scrollContent: { paddingBottom: 18 },
 
     header: {
         paddingTop: 10,
@@ -381,7 +416,7 @@ const styles = StyleSheet.create({
         borderRadius: 18,
         borderWidth: 1,
         borderColor: COLORS.border,
-        padding: 12, // ✅ más compacto
+        padding: 12,
         gap: 6,
     },
 
