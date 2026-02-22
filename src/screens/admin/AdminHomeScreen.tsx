@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import { Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../../auth/useAuth";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
@@ -26,7 +26,7 @@ function todayKey() {
     return dayKeyFromDate(new Date());
 }
 
-// Semana Lunes → Domingo (común para “cierre semanal”)
+// Semana Lunes → Domingo
 function weekRangeKeys(base = new Date()) {
     const d = new Date(base);
     d.setHours(0, 0, 0, 0);
@@ -61,7 +61,6 @@ function getRatePerVisit(u?: UserDoc | null) {
 export default function AdminHomeScreen() {
     const { profile, logout } = useAuth();
     const router = useRouter();
-    const insets = useSafeAreaInsets();
 
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [todayEvents, setTodayEvents] = useState<DailyEventDoc[]>([]);
@@ -72,7 +71,6 @@ export default function AdminHomeScreen() {
         []
     );
 
-    // ✅ SOLO dejamos Users y Clients abajo
     const actions: AdminAction[] = useMemo(
         () => [
             {
@@ -91,7 +89,6 @@ export default function AdminHomeScreen() {
         []
     );
 
-    // users (para tarifas)
     useEffect(() => {
         (async () => {
             const u = await listUsers("user");
@@ -99,7 +96,6 @@ export default function AdminHomeScreen() {
         })();
     }, []);
 
-    // Realtime “hoy”
     useEffect(() => {
         const tk = todayKey();
         const unsub = subscribeDailyEventsByRange(tk, tk, setTodayEvents, (err) => {
@@ -108,7 +104,6 @@ export default function AdminHomeScreen() {
         return () => unsub();
     }, []);
 
-    // Realtime “semana”
     useEffect(() => {
         const unsub = subscribeDailyEventsByRange(weekStartKey, weekEndKey, setWeekEvents, (err) => {
             console.log("[AdminHome] week events err:", err?.code, err?.message);
@@ -122,7 +117,6 @@ export default function AdminHomeScreen() {
         return m;
     }, [users]);
 
-    // ---- HOY (dedup por cliente)
     const todayStats = useMemo(() => {
         const latest = latestEventByClient(todayEvents);
 
@@ -141,7 +135,6 @@ export default function AdminHomeScreen() {
             else if (e.type === "pending") pending += 1;
         }
 
-        // dinero por usuario (solo visited)
         for (const [uid, cnt] of Object.entries(perUserVisits)) {
             const rate = getRatePerVisit(userById.get(uid));
             perUserAmount[uid] = cnt * rate;
@@ -149,7 +142,6 @@ export default function AdminHomeScreen() {
 
         const amountTotal = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
 
-        // top user
         let topUid: string | null = null;
         let topAmount = 0;
         for (const [uid, amt] of Object.entries(perUserAmount)) {
@@ -162,7 +154,6 @@ export default function AdminHomeScreen() {
         return { visited, rejected, pending, amountTotal, topUid, topAmount };
     }, [todayEvents, userById]);
 
-    // ---- SEMANA (dedup por cliente)
     const weekStats = useMemo(() => {
         const latest = latestEventByClient(weekEvents);
 
@@ -198,89 +189,124 @@ export default function AdminHomeScreen() {
         return `${name} · R$ ${todayStats.topAmount.toFixed(2)}`;
     }, [todayStats.topUid, todayStats.topAmount, userById]);
 
+    const TinyStat = ({
+        icon,
+        color,
+        value,
+        label,
+    }: {
+        icon: any;
+        color: string;
+        value: number;
+        label: string;
+    }) => (
+        <View style={styles.tinyStatWrap} accessibilityLabel={`${label}: ${value}`}>
+            <Ionicons name={icon} size={14} color={color} />
+            <Text style={styles.tinyStatValue}>{value}</Text>
+        </View>
+    );
+
     return (
-        <SafeAreaView style={styles.safe}>
+        <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
-            {/* Header */}
-            <View style={[styles.header, { paddingTop: Math.max(12, insets.top + 8) }]}>
+            {/* Header (compacto) */}
+            <View style={styles.header}>
                 <View style={styles.headerLeft}>
                     <Text style={styles.hTitle}>Admin</Text>
-                    <Text style={styles.hSub}>
+                    <Text style={styles.hSub} numberOfLines={1}>
                         Hola, <Text style={styles.hSubStrong}>{profile?.name ?? "—"}</Text>
                     </Text>
                 </View>
 
                 <Pressable
                     onPress={logout}
-                    style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]}
+                    style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed]}
                     accessibilityLabel="Cerrar sesión"
                 >
                     <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
                 </Pressable>
             </View>
 
-            {/* Quick cards (monetización) */}
+            {/* Quick cards (minimalistas) */}
             <View style={styles.quickRow}>
                 {/* HOY */}
                 <Pressable
                     onPress={() => router.push({ pathname: "/admin/report" as any })}
-                    style={({ pressed }) => [styles.quickCard, pressed && styles.quickCardPressed]}
+                    style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
                 >
                     <View style={styles.quickTop}>
                         <Ionicons name="cash-outline" size={18} color={COLORS.text} />
-                        <View style={styles.badge}>
-                            <Text style={styles.badgeText}>HOY</Text>
+                        <View style={[styles.badge, styles.badgeOk]}>
+                            <Text style={[styles.badgeText, styles.badgeTextOk]}>HOY</Text>
                         </View>
                     </View>
 
                     <Text style={styles.quickTitle}>Cobranza de hoy</Text>
-                    <Text style={styles.quickMoney}>R$ {todayStats.amountTotal.toFixed(2)}</Text>
-
-                    <Text style={styles.quickSub}>
-                        Visitados {todayStats.visited} · Rechazados {todayStats.rejected} · Pend {todayStats.pending}
+                    <Text style={styles.quickMoney} numberOfLines={1}>
+                        R$ {todayStats.amountTotal.toFixed(2)}
                     </Text>
 
-                    <Text style={styles.quickSubMuted}>Top: {topUserLabel}</Text>
+                    {/* ✅ ICONOS + NÚMEROS (tiny) */}
+                    <View style={styles.tinyRow}>
+                        <TinyStat
+                            icon="checkmark-circle-outline"
+                            color={COLORS.ok}
+                            value={todayStats.visited}
+                            label="Visitados"
+                        />
+                        <TinyStat
+                            icon="close-circle-outline"
+                            color={COLORS.bad}
+                            value={todayStats.rejected}
+                            label="Rechazados"
+                        />
+                        <TinyStat icon="time-outline" color={COLORS.warn} value={todayStats.pending} label="Pendientes" />
+                    </View>
+
+                    <Text style={styles.quickSubMuted} numberOfLines={1}>
+                        Top: {topUserLabel}
+                    </Text>
                 </Pressable>
 
                 {/* SEMANA */}
                 <Pressable
                     onPress={() => router.push({ pathname: "/admin/history" as any })}
-                    style={({ pressed }) => [styles.quickCard, pressed && styles.quickCardPressed]}
+                    style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
                 >
                     <View style={styles.quickTop}>
                         <Ionicons name="calendar-outline" size={18} color={COLORS.text} />
-                        <View
-                            style={[
-                                styles.badge,
-                                { backgroundColor: "rgba(124,58,237,0.16)", borderColor: "rgba(124,58,237,0.35)" },
-                            ]}
-                        >
-                            <Text style={[styles.badgeText, { color: "#C4B5FD" }]}>SEMANA</Text>
+                        <View style={[styles.badge, styles.badgePrimary]}>
+                            <Text style={[styles.badgeText, styles.badgeTextPrimary]}>SEMANA</Text>
                         </View>
                     </View>
 
                     <Text style={styles.quickTitle}>Cierre semanal</Text>
-                    <Text style={styles.quickMoney}>R$ {weekStats.amountTotal.toFixed(2)}</Text>
-
-                    <Text style={styles.quickSub}>
-                        {weekStartKey} → {weekEndKey}
+                    <Text style={styles.quickMoney} numberOfLines={1}>
+                        R$ {weekStats.amountTotal.toFixed(2)}
                     </Text>
 
-                    <Text style={styles.quickSubMuted}>
-                        Visitados {weekStats.visited} · Rech {weekStats.rejected} · Pend {weekStats.pending}
+                    {/* ✅ SIN FECHA ABAJO */}
+                    <View style={styles.tinyRow}>
+                        <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={weekStats.visited} label="Visitados" />
+                        <TinyStat icon="close-circle-outline" color={COLORS.bad} value={weekStats.rejected} label="Rechazados" />
+                        <TinyStat icon="time-outline" color={COLORS.warn} value={weekStats.pending} label="Pendientes" />
+                    </View>
+
+                    {/* opcional: en vez de fecha, un microhint */}
+                    <Text style={styles.quickSubMuted} numberOfLines={1}>
+                        Lunes → Domingo
                     </Text>
                 </Pressable>
             </View>
 
-            {/* Actions (SIN historial/resumen abajo) */}
+            {/* Actions */}
             <View style={styles.list}>
                 {actions.map((a) => (
                     <Pressable
                         key={a.route}
                         onPress={() => router.push({ pathname: a.route as any })}
-                        style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}
+                        style={({ pressed }) => [styles.item, pressed && styles.pressed]}
                     >
                         <View style={styles.itemLeft}>
                             <View style={styles.itemIconWrap}>
@@ -289,7 +315,9 @@ export default function AdminHomeScreen() {
 
                             <View style={styles.itemTextWrap}>
                                 <Text style={styles.itemTitle}>{a.title}</Text>
-                                <Text style={styles.itemSub}>{a.subtitle}</Text>
+                                <Text style={styles.itemSub} numberOfLines={1}>
+                                    {a.subtitle}
+                                </Text>
                             </View>
                         </View>
 
@@ -309,29 +337,27 @@ const COLORS = {
     border: "#1F2937",
     text: "#F9FAFB",
     muted: "#9CA3AF",
+
+    ok: "#22C55E",
+    bad: "#F87171",
+    warn: "#FBBF24",
+
+    primarySoft: "#C4B5FD",
 };
 
 const styles = StyleSheet.create({
-    safe: {
-        flex: 1,
-        backgroundColor: COLORS.bg,
-        paddingHorizontal: 16,
-    },
+    safe: { flex: 1, backgroundColor: COLORS.bg, paddingHorizontal: 16 },
 
     header: {
-        paddingBottom: 12,
+        paddingTop: 10,
+        paddingBottom: 8,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
         gap: 12,
     },
     headerLeft: { flex: 1, gap: 3 },
-    hTitle: {
-        color: COLORS.text,
-        fontSize: 22,
-        fontWeight: "900",
-        letterSpacing: 0.5,
-    },
+    hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.5 },
     hSub: { color: COLORS.muted, fontSize: 13, fontWeight: "700" },
     hSubStrong: { color: COLORS.text, fontWeight: "900" },
 
@@ -345,72 +371,62 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
-    logoutBtnPressed: { transform: [{ scale: 0.97 }], opacity: 0.95 },
 
-    quickRow: {
-        flexDirection: "row",
-        gap: 12,
-        marginTop: 8,
-        marginBottom: 14,
-    },
+    pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
+
+    quickRow: { flexDirection: "row", gap: 12, marginTop: 8, marginBottom: 14 },
     quickCard: {
         flex: 1,
         backgroundColor: COLORS.card,
         borderRadius: 18,
         borderWidth: 1,
         borderColor: COLORS.border,
-        padding: 14,
+        padding: 12, // ✅ más compacto
         gap: 6,
     },
-    quickCardPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
 
-    quickTop: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-    },
+    quickTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+
     badge: {
-        paddingHorizontal: 10,
-        height: 26,
+        paddingHorizontal: 8,
+        height: 24,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
-        backgroundColor: "rgba(34,197,94,0.10)",
-        borderColor: "rgba(34,197,94,0.35)",
     },
-    badgeText: {
-        fontSize: 11,
-        fontWeight: "900",
-        color: "#86EFAC",
-        letterSpacing: 0.4,
-    },
+    badgeText: { fontSize: 10, fontWeight: "900", letterSpacing: 0.4 },
+    badgeOk: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.35)" },
+    badgeTextOk: { color: "#86EFAC" },
+    badgePrimary: { backgroundColor: "rgba(124,58,237,0.16)", borderColor: "rgba(124,58,237,0.35)" },
+    badgeTextPrimary: { color: COLORS.primarySoft },
 
-    quickTitle: {
-        color: COLORS.text,
-        fontSize: 14,
-        fontWeight: "900",
-        marginTop: 2,
+    quickTitle: { color: COLORS.text, fontSize: 13, fontWeight: "900", marginTop: 2 },
+    quickMoney: { color: COLORS.text, fontSize: 16, fontWeight: "900", marginTop: 1 },
+
+    tinyRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        marginTop: 4,
     },
-    quickMoney: {
-        color: COLORS.text,
-        fontSize: 18,
-        fontWeight: "900",
-        marginTop: 2,
+    tinyStatWrap: {
+        flex: 1,
+        height: 30,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.07)",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        paddingHorizontal: 8,
     },
-    quickSub: {
-        color: COLORS.muted,
-        fontSize: 12,
-        fontWeight: "800",
-        marginTop: 2,
-    },
-    quickSubMuted: {
-        color: COLORS.muted,
-        fontSize: 12,
-        fontWeight: "800",
-        opacity: 0.85,
-        marginTop: 2,
-    },
+    tinyStatValue: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
+
+    quickSubMuted: { color: COLORS.muted, fontSize: 11, fontWeight: "800", opacity: 0.85, marginTop: 2 },
 
     list: { gap: 12 },
 
@@ -425,7 +441,6 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "space-between",
     },
-    itemPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     itemLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
     itemIconWrap: {
         width: 44,

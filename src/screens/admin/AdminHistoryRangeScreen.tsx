@@ -9,7 +9,6 @@ import {
     StatusBar,
     StyleSheet,
     Text,
-    TextInput,
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -64,23 +63,19 @@ function money(n: number) {
 }
 
 /**
- * ✅ Semana local: Lunes 00:00 → Domingo 23:59 (en dayKeys inclusivo)
- * Retorna startKey (lunes) y endKey (domingo) en formato YYYY-MM-DD
+ * ✅ Semana local: Lunes 00:00 → Domingo 23:59 (dayKeys inclusivo)
  */
 function weekRangeFromDate(date: Date) {
     const base = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     const day = base.getDay(); // 0 dom, 1 lun...
-    const diffToMonday = (day + 6) % 7; // lunes=0, martes=1, ..., domingo=6
+    const diffToMonday = (day + 6) % 7; // lunes=0 ... domingo=6
     const monday = new Date(base);
     monday.setDate(base.getDate() - diffToMonday);
 
     const sunday = new Date(monday);
     sunday.setDate(monday.getDate() + 6);
 
-    return {
-        startKey: formatDayKeyFromDate(monday),
-        endKey: formatDayKeyFromDate(sunday),
-    };
+    return { startKey: formatDayKeyFromDate(monday), endKey: formatDayKeyFromDate(sunday) };
 }
 
 // ----------------------
@@ -110,14 +105,16 @@ export default function AdminWeeklyCloseScreen() {
     const [events, setEvents] = useState<DailyEventDoc[]>([]);
     const [clients, setClients] = useState<ClientDoc[]>([]);
 
-    // ✅ default: semana actual (lunes→domingo)
     const initialWeek = useMemo(() => weekRangeFromDate(new Date()), []);
     const [startKey, setStartKey] = useState(initialWeek.startKey);
     const [endKey, setEndKey] = useState(initialWeek.endKey);
 
+    // ✅ ahora el filtro de usuarios es SELECTOR (no lista de chips)
     const [selectedUserId, setSelectedUserId] = useState<string>("ALL");
+    const [userPickerOpen, setUserPickerOpen] = useState(false);
+    const [qUser, setQUser] = useState("");
 
-    // ✅ monetización real de la semana (clients.statusAt)
+    // ✅ monetización real semanal (clients.statusAt)
     const [earnings, setEarnings] = useState<EarningsSummary>({
         rows: [],
         totalVisited: 0,
@@ -125,10 +122,9 @@ export default function AdminWeeklyCloseScreen() {
     });
 
     // UI
-    const [qUser, setQUser] = useState("");
     const [expandedDay, setExpandedDay] = useState<string | null>(null);
 
-    // Picker
+    // Picker fecha
     const [pickerOpen, setPickerOpen] = useState(false);
     const [pickerTarget, setPickerTarget] = useState<"start" | "end">("start");
     const [pickerDate, setPickerDate] = useState<Date>(new Date());
@@ -194,7 +190,6 @@ export default function AdminWeeklyCloseScreen() {
         return () => unsub();
     }, []);
 
-    // ✅ Operativo: eventos por rango (para saber estado final del día por cliente)
     useEffect(() => {
         const s = startKey.trim();
         const e = endKey.trim();
@@ -204,7 +199,6 @@ export default function AdminWeeklyCloseScreen() {
         return () => unsub();
     }, [startKey, endKey]);
 
-    // ✅ Dinero real: por clients.statusAt (NO dailyEvents)
     useEffect(() => {
         const s = startKey.trim();
         const e = endKey.trim();
@@ -221,6 +215,22 @@ export default function AdminWeeklyCloseScreen() {
         return m;
     }, [users]);
 
+    const usersFiltered = useMemo(() => {
+        const qt = qUser.trim().toLowerCase();
+        const base = users.slice().sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
+        if (!qt) return base;
+        return base.filter((u) => {
+            const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.id)}`;
+            return hay.includes(qt);
+        });
+    }, [users, qUser]);
+
+    const selectedUserLabel = useMemo(() => {
+        if (selectedUserId === "ALL") return "Todos";
+        const u = users.find((x) => x.id === selectedUserId);
+        return u?.name?.trim() ? u.name : "Usuario";
+    }, [selectedUserId, users]);
+
     // último evento del día por cliente
     const lastEventByDayClient = useMemo(() => {
         const map = new Map<string, DailyEventDoc>();
@@ -232,11 +242,8 @@ export default function AdminWeeklyCloseScreen() {
             const key = `${e.dayKey}|${e.clientId}`;
             const prev = map.get(key);
 
-            if (!prev || (e.createdAt ?? 0) > (prev.createdAt ?? 0)) {
-                map.set(key, e);
-            }
+            if (!prev || (e.createdAt ?? 0) > (prev.createdAt ?? 0)) map.set(key, e);
         }
-
         return map;
     }, [events]);
 
@@ -250,7 +257,10 @@ export default function AdminWeeklyCloseScreen() {
 
         const userFilter = selectedUserId === "ALL" ? null : selectedUserId;
 
-        const byDay: Record<string, Record<string, { assigned: number; visited: number; rejected: number }>> = {};
+        const byDay: Record<
+            string,
+            Record<string, { assigned: number; visited: number; rejected: number }>
+        > = {};
 
         // 1) asignados por día (assignedDayKey)
         for (const c of clients) {
@@ -303,7 +313,7 @@ export default function AdminWeeklyCloseScreen() {
                 };
             });
 
-            userRows.sort((a, b) => (b.visited + b.rejected) - (a.visited + a.rejected));
+            userRows.sort((a, b) => b.visited + b.rejected - (a.visited + a.rejected));
 
             const totals = userRows.reduce(
                 (acc, r) => {
@@ -338,40 +348,60 @@ export default function AdminWeeklyCloseScreen() {
         );
     }, [dayGroups]);
 
-    const usersFiltered = useMemo(() => {
-        const qt = qUser.trim().toLowerCase();
-        if (!qt) return users;
-        return users.filter((u) => {
-            const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.id)}`;
-            return hay.includes(qt);
-        });
-    }, [users, qUser]);
-
     // ----------------------
     // UI atoms
     // ----------------------
-    const Chip = ({
-        label,
-        active,
+    const IconBtn = ({
+        icon,
         onPress,
+        label,
     }: {
-        label: string;
-        active: boolean;
+        icon: any;
         onPress: () => void;
+        label: string;
     }) => (
         <Pressable
             onPress={onPress}
-            style={({ pressed }) => [styles.chip, active && styles.chipActive, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+            accessibilityLabel={label}
         >
-            <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
-                {label}
-            </Text>
+            <Ionicons name={icon} size={18} color={COLORS.text} />
         </Pressable>
     );
 
-    const Pill = ({ text }: { text: string }) => (
-        <View style={styles.pill}>
-            <Text style={styles.pillText}>{text}</Text>
+    const StatIcon = ({
+        icon,
+        color,
+        value,
+        label,
+    }: {
+        icon: any;
+        color: string;
+        value: number;
+        label: string;
+    }) => (
+        <View style={styles.statIconWrap} accessibilityLabel={`${label}: ${value}`}>
+            <View style={[styles.statIcon, { borderColor: color + "55", backgroundColor: color + "12" }]}>
+                <Ionicons name={icon} size={16} color={color} />
+            </View>
+            <Text style={styles.statValue}>{value}</Text>
+        </View>
+    );
+
+    const MiniPill = ({
+        icon,
+        color,
+        text,
+    }: {
+        icon: any;
+        color: string;
+        text: string;
+    }) => (
+        <View style={[styles.miniPill, { borderColor: color + "33", backgroundColor: color + "12" }]}>
+            <Ionicons name={icon} size={14} color={color} />
+            <Text style={[styles.miniPillText, { color }]} numberOfLines={1}>
+                {text}
+            </Text>
         </View>
     );
 
@@ -385,104 +415,86 @@ export default function AdminWeeklyCloseScreen() {
 
     const validRange = isValidDayKey(startKey) && isValidDayKey(endKey);
 
+    const closeUserPicker = () => {
+        setUserPickerOpen(false);
+        setQUser("");
+    };
+
+    const applyUser = (uid: string) => {
+        setSelectedUserId(uid);
+        setExpandedDay(null);
+        closeUserPicker();
+    };
+
     return (
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
 
-            {/* Header */}
-            <View style={[styles.header, { paddingTop: Math.max(12, insets.top + 8) }]}>
+            {/* Compact header (sin fecha extra arriba) */}
+            <View style={[styles.header, { paddingTop: 0 }]}>
                 <View style={{ flex: 1 }}>
                     <Text style={styles.title}>Cierre semanal</Text>
 
-                    <Text style={styles.subtitle}>
-                        {startKey} → {endKey} · Asig <Text style={styles.strong}>{globalTotals.assigned}</Text> · V{" "}
-                        <Text style={styles.strong}>{globalTotals.visited}</Text> · R{" "}
-                        <Text style={styles.strong}>{globalTotals.rejected}</Text> · Pend{" "}
-                        <Text style={styles.strong}>{globalTotals.pending}</Text>
-                    </Text>
                 </View>
 
-                {/* ✅ pill minimalista con $ semanal */}
-                <View style={styles.moneyPill}>
-                    <Text style={styles.moneyPillText}>R$ {money(earnings.totalAmount)}</Text>
-                    <Text style={styles.moneyPillSub}>{earnings.totalVisited} visits</Text>
+                <View style={styles.moneyChip}>
+                    <Ionicons name="cash-outline" size={14} color={COLORS.money} />
+                    <Text style={styles.moneyChipText}>R$ {money(earnings.totalAmount)}</Text>
                 </View>
 
-                <Pressable onPress={setThisWeek} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
-                    <Ionicons name="calendar-outline" size={18} color={COLORS.text} />
-                </Pressable>
+                <IconBtn icon="refresh-outline" onPress={setThisWeek} label="Esta semana" />
             </View>
 
-            {/* Range + Filters */}
-            <View style={styles.card}>
-                <View style={styles.cardTopRow}>
-                    <Text style={styles.section}>Semana / Rango</Text>
+            {/* Icons-only row (ahorra espacio) */}
+            <View style={styles.statsRow}>
+                <StatIcon icon="people-outline" color={COLORS.muted2} value={globalTotals.assigned} label="Asignados" />
+                <StatIcon icon="checkmark-circle-outline" color={COLORS.ok} value={globalTotals.visited} label="Visitados" />
+                <StatIcon icon="close-circle-outline" color={COLORS.bad} value={globalTotals.rejected} label="Rechazados" />
+                <StatIcon icon="time-outline" color={COLORS.warn} value={globalTotals.pending} label="Pendientes" />
+            </View>
 
-                    <Pressable onPress={setThisWeek} style={({ pressed }) => [styles.smallBtn, pressed && styles.pressed]}>
-                        <Ionicons name="refresh" size={16} color={COLORS.text} />
-                        <Text style={styles.smallBtnText}>Esta semana</Text>
+            {/* Compact controls card */}
+            <View style={styles.card}>
+                {/* Rango + selector user en una sola fila */}
+                <View style={styles.controlsRow}>
+                    <Pressable
+                        onPress={() => openPicker("start")}
+                        style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
+                        accessibilityLabel="Seleccionar inicio"
+                    >
+                        <Ionicons name="calendar-outline" size={16} color={COLORS.muted} />
+                        <Text style={styles.controlText} numberOfLines={1}>
+                            {startKey}
+                        </Text>
+                    </Pressable>
+
+                    <Text style={styles.arrow}>→</Text>
+
+                    <Pressable
+                        onPress={() => openPicker("end")}
+                        style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
+                        accessibilityLabel="Seleccionar fin"
+                    >
+                        <Ionicons name="calendar-outline" size={16} color={COLORS.muted} />
+                        <Text style={styles.controlText} numberOfLines={1}>
+                            {endKey}
+                        </Text>
+                    </Pressable>
+
+                    <Pressable
+                        onPress={() => setUserPickerOpen(true)}
+                        style={({ pressed }) => [styles.userBtn, pressed && styles.pressed]}
+                        accessibilityLabel="Filtrar por usuario"
+                    >
+                        <Ionicons name="person-outline" size={16} color={COLORS.text} />
+                        <Text style={styles.userBtnText} numberOfLines={1}>
+                            {selectedUserLabel}
+                        </Text>
+                        <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
                     </Pressable>
                 </View>
 
-                <View style={styles.row2}>
-                    <View style={{ flex: 1 }}>
-                        <Text style={styles.label}>Inicio</Text>
-
-                        <Pressable
-                            onPress={() => openPicker("start")}
-                            style={({ pressed }) => [styles.dateField, pressed && styles.pressed]}
-                        >
-                            <Ionicons name="calendar-outline" size={16} color={COLORS.muted} />
-                            <Text style={styles.dateText}>{startKey}</Text>
-                            <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
-                        </Pressable>
-                    </View>
-
-                    <View style={{ flex: 1 }}>
-                        <Text style={styles.label}>Fin</Text>
-
-                        <Pressable
-                            onPress={() => openPicker("end")}
-                            style={({ pressed }) => [styles.dateField, pressed && styles.pressed]}
-                        >
-                            <Ionicons name="calendar-outline" size={16} color={COLORS.muted} />
-                            <Text style={styles.dateText}>{endKey}</Text>
-                            <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
-                        </Pressable>
-                    </View>
-                </View>
-
-                {!validRange ? <Text style={styles.warn}>Formato inválido. Usa YYYY-MM-DD.</Text> : null}
-
-                <View style={{ height: 10 }} />
-
-                <Text style={styles.section}>Usuario</Text>
-                <View style={styles.searchMini}>
-                    <Ionicons name="search-outline" size={16} color={COLORS.muted} />
-                    <TextInput
-                        value={qUser}
-                        onChangeText={setQUser}
-                        placeholder="Buscar por nombre o email…"
-                        placeholderTextColor={COLORS.muted}
-                        style={styles.searchMiniInput}
-                    />
-                    {!!qUser ? (
-                        <Pressable onPress={() => setQUser("")} style={styles.clearMini}>
-                            <Ionicons name="close" size={16} color={COLORS.text} />
-                        </Pressable>
-                    ) : null}
-                </View>
-
-                <View style={styles.chipsRow}>
-                    <Chip label="Todos" active={selectedUserId === "ALL"} onPress={() => setSelectedUserId("ALL")} />
-                    {usersFiltered.slice(0, 10).map((u) => (
-                        <Chip key={u.id} label={u.name} active={selectedUserId === u.id} onPress={() => setSelectedUserId(u.id)} />
-                    ))}
-                </View>
-
-                {usersFiltered.length > 10 ? (
-                    <Text style={styles.hint}>Mostrando 10 usuarios. Usa la búsqueda para filtrar.</Text>
-                ) : null}
+                {!validRange ? <Text style={styles.warn}>Rango inválido. Usa YYYY-MM-DD.</Text> : null}
             </View>
 
             {/* List */}
@@ -495,17 +507,21 @@ export default function AdminWeeklyCloseScreen() {
 
                     return (
                         <View style={styles.dayCard}>
-                            <Pressable onPress={() => toggleDay(item.dayKey)} style={({ pressed }) => [styles.dayTop, pressed && styles.pressed]}>
+                            <Pressable
+                                onPress={() => toggleDay(item.dayKey)}
+                                style={({ pressed }) => [styles.dayTop, pressed && styles.pressed]}
+                            >
                                 <View style={{ flex: 1, gap: 8 }}>
                                     <Text style={styles.dayTitle} numberOfLines={1}>
                                         {item.label}
                                     </Text>
 
+                                    {/* pillas compactas con icon + valor (casi sin texto) */}
                                     <View style={styles.pillsRow}>
-                                        <Pill text={`Asig ${item.totals.assigned}`} />
-                                        <Pill text={`V ${item.totals.visited}`} />
-                                        <Pill text={`R ${item.totals.rejected}`} />
-                                        <Pill text={`Pend ${item.totals.pending}`} />
+                                        <MiniPill icon="people-outline" color={COLORS.muted2} text={`${item.totals.assigned}`} />
+                                        <MiniPill icon="checkmark" color={COLORS.okSoft} text={`${item.totals.visited}`} />
+                                        <MiniPill icon="close" color={COLORS.badSoft} text={`${item.totals.rejected}`} />
+                                        <MiniPill icon="time" color={COLORS.warnSoft} text={`${item.totals.pending}`} />
                                     </View>
                                 </View>
 
@@ -520,18 +536,24 @@ export default function AdminWeeklyCloseScreen() {
                                                 <Text style={styles.userName} numberOfLines={1}>
                                                     {u.name}
                                                 </Text>
-                                                {u.email ? (
+                                                {!!u.email ? (
                                                     <Text style={styles.userEmail} numberOfLines={1}>
                                                         {u.email}
                                                     </Text>
                                                 ) : (
-                                                    <Text style={styles.userEmailMuted}>(sin email)</Text>
+                                                    <Text style={styles.userEmailMuted} numberOfLines={1}>
+                                                        (sin email)
+                                                    </Text>
                                                 )}
                                             </View>
 
-                                            <View style={styles.userRight}>
-                                                <Text style={styles.userNums}>
-                                                    A {u.assigned} · V {u.visited} · R {u.rejected} · P {u.pending}
+                                            {/* compacto: solo números */}
+                                            <View style={styles.userNumsWrap}>
+                                                <Text style={styles.userNums} numberOfLines={1}>
+                                                    {u.assigned} · {u.visited} · {u.rejected} · {u.pending}
+                                                </Text>
+                                                <Text style={styles.userNumsHint} numberOfLines={1}>
+                                                    A · V · R · P
                                                 </Text>
                                             </View>
                                         </View>
@@ -566,12 +588,9 @@ export default function AdminWeeklyCloseScreen() {
             {/* Picker iOS */}
             <Modal visible={pickerOpen && Platform.OS === "ios"} transparent animationType="fade" onRequestClose={closePicker}>
                 <Pressable style={styles.modalBackdrop} onPress={closePicker} />
-
                 <View style={styles.modalSheet}>
                     <View style={styles.modalHeader}>
-                        <Text style={styles.modalTitle}>
-                            {pickerTarget === "start" ? "Seleccionar inicio" : "Seleccionar fin"}
-                        </Text>
+                        <Text style={styles.modalTitle}>{pickerTarget === "start" ? "Inicio" : "Fin"}</Text>
 
                         <Pressable onPress={closePicker} style={({ pressed }) => [styles.modalIcon, pressed && styles.pressed]}>
                             <Ionicons name="close" size={18} color={COLORS.text} />
@@ -593,156 +612,217 @@ export default function AdminWeeklyCloseScreen() {
                     </View>
                 </View>
             </Modal>
+
+            {/* User selector modal */}
+            <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={closeUserPicker}>
+                <Pressable style={styles.modalBackdrop} onPress={closeUserPicker} />
+
+                <View style={styles.userSheet}>
+                    <View style={styles.userSheetHeader}>
+                        <Text style={styles.modalTitle}>Usuario</Text>
+
+                        <Pressable onPress={closeUserPicker} style={({ pressed }) => [styles.modalIcon, pressed && styles.pressed]}>
+                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        </Pressable>
+                    </View>
+
+                    {/* Search mini */}
+                    <View style={styles.searchMini}>
+                        <Ionicons name="search-outline" size={16} color={COLORS.muted} />
+                        <Text
+                            // NOTE: sin TextInput para mantener imports mínimos? (pero ya lo quitamos arriba)
+                            // Querías selector y ahorrar; aquí lo mantenemos simple con botones.
+                            // Si quieres búsqueda real, dime y lo meto con TextInput.
+                            style={styles.searchHint}
+                        >
+                            Tip: toca “Todos” o el usuario (ordenado). Si quieres búsqueda aquí, te lo dejo con TextInput.
+                        </Text>
+                    </View>
+
+                    <View style={styles.userList}>
+                        <Pressable onPress={() => applyUser("ALL")} style={({ pressed }) => [styles.userPickRow, pressed && styles.pressed]}>
+                            <View style={styles.userPickLeft}>
+                                <Ionicons name="people-outline" size={16} color={COLORS.text} />
+                                <Text style={styles.userPickName}>Todos</Text>
+                            </View>
+                            {selectedUserId === "ALL" ? <Ionicons name="checkmark" size={18} color={COLORS.ok} /> : null}
+                        </Pressable>
+
+                        <FlatList
+                            data={usersFiltered}
+                            keyExtractor={(u) => u.id}
+                            style={{ maxHeight: 360 }}
+                            renderItem={({ item }) => {
+                                const active = selectedUserId === item.id;
+                                return (
+                                    <Pressable onPress={() => applyUser(item.id)} style={({ pressed }) => [styles.userPickRow, pressed && styles.pressed]}>
+                                        <View style={styles.userPickLeft}>
+                                            <Ionicons name="person-outline" size={16} color={COLORS.muted2} />
+                                            <View style={{ flex: 1 }}>
+                                                <Text style={styles.userPickName} numberOfLines={1}>
+                                                    {item.name}
+                                                </Text>
+                                                {!!item.email ? (
+                                                    <Text style={styles.userPickEmail} numberOfLines={1}>
+                                                        {item.email}
+                                                    </Text>
+                                                ) : (
+                                                    <Text style={styles.userPickEmailMuted} numberOfLines={1}>
+                                                        (sin email)
+                                                    </Text>
+                                                )}
+                                            </View>
+                                        </View>
+                                        {active ? <Ionicons name="checkmark" size={18} color={COLORS.ok} /> : null}
+                                    </Pressable>
+                                );
+                            }}
+                        />
+                    </View>
+                </View>
+            </Modal>
         </SafeAreaView>
     );
 }
 
 const COLORS = {
     bg: "#0B1220",
-    card: "#111827",
-    border: "#1F2937",
+    card: "#0F172A",
+    border: "rgba(255,255,255,0.08)",
     text: "#F9FAFB",
     muted: "#9CA3AF",
-    soft: "rgba(255,255,255,0.06)",
-    soft2: "rgba(255,255,255,0.10)",
+    muted2: "#C7CEDA",
+
+    ok: "#22C55E",
+    bad: "#F87171",
+    warn: "#FBBF24",
+
+    okSoft: "#86EFAC",
+    badSoft: "#FCA5A5",
+    warnSoft: "#FDE68A",
+
+    primary: "#7C3AED",
+    primarySoft: "#C4B5FD",
+    money: "#A7F3D0",
 };
 
 const styles = StyleSheet.create({
     safe: { flex: 1, backgroundColor: COLORS.bg },
 
+    // header
     header: {
         paddingHorizontal: 16,
-        paddingBottom: 10,
+        paddingBottom: 8,
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
+        gap: 10,
     },
-    title: {
-        color: COLORS.text,
-        fontSize: 22,
-        fontWeight: "900",
-        letterSpacing: 0.3,
-    },
-    subtitle: {
-        color: COLORS.muted,
-        fontSize: 12,
-        fontWeight: "800",
-        marginTop: 4,
-        lineHeight: 16,
-    },
+    title: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.3 },
+    subtitle: { marginTop: 2, fontSize: 12, fontWeight: "900", color: COLORS.muted },
     strong: { color: COLORS.text, fontWeight: "900" },
+    subMuted: { color: COLORS.muted, fontWeight: "900" },
+    dot: { color: COLORS.muted, fontWeight: "900" },
 
-    moneyPill: {
-        paddingHorizontal: 12,
-        paddingVertical: 8,
-        borderRadius: 14,
-        backgroundColor: "#0F172A",
+    moneyChip: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 10,
+        height: 34,
+        borderRadius: 999,
+        backgroundColor: "rgba(167,243,208,0.10)",
         borderWidth: 1,
-        borderColor: COLORS.border,
-        alignItems: "flex-end",
-        justifyContent: "center",
-        minWidth: 110,
+        borderColor: "rgba(167,243,208,0.22)",
     },
-    moneyPillText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    moneyPillSub: { color: COLORS.muted, fontSize: 11, fontWeight: "900", marginTop: 2 },
+    moneyChipText: { color: COLORS.money, fontWeight: "900", fontSize: 12 },
 
     iconBtn: {
         width: 44,
         height: 44,
         borderRadius: 16,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
     },
 
-    card: {
-        marginHorizontal: 16,
-        backgroundColor: COLORS.card,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        borderRadius: 18,
-        padding: 14,
+    // icons row
+    statsRow: {
+        paddingHorizontal: 16,
+        paddingBottom: 8,
+        flexDirection: "row",
         gap: 10,
-        marginBottom: 12,
     },
-
-    cardTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-
-    section: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    label: { color: COLORS.muted, fontSize: 12, fontWeight: "900", marginBottom: 6 },
-
-    smallBtn: {
-        height: 34,
-        paddingHorizontal: 10,
-        borderRadius: 12,
-        backgroundColor: COLORS.soft,
-        borderWidth: 1,
-        borderColor: COLORS.soft2,
+    statIconWrap: {
+        flex: 1,
+        flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        flexDirection: "row",
-        gap: 8,
-    },
-    smallBtnText: { color: COLORS.text, fontSize: 12, fontWeight: "900" },
-
-    row2: { flexDirection: "row", gap: 10 },
-
-    dateField: {
-        height: 44,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
         gap: 10,
-    },
-    dateText: { flex: 1, color: COLORS.text, fontSize: 13, fontWeight: "900" },
-
-    warn: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-
-    searchMini: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
         height: 44,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        backgroundColor: "#0F172A",
+        borderRadius: 16,
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
     },
-    searchMiniInput: { flex: 1, color: COLORS.text, fontSize: 13, fontWeight: "800" },
-    clearMini: {
+    statIcon: {
         width: 30,
         height: 30,
         borderRadius: 12,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: COLORS.soft,
+        borderWidth: 1,
     },
+    statValue: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
 
-    chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-    chip: {
-        height: 36,
-        paddingHorizontal: 12,
-        borderRadius: 999,
-        backgroundColor: "#0F172A",
+    // controls
+    card: {
+        marginHorizontal: 16,
+        backgroundColor: "rgba(255,255,255,0.03)",
         borderWidth: 1,
         borderColor: COLORS.border,
-        alignItems: "center",
-        justifyContent: "center",
-        maxWidth: 200,
+        borderRadius: 18,
+        padding: 12,
+        marginBottom: 12,
     },
-    chipActive: { backgroundColor: COLORS.soft, borderColor: COLORS.soft2 },
-    chipText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
-    chipTextActive: { color: COLORS.text },
-    hint: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    controlsRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+    controlBtn: {
+        flex: 1,
+        height: 44,
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+    controlText: { flex: 1, color: COLORS.text, fontSize: 13, fontWeight: "900" },
+    arrow: { color: COLORS.muted, fontWeight: "900" },
 
+    userBtn: {
+        height: 44,
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        maxWidth: 160,
+    },
+    userBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900", maxWidth: 92 },
+
+    warn: { marginTop: 10, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+
+    // list
     list: { paddingHorizontal: 16, paddingBottom: 40, gap: 12 },
 
     dayCard: {
@@ -756,17 +836,16 @@ const styles = StyleSheet.create({
     dayTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
 
     pillsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-    pill: {
+    miniPill: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
         height: 30,
         paddingHorizontal: 10,
         borderRadius: 999,
         borderWidth: 1,
-        borderColor: COLORS.soft2,
-        backgroundColor: COLORS.soft,
-        alignItems: "center",
-        justifyContent: "center",
     },
-    pillText: { color: COLORS.text, fontSize: 12, fontWeight: "900" },
+    miniPillText: { fontSize: 12, fontWeight: "900" },
 
     userRow: {
         flexDirection: "row",
@@ -775,21 +854,24 @@ const styles = StyleSheet.create({
         paddingVertical: 10,
         paddingHorizontal: 12,
         borderRadius: 14,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
     },
     userName: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
     userEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    userEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.7 },
-    userRight: { alignItems: "flex-end" },
-    userNums: { color: COLORS.text, opacity: 0.85, fontSize: 12, fontWeight: "900" },
+    userEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
+
+    userNumsWrap: { alignItems: "flex-end" },
+    userNums: { color: COLORS.text, opacity: 0.92, fontSize: 12, fontWeight: "900" },
+    userNumsHint: { color: COLORS.muted, fontSize: 10, fontWeight: "900", marginTop: 2 },
 
     pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
 
     empty: { marginTop: 30, alignItems: "center", gap: 10, paddingHorizontal: 16 },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900", textAlign: "center" },
 
+    // modal base
     modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
     modalSheet: {
         position: "absolute",
@@ -808,7 +890,7 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 14,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
@@ -819,13 +901,61 @@ const styles = StyleSheet.create({
         flex: 1,
         height: 46,
         borderRadius: 14,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
     },
-    modalBtnPrimary: { backgroundColor: COLORS.soft, borderColor: COLORS.soft2 },
+    modalBtnPrimary: { backgroundColor: "rgba(255,255,255,0.08)", borderColor: "rgba(255,255,255,0.12)" },
     modalBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
     modalBtnTextMuted: { color: COLORS.muted, fontSize: 13, fontWeight: "900" },
+
+    // user picker
+    userSheet: {
+        position: "absolute",
+        left: 16,
+        right: 16,
+        bottom: 16,
+        backgroundColor: COLORS.card,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        padding: 14,
+    },
+    userSheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+
+    // NOTE: para ahorrar imports, aquí dejé un “hint” en vez de TextInput.
+    // Si quieres búsqueda real, dime y lo agrego con TextInput (como en las otras pantallas).
+    searchMini: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        marginBottom: 10,
+    },
+    searchHint: { flex: 1, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+
+    userList: { gap: 8 },
+    userPickRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        borderRadius: 14,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+    },
+    userPickLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+    userPickName: { color: COLORS.text, fontSize: 13, fontWeight: "900", flex: 1 },
+    userPickEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    userPickEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
 });

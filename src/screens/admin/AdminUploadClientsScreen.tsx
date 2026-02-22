@@ -2,12 +2,12 @@ import { Ionicons } from "@expo/vector-icons";
 import React, { useEffect, useMemo, useState } from "react";
 import {
     Alert,
-    FlatList,
     KeyboardAvoidingView,
     Modal,
     Platform,
     Pressable,
     ScrollView,
+    SectionList,
     StatusBar,
     StyleSheet,
     Text,
@@ -50,6 +50,14 @@ function cleanUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
 }
 
 type PickerMode = "create" | "assignExisting" | "edit";
+
+type Section = {
+    key: string; // userId o "UNASSIGNED"
+    title: string; // nombre + email
+    subtitle?: string;
+    totals: { total: number; pending: number; visited: number; rejected: number };
+    data: ClientDoc[];
+};
 
 export default function AdminUploadClientsScreen() {
     const insets = useSafeAreaInsets();
@@ -107,20 +115,48 @@ export default function AdminUploadClientsScreen() {
     }, []);
 
     // -------------------------
-    // users list (lazy)
+    // users list (eager) -> evita mostrar UID en "Asignado"
     // -------------------------
-    const ensureUsers = async () => {
-        if (users.length || usersLoading) return;
+    const reloadUsers = async () => {
+        if (usersLoading) return;
         setUsersLoading(true);
         try {
             const u = await listUsers("user");
             setUsers(u);
+            // defaults (solo si están vacíos)
             if (!cAssigneeId && u[0]) setCAssigneeId(u[0].id);
             if (!eAssigneeId && u[0]) setEAssigneeId(u[0].id);
         } finally {
             setUsersLoading(false);
         }
     };
+
+    useEffect(() => {
+        reloadUsers();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const ensureUsers = async () => {
+        if (users.length || usersLoading) return;
+        await reloadUsers();
+    };
+
+    const userById = useMemo(() => {
+        const m = new Map<string, UserDoc>();
+        for (const u of users) m.set(u.id, u);
+        return m;
+    }, [users]);
+
+    const userLabelById = useMemo(() => {
+        const m = new Map<string, string>();
+        for (const u of users) {
+            const name = (u.name ?? "").trim();
+            const email = (u.email ?? "").trim();
+            const label = name && email ? `${name} · ${email}` : name ? name : email ? email : "Usuario";
+            m.set(u.id, label);
+        }
+        return m;
+    }, [users]);
 
     const counts = useMemo(() => {
         const pending = clients.filter((c) => c.status === "pending").length;
@@ -129,6 +165,9 @@ export default function AdminUploadClientsScreen() {
         return { pending, visited, rejected, total: clients.length };
     }, [clients]);
 
+    // -------------------------
+    // Search (sin UID visible)
+    // -------------------------
     const filteredClients = useMemo(() => {
         const qt = q.trim().toLowerCase();
         if (!qt) return clients;
@@ -136,18 +175,87 @@ export default function AdminUploadClientsScreen() {
         return clients.filter((c) => {
             const name = safeText((c as any).name);
             const business = safeText((c as any).business);
-            const hay = `${safeText(c.phone)} ${safeText(c.address)} ${safeText(c.mapsUrl)} ${name} ${business} ${safeText(
-                c.assignedTo
-            )}`;
+            const assigneeLabel = c.assignedTo ? safeText(userLabelById.get(c.assignedTo) ?? "") : "sin asignar";
+
+            const hay = `${safeText(c.phone)} ${safeText(c.address)} ${safeText(c.mapsUrl)} ${name} ${business} ${assigneeLabel}`;
             return hay.includes(qt);
         });
-    }, [clients, q]);
+    }, [clients, q, userLabelById]);
 
-    const userById = useMemo(() => {
-        const m = new Map<string, UserDoc>();
-        for (const u of users) m.set(u.id, u);
-        return m;
-    }, [users]);
+    // -------------------------
+    // Group by user (SectionList)
+    // -------------------------
+    const sections: Section[] = useMemo(() => {
+        const byKey: Record<string, ClientDoc[]> = {};
+
+        for (const c of filteredClients) {
+            const key = c.assignedTo ? c.assignedTo : "UNASSIGNED";
+            if (!byKey[key]) byKey[key] = [];
+            byKey[key].push(c);
+        }
+
+        const makeTotals = (arr: ClientDoc[]) => {
+            let pending = 0,
+                visited = 0,
+                rejected = 0;
+            for (const c of arr) {
+                if (c.status === "visited") visited++;
+                else if (c.status === "rejected") rejected++;
+                else pending++;
+            }
+            return { total: arr.length, pending, visited, rejected };
+        };
+
+        const makeTitle = (key: string) => {
+            if (key === "UNASSIGNED") return "Sin asignar";
+            const u = userById.get(key);
+            if (!u) return "Asignado (cargando…)"; // ✅ jamás mostramos UID
+            const name = (u.name ?? "").trim();
+            const email = (u.email ?? "").trim();
+            return name && email ? `${name}` : name ? name : email ? email : "Usuario";
+        };
+
+        const makeSubtitle = (key: string) => {
+            if (key === "UNASSIGNED") return "—";
+            const u = userById.get(key);
+            if (!u) return undefined;
+            const email = (u.email ?? "").trim();
+            return email ? email : undefined;
+        };
+
+        const sortClients = (arr: ClientDoc[]) => {
+            // ✅ pendientes arriba, luego visited, luego rejected; dentro por updatedAt desc
+            const rank = (s?: string) => (s === "pending" ? 0 : s === "visited" ? 1 : 2);
+            return arr.sort((a, b) => {
+                const ra = rank(a.status);
+                const rb = rank(b.status);
+                if (ra !== rb) return ra - rb;
+                return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+            });
+        };
+
+        const keys = Object.keys(byKey);
+
+        // sort: UNASSIGNED primero, luego alfabético por label
+        keys.sort((a, b) => {
+            if (a === "UNASSIGNED") return -1;
+            if (b === "UNASSIGNED") return 1;
+            const la = (userLabelById.get(a) ?? "").toLowerCase();
+            const lb = (userLabelById.get(b) ?? "").toLowerCase();
+            return la.localeCompare(lb);
+        });
+
+        return keys.map((key) => {
+            const data = sortClients(byKey[key] ?? []);
+            return {
+                key,
+                title: makeTitle(key),
+                subtitle: makeSubtitle(key),
+                totals: makeTotals(data),
+                data,
+            };
+        });
+    }, [filteredClients, userById, userLabelById]);
 
     const selectedCreateUser = cAssigneeId ? userById.get(cAssigneeId) : undefined;
     const selectedEditUser = eAssigneeId ? userById.get(eAssigneeId) : undefined;
@@ -197,8 +305,6 @@ export default function AdminUploadClientsScreen() {
 
             try {
                 setBusyId(clientId);
-
-                // ✅ reasigna + resetea status a pending (por repo)
                 await assignClient(clientId, u.id);
             } catch (e: any) {
                 Alert.alert("Error", e?.message ?? "No se pudo asignar");
@@ -263,7 +369,6 @@ export default function AdminUploadClientsScreen() {
                 payload.assignedAt = now;
                 payload.assignedDayKey = dayKeyFromMs(now);
 
-                // ✅ cuando se crea asignado, queda pendiente “nuevo”
                 payload.status = "pending";
                 payload.statusBy = "";
                 payload.statusAt = 0;
@@ -344,11 +449,6 @@ export default function AdminUploadClientsScreen() {
                 address: cleanAddress ? cleanAddress : "",
             };
 
-            // ⚠️ IMPORTANTE:
-            // En EDIT no forzamos reset del status automáticamente,
-            // porque podrías estar editando solo datos.
-            // La reasignación que resetea se hace por el botón “asignar” (assignClient).
-
             if (eAssigneeId) {
                 patch.assignedTo = eAssigneeId;
                 patch.assignedAt = now;
@@ -388,7 +488,7 @@ export default function AdminUploadClientsScreen() {
     };
 
     // -------------------------
-    // UI: pills
+    // UI: pills (status)
     // -------------------------
     const pill = (status?: string) => {
         if (status === "visited") return [styles.pill, styles.pillVisited];
@@ -414,25 +514,37 @@ export default function AdminUploadClientsScreen() {
         });
     }, [users, pickerQuery]);
 
+    // FAB: subir un poco + respetar home indicator
+    const fabBottom = Math.max(18, insets.bottom + 18) + 14;
+
     return (
-        <SafeAreaView style={styles.safe}>
+        <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
-            {/* Header */}
-            <View style={[styles.header, { paddingTop: Math.max(12, insets.top + 8) }]}>
+            {/* Header (compacto) */}
+            <View style={styles.header}>
                 <View style={{ flex: 1 }}>
                     <Text style={styles.hTitle}>Clientes</Text>
-                    <Text style={styles.hSub}>
-                        Total <Text style={styles.hStrong}>{counts.total}</Text> · Pend{" "}
-                        <Text style={styles.hStrong}>{counts.pending}</Text> · Vis{" "}
-                        <Text style={styles.hStrong}>{counts.visited}</Text> · Rech{" "}
+                    <Text style={styles.hSub} numberOfLines={1}>
+                        T <Text style={styles.hStrong}>{counts.total}</Text> · P{" "}
+                        <Text style={styles.hStrong}>{counts.pending}</Text> · V{" "}
+                        <Text style={styles.hStrong}>{counts.visited}</Text> · R{" "}
                         <Text style={styles.hStrong}>{counts.rejected}</Text>
                     </Text>
                 </View>
 
-                <View style={styles.headerBadge}>
-                    <Ionicons name="cloud-done-outline" size={18} color={COLORS.text} />
-                </View>
+                <Pressable
+                    onPress={reloadUsers}
+                    style={({ pressed }) => [
+                        styles.headerBadge,
+                        pressed && styles.pressed,
+                        usersLoading && styles.headerBadgeDisabled,
+                    ]}
+                    disabled={usersLoading}
+                    accessibilityLabel="Refrescar usuarios"
+                >
+                    <Ionicons name={usersLoading ? "sync" : "people-outline"} size={18} color={COLORS.text} />
+                </Pressable>
             </View>
 
             {/* Search */}
@@ -452,15 +564,47 @@ export default function AdminUploadClientsScreen() {
                 ) : null}
             </View>
 
-            {/* List */}
-            <FlatList
-                data={filteredClients}
+            {/* Grouped list by user */}
+            <SectionList
+                sections={sections}
                 keyExtractor={(c) => c.id}
                 contentContainerStyle={styles.listContent}
+                stickySectionHeadersEnabled={false}
+                renderSectionHeader={({ section }) => (
+                    <View style={styles.sectionHeader}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={styles.sectionTitle} numberOfLines={1}>
+                                {section.title}
+                            </Text>
+                            {section.subtitle ? (
+                                <Text style={styles.sectionSub} numberOfLines={1}>
+                                    {section.subtitle}
+                                </Text>
+                            ) : null}
+                        </View>
+
+                        <View style={styles.sectionPills}>
+                            <View style={[styles.miniPill, styles.miniPillPending]}>
+                                <Text style={[styles.miniPillText, styles.miniTextPending]}>{section.totals.pending}</Text>
+                            </View>
+                            <View style={[styles.miniPill, styles.miniPillVisited]}>
+                                <Text style={[styles.miniPillText, styles.miniTextVisited]}>{section.totals.visited}</Text>
+                            </View>
+                            <View style={[styles.miniPill, styles.miniPillRejected]}>
+                                <Text style={[styles.miniPillText, styles.miniTextRejected]}>{section.totals.rejected}</Text>
+                            </View>
+                        </View>
+                    </View>
+                )}
                 renderItem={({ item }) => {
                     const displayName = ((item as any).name ?? "").trim();
                     const displayBiz = ((item as any).business ?? "").trim();
-                    const assignee = item.assignedTo ? userById.get(item.assignedTo) : undefined;
+
+                    // ✅ NUNCA mostramos UID: solo nombre/email o “Sin asignar”
+                    const assigneeLabel = item.assignedTo
+                        ? userLabelById.get(item.assignedTo) ?? "Asignado (cargando…)"
+                        : "Sin asignar";
+
                     const isBusy = busyId === item.id;
 
                     return (
@@ -499,9 +643,7 @@ export default function AdminUploadClientsScreen() {
                             <View style={styles.assignedRow}>
                                 <Ionicons name="person-outline" size={16} color={COLORS.muted} />
                                 <Text style={styles.assignedText} numberOfLines={1}>
-                                    {item.assignedTo
-                                        ? `Asignado: ${assignee ? `${assignee.name}` : item.assignedTo}`
-                                        : "Sin asignar"}
+                                    {assigneeLabel}
                                 </Text>
                             </View>
 
@@ -549,25 +691,25 @@ export default function AdminUploadClientsScreen() {
                                 </Pressable>
                             </View>
 
-                            {isBusy ? <Text style={styles.busyText}>Asignando… (estado reiniciado)</Text> : null}
+                            {isBusy ? <Text style={styles.busyText}>Asignando…</Text> : null}
                         </View>
                     );
                 }}
                 ListEmptyComponent={
                     <View style={styles.empty}>
                         <Ionicons name="people-outline" size={24} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>Aún no hay clientes.</Text>
+                        <Text style={styles.emptyText}>{q.trim() ? "No hay resultados." : "Aún no hay clientes."}</Text>
                     </View>
                 }
             />
 
-            {/* FAB Create */}
+            {/* FAB Create (subido y sin chocar con home indicator) */}
             <Pressable
                 onPress={async () => {
                     await ensureUsers();
                     setCreateOpen(true);
                 }}
-                style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+                style={({ pressed }) => [styles.fab, { bottom: fabBottom }, pressed && styles.fabPressed]}
                 accessibilityLabel="Crear cliente"
             >
                 <Ionicons name="add" size={22} color="#fff" />
@@ -589,14 +731,17 @@ export default function AdminUploadClientsScreen() {
 
                             <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
                                 {/* Assignee */}
-                                <Pressable onPress={openUserPickerForCreate} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
+                                <Pressable
+                                    onPress={openUserPickerForCreate}
+                                    style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}
+                                >
                                     <View style={{ flex: 1, gap: 2 }}>
                                         <Text style={styles.selectLabel}>Asignar a</Text>
                                         <Text style={styles.selectValue} numberOfLines={1}>
                                             {cAssigneeId
                                                 ? selectedCreateUser
-                                                    ? `${selectedCreateUser.name} (${selectedCreateUser.email})`
-                                                    : cAssigneeId
+                                                    ? `${selectedCreateUser.name}${selectedCreateUser.email ? ` · ${selectedCreateUser.email}` : ""}`
+                                                    : "Asignado (cargando…)"
                                                 : "Sin asignar"}
                                         </Text>
                                     </View>
@@ -606,30 +751,62 @@ export default function AdminUploadClientsScreen() {
                                 <View style={styles.grid2}>
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Nombre</Text>
-                                        <TextInput value={cName} onChangeText={setCName} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <TextInput
+                                            value={cName}
+                                            onChangeText={setCName}
+                                            placeholder="Opcional"
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
                                     </View>
 
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Negocio</Text>
-                                        <TextInput value={cBusiness} onChangeText={setCBusiness} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <TextInput
+                                            value={cBusiness}
+                                            onChangeText={setCBusiness}
+                                            placeholder="Opcional"
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
                                     </View>
                                 </View>
 
                                 <View style={styles.grid2}>
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Teléfono *</Text>
-                                        <TextInput value={cPhone} onChangeText={setCPhone} keyboardType="phone-pad" placeholder="5591..." placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <TextInput
+                                            value={cPhone}
+                                            onChangeText={setCPhone}
+                                            keyboardType="phone-pad"
+                                            placeholder="5591..."
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
                                     </View>
 
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Dirección</Text>
-                                        <TextInput value={cAddress} onChangeText={setCAddress} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <TextInput
+                                            value={cAddress}
+                                            onChangeText={setCAddress}
+                                            placeholder="Opcional"
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
                                     </View>
                                 </View>
 
                                 <View style={styles.field}>
                                     <Text style={styles.label}>Google Maps *</Text>
-                                    <TextInput value={cMapsUrl} onChangeText={setCMapsUrl} autoCapitalize="none" placeholder="https://maps.google.com/..." placeholderTextColor={COLORS.muted} style={styles.input} />
+                                    <TextInput
+                                        value={cMapsUrl}
+                                        onChangeText={setCMapsUrl}
+                                        autoCapitalize="none"
+                                        placeholder="https://maps.google.com/..."
+                                        placeholderTextColor={COLORS.muted}
+                                        style={styles.input}
+                                    />
                                 </View>
 
                                 {cErr ? (
@@ -683,14 +860,17 @@ export default function AdminUploadClientsScreen() {
 
                             <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
                                 {/* Assignee */}
-                                <Pressable onPress={openUserPickerForEdit} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
+                                <Pressable
+                                    onPress={openUserPickerForEdit}
+                                    style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}
+                                >
                                     <View style={{ flex: 1, gap: 2 }}>
                                         <Text style={styles.selectLabel}>Asignado a</Text>
                                         <Text style={styles.selectValue} numberOfLines={1}>
                                             {eAssigneeId
                                                 ? selectedEditUser
-                                                    ? `${selectedEditUser.name} (${selectedEditUser.email})`
-                                                    : eAssigneeId
+                                                    ? `${selectedEditUser.name}${selectedEditUser.email ? ` · ${selectedEditUser.email}` : ""}`
+                                                    : "Asignado (cargando…)"
                                                 : "Sin asignar"}
                                         </Text>
                                     </View>
@@ -700,34 +880,70 @@ export default function AdminUploadClientsScreen() {
                                 <View style={styles.grid2}>
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Nombre</Text>
-                                        <TextInput value={eName} onChangeText={setEName} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <TextInput
+                                            value={eName}
+                                            onChangeText={setEName}
+                                            placeholder="Opcional"
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
                                     </View>
 
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Negocio</Text>
-                                        <TextInput value={eBusiness} onChangeText={setEBusiness} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <TextInput
+                                            value={eBusiness}
+                                            onChangeText={setEBusiness}
+                                            placeholder="Opcional"
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
                                     </View>
                                 </View>
 
                                 <View style={styles.grid2}>
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Teléfono *</Text>
-                                        <TextInput value={ePhone} onChangeText={setEPhone} keyboardType="phone-pad" placeholder="5591..." placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <TextInput
+                                            value={ePhone}
+                                            onChangeText={setEPhone}
+                                            keyboardType="phone-pad"
+                                            placeholder="5591..."
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
                                     </View>
 
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Dirección</Text>
-                                        <TextInput value={eAddress} onChangeText={setEAddress} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <TextInput
+                                            value={eAddress}
+                                            onChangeText={setEAddress}
+                                            placeholder="Opcional"
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
                                     </View>
                                 </View>
 
                                 <View style={styles.field}>
                                     <Text style={styles.label}>Google Maps *</Text>
-                                    <TextInput value={eMapsUrl} onChangeText={setEMapsUrl} autoCapitalize="none" placeholder="https://maps.google.com/..." placeholderTextColor={COLORS.muted} style={styles.input} />
+                                    <TextInput
+                                        value={eMapsUrl}
+                                        onChangeText={setEMapsUrl}
+                                        autoCapitalize="none"
+                                        placeholder="https://maps.google.com/..."
+                                        placeholderTextColor={COLORS.muted}
+                                        style={styles.input}
+                                    />
                                 </View>
 
                                 <View style={{ flexDirection: "row", gap: 10 }}>
-                                    <Pressable onPress={cancelEdit} style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]} disabled={eSaving}>
+                                    <Pressable
+                                        onPress={cancelEdit}
+                                        style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
+                                        disabled={eSaving}
+                                    >
                                         <Ionicons name="close-outline" size={18} color={COLORS.text} />
                                         <Text style={styles.ghostBtnText}>Cancelar</Text>
                                     </Pressable>
@@ -766,7 +982,7 @@ export default function AdminUploadClientsScreen() {
                                 <TextInput
                                     value={pickerQuery}
                                     onChangeText={setPickerQuery}
-                                    placeholder="Buscar user…"
+                                    placeholder="Buscar…"
                                     placeholderTextColor={COLORS.muted}
                                     style={styles.searchInput}
                                 />
@@ -800,7 +1016,11 @@ export default function AdminUploadClientsScreen() {
                                 ) : null}
 
                                 {pickerUsers.map((u) => (
-                                    <Pressable key={u.id} onPress={() => onPickUser(u)} style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}>
+                                    <Pressable
+                                        key={u.id}
+                                        onPress={() => onPickUser(u)}
+                                        style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
+                                    >
                                         <View style={styles.userAvatar}>
                                             <Ionicons name="person-outline" size={18} color={COLORS.text} />
                                         </View>
@@ -848,6 +1068,7 @@ const styles = StyleSheet.create({
 
     header: {
         paddingHorizontal: 16,
+        paddingTop: 10,
         paddingBottom: 10,
         flexDirection: "row",
         alignItems: "center",
@@ -866,6 +1087,9 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
+    headerBadgeDisabled: { opacity: 0.55 },
+
+    pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
 
     searchWrap: {
         marginHorizontal: 16,
@@ -902,7 +1126,35 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(255,255,255,0.06)",
     },
 
-    listContent: { paddingHorizontal: 16, paddingBottom: 120, gap: 12 },
+    listContent: { paddingHorizontal: 16, paddingBottom: 140 },
+
+    sectionHeader: {
+        paddingTop: 10,
+        paddingBottom: 8,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+    sectionTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
+    sectionSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+
+    sectionPills: { flexDirection: "row", gap: 6 },
+    miniPill: {
+        minWidth: 28,
+        height: 26,
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+    },
+    miniPillText: { fontSize: 12, fontWeight: "900" },
+    miniPillPending: { backgroundColor: "rgba(251,191,36,0.10)", borderColor: "rgba(251,191,36,0.28)" },
+    miniTextPending: { color: "#FDE68A" },
+    miniPillVisited: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.28)" },
+    miniTextVisited: { color: "#86EFAC" },
+    miniPillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.28)" },
+    miniTextRejected: { color: "#FCA5A5" },
 
     card: {
         backgroundColor: COLORS.card,
@@ -911,13 +1163,9 @@ const styles = StyleSheet.create({
         borderRadius: 18,
         padding: 14,
         gap: 10,
+        marginBottom: 12,
     },
-    cardTop: {
-        flexDirection: "row",
-        alignItems: "flex-start",
-        justifyContent: "space-between",
-        gap: 10,
-    },
+    cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
     phone: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
     meta: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
@@ -962,14 +1210,13 @@ const styles = StyleSheet.create({
 
     busyText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
 
-    empty: { marginTop: 40, alignItems: "center", gap: 10 },
+    empty: { marginTop: 40, alignItems: "center", gap: 10, paddingHorizontal: 16 },
     emptySmall: { paddingVertical: 10, alignItems: "center" },
-    emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900" },
+    emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900", textAlign: "center" },
 
     fab: {
         position: "absolute",
         right: 16,
-        bottom: 18,
         width: 56,
         height: 56,
         borderRadius: 18,
@@ -1055,17 +1302,61 @@ const styles = StyleSheet.create({
     },
     grid2: { flexDirection: "row", gap: 10 },
 
-    selectRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 16, backgroundColor: "#0F172A", borderWidth: 1, borderColor: COLORS.border },
+    selectRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        padding: 12,
+        borderRadius: 16,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+    },
     selectRowPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     selectLabel: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
     selectValue: { color: COLORS.text, fontSize: 13, fontWeight: "900", marginTop: 2 },
 
-    errorBox: { flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderRadius: 12, borderWidth: 1, borderColor: "rgba(248,113,113,0.4)", backgroundColor: "rgba(248,113,113,0.10)" },
+    errorBox: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        padding: 10,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: "rgba(248,113,113,0.4)",
+        backgroundColor: "rgba(248,113,113,0.10)",
+    },
     errorText: { color: COLORS.rejected, fontSize: 12, fontWeight: "900", flex: 1 },
 
-    ghostBtn: { flex: 1, height: 50, borderRadius: 16, paddingHorizontal: 14, backgroundColor: "#0F172A", borderWidth: 1, borderColor: COLORS.border, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 10 },
+    ghostBtn: {
+        flex: 1,
+        height: 50,
+        borderRadius: 16,
+        paddingHorizontal: 14,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        alignItems: "center",
+        justifyContent: "center",
+        flexDirection: "row",
+        gap: 10,
+    },
     ghostBtnText: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
-    primaryBtn: { flex: 1, height: 50, borderRadius: 16, backgroundColor: COLORS.primary, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 10, shadowColor: "#14B8A6", shadowOpacity: 0.25, shadowRadius: 18, shadowOffset: { width: 0, height: 10 }, elevation: 4 },
+    primaryBtn: {
+        flex: 1,
+        height: 50,
+        borderRadius: 16,
+        backgroundColor: COLORS.primary,
+        alignItems: "center",
+        justifyContent: "center",
+        flexDirection: "row",
+        gap: 10,
+        shadowColor: "#14B8A6",
+        shadowOpacity: 0.25,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 10 },
+        elevation: 4,
+    },
     primaryBtnText: { color: "#fff", fontWeight: "900", fontSize: 14 },
     btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     btnDisabled: { opacity: 0.55 },

@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     FlatList,
@@ -72,8 +72,16 @@ function normalizeHttpUrl(raw: string) {
 function normalizeBRPhoneToWa(phoneRaw: string) {
     const digits = (phoneRaw ?? "").replace(/[^\d]/g, "");
     if (!digits) return "";
-    // si ya viene 55..., ok. si no, asumimos Brasil
     return digits.startsWith("55") ? digits : `55${digits}`;
+}
+
+type Toast = { id: string; text: string; createdAt: number };
+
+function buildNewClientToast(c: ClientDoc) {
+    const business = ((c as any).business ?? "").trim();
+    const name = ((c as any).name ?? "").trim();
+    const label = business || name;
+    return label ? `Cliente nuevo · ${label}` : "Cliente nuevo";
 }
 
 export default function UserHome() {
@@ -91,6 +99,11 @@ export default function UserHome() {
     // Daily events (resumen HOY)
     const [todayEvents, setTodayEvents] = useState<DailyEventDoc[]>([]);
     const [eventsErr, setEventsErr] = useState<string | null>(null);
+
+    // 🔔 in-app notifications (top toast)
+    const [toasts, setToasts] = useState<Toast[]>([]);
+    const prevClientIdsRef = useRef<Set<string>>(new Set());
+    const initialClientsLoadedRef = useRef(false);
 
     // -------------------------
     // Guard de sesión / rol
@@ -115,11 +128,55 @@ export default function UserHome() {
     }, [loading, firebaseUser?.uid, profile?.role, profile?.active]);
 
     // -------------------------
-    // Subscripción a clients asignados
+    // Subscripción a clients asignados + 🔔 detectar nuevos
     // -------------------------
     useEffect(() => {
         if (!firebaseUser) return;
-        const unsub = subscribeUserClients(firebaseUser.uid, setClients);
+
+        const unsub = subscribeUserClients(firebaseUser.uid, (list) => {
+            setClients(list);
+
+            // ---- NEW CLIENT NOTIFICATION (in-app)
+            // Evita notificar en la primera carga (cuando la sesión ya estaba guardada).
+            const prev = prevClientIdsRef.current;
+
+            if (!initialClientsLoadedRef.current) {
+                initialClientsLoadedRef.current = true;
+                prev.clear();
+                for (const c of list) prev.add(c.id);
+                return;
+            }
+
+            // Detecta ids nuevos en el snapshot
+            const newOnes: ClientDoc[] = [];
+            for (const c of list) {
+                if (!prev.has(c.id)) newOnes.push(c);
+            }
+
+            // Actualiza prev set
+            prev.clear();
+            for (const c of list) prev.add(c.id);
+
+            if (newOnes.length) {
+                // Muestra toasts (máx 2 a la vez para no spamear la UI)
+                const now = Date.now();
+                const nextToasts: Toast[] = newOnes.slice(0, 2).map((c) => ({
+                    id: `${c.id}-${now}`,
+                    text: buildNewClientToast(c),
+                    createdAt: now,
+                }));
+
+                setToasts((prevToasts) => [...nextToasts, ...prevToasts].slice(0, 3));
+
+                // auto-dismiss
+                for (const t of nextToasts) {
+                    setTimeout(() => {
+                        setToasts((p) => p.filter((x) => x.id !== t.id));
+                    }, 3800);
+                }
+            }
+        });
+
         return () => unsub();
     }, [firebaseUser?.uid]);
 
@@ -297,26 +354,48 @@ export default function UserHome() {
 
     const clearSearch = () => setQ("");
 
-    const Chip = ({
-        label,
+    // -------------------------
+    // Filters UI (minimal)
+    // - Pendientes: texto + badge
+    // - Visitados/Rechazados: solo icono + badge
+    // - Todos: solo icono + badge
+    // -------------------------
+    const MiniChip = ({
         active,
         onPress,
+        icon,
         badge,
+        label,
+        tint,
+        bg,
+        border,
+        showLabel,
     }: {
-        label: string;
         active: boolean;
         onPress: () => void;
+        icon: any;
         badge?: number;
+        label?: string;
+        tint?: string;
+        bg?: string;
+        border?: string;
+        showLabel?: boolean;
     }) => (
         <Pressable
             onPress={onPress}
-            style={({ pressed }) => [styles.chip, active && styles.chipActive, pressed && styles.chipPressed]}
+            style={({ pressed }) => [
+                styles.miniChip,
+                { backgroundColor: bg ?? "#0F172A", borderColor: border ?? COLORS.border },
+                active && styles.miniChipActive,
+                pressed && styles.miniChipPressed,
+            ]}
+            accessibilityLabel={label ?? "Filtro"}
         >
-            <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-
+            <Ionicons name={icon} size={10} color={tint ?? COLORS.text} />
+            {showLabel && label ? <Text style={[styles.miniChipText, active && styles.miniChipTextActive]}>{label}</Text> : null}
             {typeof badge === "number" ? (
-                <View style={[styles.chipBadge, active && styles.chipBadgeActive]}>
-                    <Text style={[styles.chipBadgeText, active && styles.chipBadgeTextActive]}>{badge}</Text>
+                <View style={[styles.miniBadge, active && styles.miniBadgeActive]}>
+                    <Text style={[styles.miniBadgeText, active && styles.miniBadgeTextActive]}>{badge}</Text>
                 </View>
             ) : null}
         </Pressable>
@@ -371,6 +450,7 @@ export default function UserHome() {
                     disabled && styles.statusIconBtnDisabled,
                     pressed && !disabled && styles.statusIconBtnPressed,
                 ]}
+                accessibilityLabel={kind}
             >
                 <Ionicons name={icon} size={18} color={tint} />
             </Pressable>
@@ -394,7 +474,11 @@ export default function UserHome() {
                         <Text numberOfLines={1} style={styles.clientName}>
                             {name}
                         </Text>
-                        {business ? <Text numberOfLines={1} style={styles.clientBusiness}>{business}</Text> : null}
+                        {business ? (
+                            <Text numberOfLines={1} style={styles.clientBusiness}>
+                                {business}
+                            </Text>
+                        ) : null}
                     </View>
 
                     <View style={[styles.pill, statusPillStyle(item.status)]}>
@@ -413,7 +497,9 @@ export default function UserHome() {
                     {address ? (
                         <View style={styles.infoRow}>
                             <Ionicons name="location-outline" size={16} color={COLORS.muted} />
-                            <Text numberOfLines={2} style={styles.infoText}>{address}</Text>
+                            <Text numberOfLines={2} style={styles.infoText}>
+                                {address}
+                            </Text>
                         </View>
                     ) : null}
                 </View>
@@ -460,6 +546,21 @@ export default function UserHome() {
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
+            {/* 🔔 Top toasts */}
+            <View pointerEvents="box-none" style={[styles.toastLayer, { top: Math.max(10, insets.top + 8) }]}>
+                {toasts.map((t) => (
+                    <View key={t.id} style={styles.toast}>
+                        <Ionicons name="notifications-outline" size={16} color={COLORS.text} />
+                        <Text style={styles.toastText} numberOfLines={2}>
+                            {t.text}
+                        </Text>
+                        <Pressable onPress={() => setToasts((p) => p.filter((x) => x.id !== t.id))} style={styles.toastClose}>
+                            <Ionicons name="close" size={16} color={COLORS.muted} />
+                        </Pressable>
+                    </View>
+                ))}
+            </View>
+
             <View style={[styles.header, { paddingTop: Math.max(12, insets.top + 8) }]}>
                 <View style={styles.headerLeft}>
                     <Text style={styles.hTitle}>TrackGo</Text>
@@ -491,11 +592,49 @@ export default function UserHome() {
                 ) : null}
             </View>
 
-            <View style={styles.chipsRow}>
-                <Chip label="Pendientes" active={filter === "pending"} onPress={() => setFilter("pending")} badge={counts.pending} />
-                <Chip label="Visitados" active={filter === "visited"} onPress={() => setFilter("visited")} badge={counts.visited} />
-                <Chip label="Rechazados" active={filter === "rejected"} onPress={() => setFilter("rejected")} badge={counts.rejected} />
-                <Chip label="Todos" active={filter === "all"} onPress={() => setFilter("all")} badge={counts.total} />
+            {/* Filters (minimal) */}
+            <View style={styles.filtersRow}>
+                <MiniChip
+                    active={filter === "pending"}
+                    onPress={() => setFilter("pending")}
+                    icon="time-outline"
+                    label="Pendientes"
+                    showLabel
+                    badge={counts.pending}
+                    tint={COLORS.pending}
+                    bg="rgba(251,191,36,0.08)"
+                    border="rgba(251,191,36,0.30)"
+                />
+
+                <MiniChip
+                    active={filter === "visited"}
+                    onPress={() => setFilter("visited")}
+                    icon="checkmark"
+                    badge={counts.visited}
+                    tint={COLORS.visited}
+                    bg="rgba(34,197,94,0.08)"
+                    border="rgba(34,197,94,0.28)"
+                />
+
+                <MiniChip
+                    active={filter === "rejected"}
+                    onPress={() => setFilter("rejected")}
+                    icon="close"
+                    badge={counts.rejected}
+                    tint={COLORS.rejected}
+                    bg="rgba(248,113,113,0.08)"
+                    border="rgba(248,113,113,0.28)"
+                />
+
+                <MiniChip
+                    active={filter === "all"}
+                    onPress={() => setFilter("all")}
+                    icon="apps-outline"
+                    badge={counts.total}
+                    tint={COLORS.text}
+                    bg="rgba(255,255,255,0.05)"
+                    border="rgba(255,255,255,0.10)"
+                />
             </View>
 
             <FlatList
@@ -510,6 +649,11 @@ export default function UserHome() {
                     </View>
                 }
             />
+
+            {/* ✅ listo para notificaciones del sistema (push/local)
+          - aquí solo implementamos "toast" in-app.
+          - cuando quieras push real: integra expo-notifications y dispara una localNotification
+            al detectar newOnes.length > 0 (con permisos y channel Android). */}
         </SafeAreaView>
     );
 }
@@ -527,6 +671,40 @@ const COLORS = {
 
 const styles = StyleSheet.create({
     safe: { flex: 1, backgroundColor: COLORS.bg },
+
+    // Toasts
+    toastLayer: {
+        position: "absolute",
+        left: 16,
+        right: 16,
+        zIndex: 50,
+        gap: 10,
+    },
+    toast: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        borderRadius: 16,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+    toastText: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "800",
+    },
+    toastClose: {
+        width: 34,
+        height: 34,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.06)",
+    },
 
     header: {
         paddingHorizontal: 16,
@@ -578,43 +756,42 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(255,255,255,0.06)",
     },
 
-    chipsRow: {
+    // Filters (minimal)
+    filtersRow: {
         paddingHorizontal: 16,
         flexDirection: "row",
-        flexWrap: "wrap",
+        alignItems: "center",
         gap: 10,
         marginBottom: 8,
     },
-    chip: {
+    miniChip: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
-        paddingHorizontal: 12,
+        paddingHorizontal: 10,
         height: 36,
         borderRadius: 999,
-        backgroundColor: "#0F172A",
         borderWidth: 1,
-        borderColor: COLORS.border,
     },
-    chipActive: {
-        borderColor: "rgba(34,197,94,0.35)",
-        backgroundColor: "rgba(37,99,235,0.14)",
+    miniChipActive: {
+        borderColor: "rgba(255,255,255,0.20)",
     },
-    chipPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
-    chipText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
-    chipTextActive: { color: COLORS.text },
-    chipBadge: {
-        minWidth: 26,
-        height: 22,
-        paddingHorizontal: 8,
+    miniChipPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
+    miniChipText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
+    miniChipTextActive: { color: COLORS.text },
+
+    miniBadge: {
+        minWidth: 24,
+        height: 20,
+        paddingHorizontal: 7,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: "rgba(255,255,255,0.06)",
     },
-    chipBadgeActive: { backgroundColor: "rgba(34,197,94,0.14)" },
-    chipBadgeText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
-    chipBadgeTextActive: { color: COLORS.text },
+    miniBadgeActive: { backgroundColor: "rgba(255,255,255,0.08)" },
+    miniBadgeText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
+    miniBadgeTextActive: { color: COLORS.text },
 
     listContent: { paddingHorizontal: 16, paddingBottom: 22, paddingTop: 10, gap: 12 },
 
@@ -632,7 +809,14 @@ const styles = StyleSheet.create({
     clientName: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
     clientBusiness: { color: COLORS.muted, fontSize: 13, fontWeight: "700" },
 
-    pill: { paddingHorizontal: 10, height: 28, borderRadius: 999, alignItems: "center", justifyContent: "center", borderWidth: 1 },
+    pill: {
+        paddingHorizontal: 10,
+        height: 28,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+    },
     pillText: { fontSize: 12, fontWeight: "900" },
     pillPending: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.35)" },
     pillTextPending: { color: "#FDE68A" },

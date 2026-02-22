@@ -34,7 +34,7 @@ type Row = {
     visitedToday: number;
     rejectedToday: number;
 
-    amountToday: number; // ✅ money today
+    amountToday: number;
 };
 
 function safeText(x?: string) {
@@ -46,7 +46,6 @@ function safeNumber(n: any, fallback = 0) {
 }
 
 function getRatePerVisit(u: UserDoc) {
-    // compat: ratePerVisit (nuevo) o visitFee (legacy)
     const anyU: any = u as any;
     return safeNumber(anyU.ratePerVisit ?? anyU.visitFee, 0);
 }
@@ -63,7 +62,6 @@ export default function AdminDailyReportScreen() {
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
 
-    // UI
     const [q, setQ] = useState("");
 
     useEffect(() => {
@@ -90,10 +88,8 @@ export default function AdminDailyReportScreen() {
     const rows: Row[] = useMemo(() => {
         const byUser: Record<string, Row> = {};
 
-        // init con users
         for (const u of users) {
             const rate = getRatePerVisit(u);
-
             byUser[u.id] = {
                 userId: u.id,
                 name: u.name,
@@ -109,7 +105,6 @@ export default function AdminDailyReportScreen() {
             };
         }
 
-        // recorrer clientes y sumar métricas
         for (const c of clients) {
             const uid = c.assignedTo;
             if (!uid) continue;
@@ -142,14 +137,12 @@ export default function AdminDailyReportScreen() {
             if (isToday && c.status === "rejected") row.rejectedToday += 1;
         }
 
-        // calcular dinero hoy por usuario
         for (const r of Object.values(byUser)) {
             r.amountToday = r.visitedToday * (r.ratePerVisit ?? 0);
         }
 
         const all = Object.values(byUser);
 
-        // filtro por búsqueda
         const qt = q.trim().toLowerCase();
         const filtered = !qt
             ? all
@@ -158,7 +151,6 @@ export default function AdminDailyReportScreen() {
                 return hay.includes(qt);
             });
 
-        // orden: más completados hoy primero
         return filtered.sort(
             (a, b) =>
                 b.visitedToday + b.rejectedToday - (a.visitedToday + a.rejectedToday)
@@ -218,41 +210,23 @@ export default function AdminDailyReportScreen() {
         );
     };
 
-    const MetricPill = ({
+    const StatIcon = ({
         icon,
-        label,
+        color,
         value,
-        tone,
+        label,
     }: {
         icon: any;
-        label: string;
+        color: string;
         value: number;
-        tone: "ok" | "bad" | "warn" | "neutral";
+        label: string;
     }) => {
-        const st =
-            tone === "ok"
-                ? styles.pillOk
-                : tone === "bad"
-                    ? styles.pillBad
-                    : tone === "warn"
-                        ? styles.pillWarn
-                        : styles.pillNeutral;
-
-        const tx =
-            tone === "ok"
-                ? styles.pillTextOk
-                : tone === "bad"
-                    ? styles.pillTextBad
-                    : tone === "warn"
-                        ? styles.pillTextWarn
-                        : styles.pillTextNeutral;
-
         return (
-            <View style={[styles.metricPill, st]}>
-                <Ionicons name={icon} size={14} color={tx.color as any} />
-                <Text style={[styles.metricPillText, tx]}>
-                    {label}: <Text style={styles.metricStrong}>{value}</Text>
-                </Text>
+            <View style={styles.statIconWrap} accessibilityLabel={`${label}: ${value}`}>
+                <View style={[styles.statIcon, { borderColor: color + "55", backgroundColor: color + "12" }]}>
+                    <Ionicons name={icon} size={16} color={color} />
+                </View>
+                <Text style={styles.statValue}>{value}</Text>
             </View>
         );
     };
@@ -274,22 +248,21 @@ export default function AdminDailyReportScreen() {
                 backgroundColor={COLORS.bg}
             />
 
-            {/* Header */}
-            <View style={[styles.header, { paddingTop: Math.max(12, insets.top + 8) }]}>
+            {/* Compact header */}
+            <View style={[styles.header, { paddingTop: 0 }]}>
                 <View style={{ flex: 1 }}>
-                    <Text style={styles.hTitle}>Resumen de hoy</Text>
-
+                    <Text style={styles.hTitle}>Hoy</Text>
                     <Text style={styles.hSub}>
-                        Completados hoy{" "}
-                        <Text style={styles.hStrong}>{doneToday}</Text> /{" "}
-                        <Text style={styles.hStrong}>{totals.assignedTotal}</Text>
+                        <Text style={styles.hStrong}>{doneToday}</Text>
+                        <Text style={styles.hMuted}> / </Text>
+                        <Text style={styles.hMuted}>{totals.assignedTotal}</Text>
+                        <Text style={styles.hMuted}> completados</Text>
                     </Text>
                 </View>
 
-                {/* ✅ dinero SOLO HOY */}
-                <View style={styles.moneyPill}>
-                    <Text style={styles.moneyTop}>Hoy R$ {money(totals.amountToday)}</Text>
-                    <Text style={styles.moneySub}>{totals.visitedToday} visitados</Text>
+                <View style={styles.moneyChip}>
+                    <Ionicons name="cash-outline" size={14} color={COLORS.money} />
+                    <Text style={styles.moneyChipText}>R$ {money(totals.amountToday)}</Text>
                 </View>
 
                 <IconBtn
@@ -300,46 +273,48 @@ export default function AdminDailyReportScreen() {
                 />
             </View>
 
-            {/* Totals pills */}
-            <View style={styles.totalsRow}>
-                <MetricPill
+            {/* Icons-only summary row (no labels) */}
+            <View style={styles.statsRow}>
+                <StatIcon
                     icon="checkmark-circle-outline"
-                    label="Visitados"
+                    color={COLORS.visited}
                     value={totals.visitedToday}
-                    tone="ok"
+                    label="Visitados"
                 />
-                <MetricPill
+                <StatIcon
                     icon="close-circle-outline"
-                    label="Rechazados"
+                    color={COLORS.rejected}
                     value={totals.rejectedToday}
-                    tone="bad"
+                    label="Rechazados"
                 />
-                <MetricPill
+                <StatIcon
                     icon="time-outline"
-                    label="Pendientes"
+                    color={COLORS.pending}
                     value={totals.pending}
-                    tone="warn"
+                    label="Pendientes"
                 />
-                <MetricPill
+                <StatIcon
                     icon="people-outline"
-                    label="Asignados"
+                    color={COLORS.muted2}
                     value={totals.assignedTotal}
-                    tone="neutral"
+                    label="Asignados"
                 />
             </View>
 
-            {/* Search */}
+            {/* Search (compact) */}
             <View style={styles.searchWrap}>
                 <Ionicons name="search-outline" size={18} color={COLORS.muted} />
                 <TextInput
                     value={q}
                     onChangeText={setQ}
-                    placeholder="Buscar cobrador (nombre / email)…"
+                    placeholder="Buscar (nombre / email)…"
                     placeholderTextColor={COLORS.muted}
                     style={styles.searchInput}
+                    autoCorrect={false}
+                    autoCapitalize="none"
                 />
                 {!!q ? (
-                    <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
+                    <Pressable onPress={() => setQ("")} style={styles.clearBtn} accessibilityLabel="Limpiar búsqueda">
                         <Ionicons name="close" size={18} color={COLORS.text} />
                     </Pressable>
                 ) : null}
@@ -361,17 +336,20 @@ export default function AdminDailyReportScreen() {
                                     <Text style={styles.userName} numberOfLines={1}>
                                         {item.name}
                                     </Text>
-                                    {item.email ? (
+                                    {!!item.email ? (
                                         <Text style={styles.userEmail} numberOfLines={1}>
                                             {item.email}
                                         </Text>
                                     ) : (
-                                        <Text style={styles.userEmailMuted}>(sin email)</Text>
+                                        <Text style={styles.userEmailMuted} numberOfLines={1}>
+                                            (sin email)
+                                        </Text>
                                     )}
                                 </View>
 
-                                <View style={{ alignItems: "flex-end", gap: 6 }}>
+                                <View style={{ alignItems: "flex-end", gap: 8 }}>
                                     <View style={styles.pctPill}>
+                                        <Ionicons name="stats-chart-outline" size={14} color={COLORS.primarySoft} />
                                         <Text style={styles.pctText}>{pct}%</Text>
                                     </View>
 
@@ -383,35 +361,34 @@ export default function AdminDailyReportScreen() {
 
                             <ProgressBar done={done} total={Math.max(1, total)} />
 
+                            {/* Metrics row with icons + tiny numbers (minimal text) */}
                             <View style={styles.metricsRow}>
-                                <View style={[styles.smallPill, styles.smallOk]}>
-                                    <Text style={[styles.smallPillText, styles.smallOkText]}>
-                                        Vis {item.visitedToday}
-                                    </Text>
+                                <View style={[styles.miniStat, styles.miniOk]}>
+                                    <Ionicons name="checkmark" size={14} color={COLORS.visitedSoft} />
+                                    <Text style={[styles.miniText, { color: COLORS.visitedSoft }]}>{item.visitedToday}</Text>
                                 </View>
-                                <View style={[styles.smallPill, styles.smallBad]}>
-                                    <Text style={[styles.smallPillText, styles.smallBadText]}>
-                                        Rech {item.rejectedToday}
-                                    </Text>
+
+                                <View style={[styles.miniStat, styles.miniBad]}>
+                                    <Ionicons name="close" size={14} color={COLORS.rejectedSoft} />
+                                    <Text style={[styles.miniText, { color: COLORS.rejectedSoft }]}>{item.rejectedToday}</Text>
                                 </View>
-                                <View style={[styles.smallPill, styles.smallWarn]}>
-                                    <Text style={[styles.smallPillText, styles.smallWarnText]}>
-                                        Pend {item.pending}
-                                    </Text>
+
+                                <View style={[styles.miniStat, styles.miniWarn]}>
+                                    <Ionicons name="time" size={14} color={COLORS.pendingSoft} />
+                                    <Text style={[styles.miniText, { color: COLORS.pendingSoft }]}>{item.pending}</Text>
                                 </View>
-                                <View style={[styles.smallPill, styles.smallNeutral]}>
-                                    <Text style={[styles.smallPillText, styles.smallNeutralText]}>
-                                        Asig {item.assignedTotal}
-                                    </Text>
+
+                                <View style={[styles.miniStat, styles.miniNeutral]}>
+                                    <Ionicons name="people" size={14} color={COLORS.text} />
+                                    <Text style={[styles.miniText, { color: COLORS.text }]}>{item.assignedTotal}</Text>
                                 </View>
                             </View>
 
                             <View style={styles.actionsRow}>
-                                <View style={styles.ratePill}>
+                                <View style={styles.rateChip}>
                                     <Ionicons name="cash-outline" size={14} color={COLORS.muted} />
-                                    <Text style={styles.rateText}>
-                                        Tarifa R$ {money(item.ratePerVisit)}
-                                    </Text>
+                                    <Text style={styles.rateText}>R$ {money(item.ratePerVisit)}</Text>
+                                    <Text style={styles.rateTextMuted}>/visita</Text>
                                 </View>
 
                                 <IconBtn
@@ -428,7 +405,7 @@ export default function AdminDailyReportScreen() {
                     <View style={styles.empty}>
                         <Ionicons name="analytics-outline" size={24} color={COLORS.muted} />
                         <Text style={styles.emptyText}>
-                            {q.trim() ? "No hay resultados con ese filtro." : "No hay datos aún."}
+                            {q.trim() ? "Sin resultados." : "Sin datos aún."}
                         </Text>
                     </View>
                 }
@@ -439,15 +416,23 @@ export default function AdminDailyReportScreen() {
 
 const COLORS = {
     bg: "#0B1220",
-    card: "#111827",
-    border: "#1F2937",
+    card: "#0F172A",
+    border: "rgba(255,255,255,0.08)",
     text: "#F9FAFB",
     muted: "#9CA3AF",
+    muted2: "#C7CEDA",
 
     visited: "#22C55E",
     rejected: "#F87171",
     pending: "#FBBF24",
-    primary: "#2563EB",
+
+    visitedSoft: "#86EFAC",
+    rejectedSoft: "#FCA5A5",
+    pendingSoft: "#FDE68A",
+
+    primary: "#7C3AED",
+    primarySoft: "#C4B5FD",
+    money: "#A7F3D0",
 };
 
 const styles = StyleSheet.create({
@@ -455,67 +440,65 @@ const styles = StyleSheet.create({
 
     header: {
         paddingHorizontal: 16,
-        paddingBottom: 10,
+        paddingBottom: 8,
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
+        gap: 10,
     },
     hTitle: {
         color: COLORS.text,
         fontSize: 22,
         fontWeight: "900",
-        letterSpacing: 0.5,
+        letterSpacing: 0.4,
     },
     hSub: {
-        color: COLORS.muted,
+        marginTop: 2,
         fontSize: 12,
         fontWeight: "800",
-        marginTop: 4,
     },
     hStrong: { color: COLORS.text, fontWeight: "900" },
+    hMuted: { color: COLORS.muted, fontWeight: "900" },
 
-    moneyPill: {
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        borderRadius: 14,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        alignItems: "flex-end",
-        justifyContent: "center",
-        minWidth: 140,
-    },
-    moneyTop: { color: COLORS.text, fontSize: 12, fontWeight: "900" },
-    moneySub: { color: COLORS.muted, fontSize: 11, fontWeight: "900", marginTop: 2 },
-
-    totalsRow: {
-        paddingHorizontal: 16,
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: 10,
-        marginBottom: 10,
-    },
-    metricPill: {
+    moneyChip: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
         paddingHorizontal: 10,
         height: 34,
         borderRadius: 999,
+        backgroundColor: "rgba(167,243,208,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(167,243,208,0.22)",
+    },
+    moneyChipText: { color: COLORS.money, fontWeight: "900", fontSize: 12 },
+
+    statsRow: {
+        paddingHorizontal: 16,
+        paddingBottom: 8,
+        flexDirection: "row",
+        gap: 10,
+    },
+    statIconWrap: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+        height: 44,
+        borderRadius: 16,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+    },
+    statIcon: {
+        width: 30,
+        height: 30,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
         borderWidth: 1,
     },
-    metricPillText: { color: COLORS.text, fontSize: 12, fontWeight: "900" },
-    metricStrong: { color: COLORS.text, fontWeight: "900" },
-
-    pillOk: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.30)" },
-    pillBad: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.30)" },
-    pillWarn: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.30)" },
-    pillNeutral: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" },
-
-    pillTextOk: { color: "#86EFAC" },
-    pillTextBad: { color: "#FCA5A5" },
-    pillTextWarn: { color: "#FDE68A" },
-    pillTextNeutral: { color: COLORS.text },
+    statValue: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
 
     searchWrap: {
         marginHorizontal: 16,
@@ -523,12 +506,12 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         gap: 10,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
         borderRadius: 16,
         paddingHorizontal: 12,
-        height: 48,
+        height: 46,
     },
     searchInput: { flex: 1, color: COLORS.text, fontSize: 14, fontWeight: "700" },
     clearBtn: {
@@ -538,6 +521,8 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: "rgba(255,255,255,0.06)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
     },
 
     listContent: { paddingHorizontal: 16, paddingBottom: 40, gap: 12 },
@@ -550,22 +535,30 @@ const styles = StyleSheet.create({
         padding: 14,
         gap: 10,
     },
-    cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
+    cardTop: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 10,
+    },
     userName: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
     userEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    userEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.7 },
+    userEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
 
     pctPill: {
-        minWidth: 54,
-        height: 30,
-        borderRadius: 999,
+        flexDirection: "row",
         alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(37,99,235,0.14)",
+        gap: 6,
+        minWidth: 64,
+        height: 30,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        backgroundColor: "rgba(124,58,237,0.16)",
         borderWidth: 1,
-        borderColor: "rgba(37,99,235,0.35)",
+        borderColor: "rgba(124,58,237,0.32)",
+        justifyContent: "center",
     },
-    pctText: { color: "#93C5FD", fontWeight: "900", fontSize: 12 },
+    pctText: { color: COLORS.primarySoft, fontWeight: "900", fontSize: 12 },
 
     amountPill: {
         height: 30,
@@ -573,57 +566,82 @@ const styles = StyleSheet.create({
         borderRadius: 999,
         backgroundColor: "rgba(34,197,94,0.10)",
         borderWidth: 1,
-        borderColor: "rgba(34,197,94,0.30)",
+        borderColor: "rgba(34,197,94,0.22)",
         alignItems: "center",
         justifyContent: "center",
     },
-    amountText: { color: "#86EFAC", fontWeight: "900", fontSize: 12 },
+    amountText: { color: COLORS.visitedSoft, fontWeight: "900", fontSize: 12 },
 
     progressTrack: {
         height: 10,
         borderRadius: 999,
-        backgroundColor: "rgba(255,255,255,0.06)",
+        backgroundColor: "rgba(255,255,255,0.05)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
+        borderColor: "rgba(255,255,255,0.07)",
         overflow: "hidden",
     },
     progressFill: { height: "100%", backgroundColor: "rgba(34,197,94,0.55)" },
 
-    metricsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-    smallPill: { height: 30, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-    smallPillText: { fontSize: 12, fontWeight: "900" },
-
-    smallOk: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.30)" },
-    smallOkText: { color: "#86EFAC" },
-
-    smallBad: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.30)" },
-    smallBadText: { color: "#FCA5A5" },
-
-    smallWarn: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.30)" },
-    smallWarnText: { color: "#FDE68A" },
-
-    smallNeutral: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" },
-    smallNeutralText: { color: COLORS.text },
-
-    actionsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 2 },
-    ratePill: {
+    metricsRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+        marginTop: 2,
+    },
+    miniStat: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
+        gap: 6,
+        height: 30,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+    },
+    miniText: { fontSize: 12, fontWeight: "900" },
+
+    miniOk: {
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderColor: "rgba(34,197,94,0.22)",
+    },
+    miniBad: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.22)",
+    },
+    miniWarn: {
+        backgroundColor: "rgba(251,191,36,0.12)",
+        borderColor: "rgba(251,191,36,0.22)",
+    },
+    miniNeutral: {
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderColor: "rgba(255,255,255,0.08)",
+    },
+
+    actionsRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+        marginTop: 2,
+    },
+    rateChip: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
         height: 34,
         paddingHorizontal: 10,
         borderRadius: 14,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
     },
-    rateText: { color: COLORS.text, opacity: 0.9, fontSize: 12, fontWeight: "900" },
+    rateText: { color: COLORS.text, opacity: 0.92, fontSize: 12, fontWeight: "900" },
+    rateTextMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
 
     iconBtn: {
         width: 44,
         height: 44,
         borderRadius: 16,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",

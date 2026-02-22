@@ -32,21 +32,24 @@ export default function AdminLayout() {
     return (
         <Stack
             screenOptions={{
+                // ✅ siempre TrackGo
+                headerTitle: "TrackGo",
                 headerTitleAlign: "center",
                 headerStyle: { backgroundColor: "#0A0F1E" },
                 headerTintColor: "#FFFFFF",
-                headerTitleStyle: { fontWeight: "800" },
+                headerTitleStyle: { fontWeight: "900" },
                 headerShadowVisible: false,
+
+                // ✅ evita “large title” en iOS (si está soportado en tu versión, ok)
+                headerLargeTitle: false,
             }}
         >
-            {/* Ajusta estos nombres según tus archivos dentro de /app/admin */}
-            <Stack.Screen name="index" options={{ title: "Admin" }} />
-            <Stack.Screen name="users" options={{ title: "Usuarios" }} />
-            <Stack.Screen name="upload-clients" options={{ title: "Clientes" }} />
-            <Stack.Screen name="history-range" options={{ title: "Historial" }} />
-            <Stack.Screen name="earnings" options={{ title: "Comisiones" }} />
-            {/* Si tienes pantallas tipo modal dentro de admin, aquí puedes configurarlas también */}
-            {/* <Stack.Screen name="modal" options={{ presentation: "modal", title: "Detalle" }} /> */}
+            {/* ✅ no pongas title por pantalla si quieres TrackGo fijo */}
+            <Stack.Screen name="index" options={{ headerShown: true }} />
+            <Stack.Screen name="users" options={{ headerShown: true }} />
+            <Stack.Screen name="upload-clients" options={{ headerShown: true }} />
+            <Stack.Screen name="history-range" options={{ headerShown: true }} />
+            <Stack.Screen name="earnings" options={{ headerShown: true }} />
         </Stack>
     );
 }

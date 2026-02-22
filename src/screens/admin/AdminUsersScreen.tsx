@@ -15,11 +15,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import {
-    listUsers,
-    updateUserRatePerVisit,
-    upsertUserDoc,
-} from "../../data/repositories/usersRepo";
+import { listUsers, updateUserRatePerVisit, upsertUserDoc } from "../../data/repositories/usersRepo";
 import type { UserDoc } from "../../types/models";
 
 function safeText(x?: string) {
@@ -72,6 +68,9 @@ export default function AdminUsersScreen() {
     const [feeDraftById, setFeeDraftById] = useState<Record<string, string>>({});
     const [feeSavingById, setFeeSavingById] = useState<Record<string, boolean>>({});
 
+    // ✅ FAB y padding para no chocar con home indicator
+    const fabBottom = Math.max(18, insets.bottom + 18) + 10;
+
     const reload = async () => {
         setLoading(true);
         try {
@@ -98,7 +97,7 @@ export default function AdminUsersScreen() {
 
     const counts = useMemo(() => {
         const admins = users.filter((u) => u.role === "admin").length;
-        const actives = users.filter((u) => u.active).length;
+        const actives = users.filter((u) => !!u.active).length;
         const blocked = users.filter((u) => !u.active).length;
         return { total: users.length, admins, actives, blocked };
     }, [users]);
@@ -233,10 +232,10 @@ export default function AdminUsersScreen() {
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
             {/* Header */}
-            <View style={[styles.header, { paddingTop: Math.max(12, insets.top + 8) }]}>
+            <View style={[styles.header, { paddingTop: 10 }]}>
                 <View style={{ flex: 1 }}>
                     <Text style={styles.hTitle}>Usuarios</Text>
-                    <Text style={styles.hSub}>
+                    <Text style={styles.hSub} numberOfLines={1}>
                         Total <Text style={styles.hStrong}>{counts.total}</Text> · Activos{" "}
                         <Text style={styles.hStrong}>{counts.actives}</Text> · Bloq{" "}
                         <Text style={styles.hStrong}>{counts.blocked}</Text> · Admin{" "}
@@ -245,7 +244,7 @@ export default function AdminUsersScreen() {
                 </View>
 
                 <IconBtn
-                    icon={loading ? "sync" : "refresh-outline"}
+                    icon={loading ? "sync-outline" : "refresh-outline"}
                     label="Refrescar"
                     onPress={reload}
                     disabled={loading}
@@ -273,7 +272,7 @@ export default function AdminUsersScreen() {
             <FlatList
                 data={filteredUsers}
                 keyExtractor={(u) => u.id}
-                contentContainerStyle={styles.listContent}
+                contentContainerStyle={[styles.listContent, { paddingBottom: fabBottom + 90 }]}
                 renderItem={({ item }) => {
                     const displayEmail = (item.email ?? "").trim();
                     const displayName = (item.name ?? "").trim() || "Usuario";
@@ -308,9 +307,7 @@ export default function AdminUsersScreen() {
                                         <Text style={styles.label}>Tarifa por visita (R$)</Text>
                                         <TextInput
                                             value={feeDraft}
-                                            onChangeText={(t) =>
-                                                setFeeDraftById((p) => ({ ...p, [item.id]: onlyNumberLike(t) }))
-                                            }
+                                            onChangeText={(t) => setFeeDraftById((p) => ({ ...p, [item.id]: onlyNumberLike(t) }))}
                                             keyboardType="numeric"
                                             placeholder="0"
                                             placeholderTextColor={COLORS.muted}
@@ -336,18 +333,9 @@ export default function AdminUsersScreen() {
                             <View style={styles.actionsRow}>
                                 <View style={{ flexDirection: "row", gap: 10 }}>
                                     {displayEmail ? (
-                                        <IconBtn
-                                            icon="mail-outline"
-                                            label="Copiar email"
-                                            onPress={() => copy(displayEmail)}
-                                        />
+                                        <IconBtn icon="copy-outline" label="Copiar email" onPress={() => copy(displayEmail)} />
                                     ) : (
-                                        <IconBtn
-                                            icon="mail-outline"
-                                            label="Copiar email"
-                                            onPress={() => { }}
-                                            disabled
-                                        />
+                                        <IconBtn icon="copy-outline" label="Copiar email" onPress={() => { }} disabled />
                                     )}
                                 </View>
 
@@ -377,7 +365,11 @@ export default function AdminUsersScreen() {
                     setOpen(true);
                     setErr(null);
                 }}
-                style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+                style={({ pressed }) => [
+                    styles.fab,
+                    { bottom: fabBottom },
+                    pressed && styles.fabPressed,
+                ]}
                 accessibilityLabel="Registrar perfil"
             >
                 <Ionicons name="person-add" size={20} color="#fff" />
@@ -386,10 +378,7 @@ export default function AdminUsersScreen() {
             {/* Modal Register */}
             <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
                 <View style={styles.modalOverlay}>
-                    <KeyboardAvoidingView
-                        behavior={Platform.OS === "ios" ? "padding" : undefined}
-                        style={styles.modalWrap}
-                    >
+                    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
                         <View style={styles.modalCard}>
                             <View style={styles.modalHeader}>
                                 <Text style={styles.modalTitle}>Registrar perfil</Text>
@@ -569,7 +558,6 @@ const styles = StyleSheet.create({
 
     listContent: {
         paddingHorizontal: 16,
-        paddingBottom: 120,
         gap: 12,
     },
 
@@ -714,17 +702,18 @@ const styles = StyleSheet.create({
         marginTop: 40,
         alignItems: "center",
         gap: 10,
+        paddingHorizontal: 16,
     },
     emptyText: {
         color: COLORS.muted,
         fontSize: 13,
         fontWeight: "900",
+        textAlign: "center",
     },
 
     fab: {
         position: "absolute",
         right: 16,
-        bottom: 18,
         width: 56,
         height: 56,
         borderRadius: 18,

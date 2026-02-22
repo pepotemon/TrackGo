@@ -34,12 +34,28 @@ export default function Index() {
 
         // user normal
         if (current !== "user") router.replace("/user");
-    }, [navState?.key, loading, firebaseUser?.uid, profile?.role, profile?.active, segments.join("/")]);
+    }, [
+        navState?.key,
+        loading,
+        firebaseUser?.uid,
+        profile?.role,
+        profile?.active,
+        segments.join("/"),
+    ]);
 
     return (
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-            <ActivityIndicator />
-            <Text style={{ marginTop: 10 }}>Cargando sesión...</Text>
+        <View
+            style={{
+                flex: 1,
+                backgroundColor: "#0B1220",
+                justifyContent: "center",
+                alignItems: "center",
+            }}
+        >
+            <ActivityIndicator color="#FFFFFF" />
+            <Text style={{ marginTop: 10, color: "#FFFFFF", fontWeight: "800" }}>
+                Cargando sesión...
+            </Text>
         </View>
     );
 }
