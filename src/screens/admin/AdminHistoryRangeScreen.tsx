@@ -85,17 +85,17 @@ type UserRow = {
     userId: string;
     name: string;
     email?: string;
-    assigned: number;
-    visited: number;
-    rejected: number;
-    pending: number;
+    assigned: number; // ✅ por rango (assignedDayKey en rango)
+    visited: number; // ✅ por rango (eventos en rango)
+    rejected: number; // ✅ por rango (eventos en rango)
+    pendingNow: number; // ✅ SIN rango (pendientes actuales)
 };
 
 type DayGroup = {
     dayKey: string;
     label: string;
     users: UserRow[];
-    totals: { assigned: number; visited: number; rejected: number; pending: number };
+    totals: { assigned: number; visited: number; rejected: number };
 };
 
 export default function AdminWeeklyCloseScreen() {
@@ -109,12 +109,12 @@ export default function AdminWeeklyCloseScreen() {
     const [startKey, setStartKey] = useState(initialWeek.startKey);
     const [endKey, setEndKey] = useState(initialWeek.endKey);
 
-    // ✅ ahora el filtro de usuarios es SELECTOR (no lista de chips)
+    // ✅ filtro de usuarios (selector)
     const [selectedUserId, setSelectedUserId] = useState<string>("ALL");
     const [userPickerOpen, setUserPickerOpen] = useState(false);
     const [qUser, setQUser] = useState("");
 
-    // ✅ monetización real semanal (clients.statusAt)
+    // ✅ monetización real semanal
     const [earnings, setEarnings] = useState<EarningsSummary>({
         rows: [],
         totalVisited: 0,
@@ -128,6 +128,21 @@ export default function AdminWeeklyCloseScreen() {
     const [pickerOpen, setPickerOpen] = useState(false);
     const [pickerTarget, setPickerTarget] = useState<"start" | "end">("start");
     const [pickerDate, setPickerDate] = useState<Date>(new Date());
+
+    // ✅ HOY (para no “mostrar futuro”)
+    const todayKey = useMemo(() => formatDayKeyFromDate(new Date()), []);
+
+    /**
+     * ✅ End efectivo = min(endKey, todayKey)
+     */
+    const endKeyEffective = useMemo(() => {
+        const s = startKey.trim();
+        const e = endKey.trim();
+        if (!isValidDayKey(s) || !isValidDayKey(e)) return e || todayKey;
+
+        const clamped = e > todayKey ? todayKey : e;
+        return clamped < s ? s : clamped;
+    }, [startKey, endKey, todayKey]);
 
     const openPicker = (target: "start" | "end") => {
         setPickerTarget(target);
@@ -186,28 +201,29 @@ export default function AdminWeeklyCloseScreen() {
     }, []);
 
     useEffect(() => {
-        const unsub = subscribeAdminClients(setClients);
+        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
         return () => unsub();
     }, []);
 
+    // ✅ eventos por rango (hasta endKeyEffective para evitar futuro)
     useEffect(() => {
         const s = startKey.trim();
-        const e = endKey.trim();
+        const e = endKeyEffective.trim();
         if (!isValidDayKey(s) || !isValidDayKey(e)) return;
 
-        const unsub = subscribeDailyEventsByRange(s, e, setEvents);
+        const unsub = subscribeDailyEventsByRange(s, e, (list) => setEvents(list ?? []));
         return () => unsub();
-    }, [startKey, endKey]);
+    }, [startKey, endKeyEffective]);
 
     useEffect(() => {
         const s = startKey.trim();
-        const e = endKey.trim();
+        const e = endKeyEffective.trim();
         if (!isValidDayKey(s) || !isValidDayKey(e)) return;
         if (!users.length) return;
 
         const unsub = subscribeEarningsByRange(s, e, users, setEarnings);
         return () => unsub();
-    }, [startKey, endKey, users]);
+    }, [startKey, endKeyEffective, users]);
 
     const userInfoById = useMemo(() => {
         const m = new Map<string, { name: string; email?: string }>();
@@ -231,6 +247,43 @@ export default function AdminWeeklyCloseScreen() {
         return u?.name?.trim() ? u.name : "Usuario";
     }, [selectedUserId, users]);
 
+    /**
+     * ✅ Mapas de clientes actuales (CLAVE para arreglar:
+     * - no contar eliminados
+     * - no contar eventos de clientes reasignados a otro usuario)
+     */
+    const clientAssignedToById = useMemo(() => {
+        const m = new Map<string, string>();
+        for (const c of clients) {
+            if (!c?.id) continue;
+            if (typeof c.assignedTo === "string" && c.assignedTo) m.set(c.id, c.assignedTo);
+        }
+        return m;
+    }, [clients]);
+
+    /**
+     * ✅ Pendientes SIN rango (estado actual)
+     * - SOLO clientes existentes (snapshot actual)
+     * - SOLO según assignedTo actual (si lo reasignaste, ya no cuenta al usuario anterior)
+     */
+    const pendingNowByUser = useMemo(() => {
+        const m: Record<string, number> = {};
+        for (const c of clients) {
+            if (!c?.id) continue;
+            const uid = c.assignedTo;
+            if (!uid) continue;
+            if (c.status !== "pending") continue;
+            if (selectedUserId !== "ALL" && uid !== selectedUserId) continue;
+
+            m[uid] = (m[uid] ?? 0) + 1;
+        }
+        return m;
+    }, [clients, selectedUserId]);
+
+    const pendingNowTotal = useMemo(() => {
+        return Object.values(pendingNowByUser).reduce((a, b) => a + b, 0);
+    }, [pendingNowByUser]);
+
     // último evento del día por cliente
     const lastEventByDayClient = useMemo(() => {
         const map = new Map<string, DailyEventDoc>();
@@ -239,58 +292,67 @@ export default function AdminWeeklyCloseScreen() {
             if (e.type !== "visited" && e.type !== "rejected" && e.type !== "pending") continue;
             if (!e.clientId || !e.dayKey) continue;
 
+            // ✅ no contar eventos de clientes que ya no existen en snapshot admin
+            const assignedNow = clientAssignedToById.get(e.clientId);
+            if (!assignedNow) continue;
+
             const key = `${e.dayKey}|${e.clientId}`;
             const prev = map.get(key);
 
             if (!prev || (e.createdAt ?? 0) > (prev.createdAt ?? 0)) map.set(key, e);
         }
         return map;
-    }, [events]);
+    }, [events, clientAssignedToById]);
 
     // ----------------------
     // Build day groups (operativo)
+    // - assigned/visited/rejected: POR RANGO
+    // - pendingNow: SIN rango (pero NO se suma por día; se muestra por usuario)
     // ----------------------
     const dayGroups: DayGroup[] = useMemo(() => {
         const s = startKey.trim();
-        const e = endKey.trim();
+        const e = endKeyEffective.trim();
         if (!isValidDayKey(s) || !isValidDayKey(e)) return [];
 
         const userFilter = selectedUserId === "ALL" ? null : selectedUserId;
 
-        const byDay: Record<
-            string,
-            Record<string, { assigned: number; visited: number; rejected: number }>
-        > = {};
+        const byDay: Record<string, Record<string, { assigned: number; visited: number; rejected: number }>> = {};
 
-        // 1) asignados por día (assignedDayKey)
+        // 1) asignados por día (assignedDayKey) — por rango + SOLO asignación actual
         for (const c of clients) {
             const uid = c.assignedTo;
             const dk = (c as any).assignedDayKey as string | undefined;
-            if (!uid || !dk) continue;
+            if (!uid || !dk || !c?.id) continue;
 
             if (dk < s || dk > e) continue;
             if (userFilter && uid !== userFilter) continue;
 
+            // ✅ SOLO si sigue asignado actualmente a ese uid (ya lo es, porque uid = c.assignedTo)
             if (!byDay[dk]) byDay[dk] = {};
             if (!byDay[dk][uid]) byDay[dk][uid] = { assigned: 0, visited: 0, rejected: 0 };
             byDay[dk][uid].assigned += 1;
         }
 
-        // 2) estado final del día por cliente
+        // 2) visited/rejected por día — por rango + SOLO si el cliente sigue asignado actualmente a ese usuario
         for (const ev of lastEventByDayClient.values()) {
             const dk = ev.dayKey;
             if (!dk) continue;
             if (dk < s || dk > e) continue;
 
-            const uid = ev.userId;
-            if (!uid) continue;
-            if (userFilter && uid !== userFilter) continue;
+            const cid = ev.clientId;
+            const uidEvent = ev.userId;
+            if (!cid || !uidEvent) continue;
+
+            const assignedNow = clientAssignedToById.get(cid);
+            if (!assignedNow) continue; // eliminado
+            if (assignedNow !== uidEvent) continue; // reasignado => no contar al usuario viejo
+            if (userFilter && uidEvent !== userFilter) continue;
 
             if (!byDay[dk]) byDay[dk] = {};
-            if (!byDay[dk][uid]) byDay[dk][uid] = { assigned: 0, visited: 0, rejected: 0 };
+            if (!byDay[dk][uidEvent]) byDay[dk][uidEvent] = { assigned: 0, visited: 0, rejected: 0 };
 
-            if (ev.type === "visited") byDay[dk][uid].visited += 1;
-            if (ev.type === "rejected") byDay[dk][uid].rejected += 1;
+            if (ev.type === "visited") byDay[dk][uidEvent].visited += 1;
+            if (ev.type === "rejected") byDay[dk][uidEvent].rejected += 1;
         }
 
         const dayKeys = Object.keys(byDay).sort((a, b) => (a < b ? 1 : -1));
@@ -300,7 +362,6 @@ export default function AdminWeeklyCloseScreen() {
 
             const userRows: UserRow[] = Object.entries(perUser).map(([uid, c]) => {
                 const info = userInfoById.get(uid);
-                const pending = Math.max(0, c.assigned - (c.visited + c.rejected));
 
                 return {
                     userId: uid,
@@ -309,10 +370,11 @@ export default function AdminWeeklyCloseScreen() {
                     assigned: c.assigned,
                     visited: c.visited,
                     rejected: c.rejected,
-                    pending,
+                    pendingNow: pendingNowByUser[uid] ?? 0, // ✅ SIN rango
                 };
             });
 
+            // orden por “actividad” del rango
             userRows.sort((a, b) => b.visited + b.rejected - (a.visited + a.rejected));
 
             const totals = userRows.reduce(
@@ -320,10 +382,9 @@ export default function AdminWeeklyCloseScreen() {
                     acc.assigned += r.assigned;
                     acc.visited += r.visited;
                     acc.rejected += r.rejected;
-                    acc.pending += r.pending;
                     return acc;
                 },
-                { assigned: 0, visited: 0, rejected: 0, pending: 0 }
+                { assigned: 0, visited: 0, rejected: 0 }
             );
 
             return {
@@ -333,38 +394,34 @@ export default function AdminWeeklyCloseScreen() {
                 totals,
             };
         });
-    }, [clients, lastEventByDayClient, selectedUserId, startKey, endKey, userInfoById]);
+    }, [
+        clients,
+        lastEventByDayClient,
+        selectedUserId,
+        startKey,
+        endKeyEffective,
+        userInfoById,
+        pendingNowByUser,
+        clientAssignedToById,
+    ]);
 
-    const globalTotals = useMemo(() => {
+    const rangeTotals = useMemo(() => {
         return dayGroups.reduce(
             (acc, g) => {
                 acc.assigned += g.totals.assigned;
                 acc.visited += g.totals.visited;
                 acc.rejected += g.totals.rejected;
-                acc.pending += g.totals.pending;
                 return acc;
             },
-            { assigned: 0, visited: 0, rejected: 0, pending: 0 }
+            { assigned: 0, visited: 0, rejected: 0 }
         );
     }, [dayGroups]);
 
     // ----------------------
     // UI atoms
     // ----------------------
-    const IconBtn = ({
-        icon,
-        onPress,
-        label,
-    }: {
-        icon: any;
-        onPress: () => void;
-        label: string;
-    }) => (
-        <Pressable
-            onPress={onPress}
-            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-            accessibilityLabel={label}
-        >
+    const IconBtn = ({ icon, onPress, label }: { icon: any; onPress: () => void; label: string }) => (
+        <Pressable onPress={onPress} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]} accessibilityLabel={label}>
             <Ionicons name={icon} size={18} color={COLORS.text} />
         </Pressable>
     );
@@ -388,15 +445,7 @@ export default function AdminWeeklyCloseScreen() {
         </View>
     );
 
-    const MiniPill = ({
-        icon,
-        color,
-        text,
-    }: {
-        icon: any;
-        color: string;
-        text: string;
-    }) => (
+    const MiniPill = ({ icon, color, text }: { icon: any; color: string; text: string }) => (
         <View style={[styles.miniPill, { borderColor: color + "33", backgroundColor: color + "12" }]}>
             <Ionicons name={icon} size={14} color={color} />
             <Text style={[styles.miniPillText, { color }]} numberOfLines={1}>
@@ -411,6 +460,7 @@ export default function AdminWeeklyCloseScreen() {
         const wk = weekRangeFromDate(new Date());
         setStartKey(wk.startKey);
         setEndKey(wk.endKey);
+        setExpandedDay(null);
     };
 
     const validRange = isValidDayKey(startKey) && isValidDayKey(endKey);
@@ -430,11 +480,15 @@ export default function AdminWeeklyCloseScreen() {
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
 
-            {/* Compact header (sin fecha extra arriba) */}
+            {/* Compact header */}
             <View style={[styles.header, { paddingTop: 0 }]}>
                 <View style={{ flex: 1 }}>
                     <Text style={styles.title}>Cierre semanal</Text>
-
+                    <Text style={styles.subtitle} numberOfLines={1}>
+                        Rango <Text style={styles.strong}>{startKey}</Text> → <Text style={styles.strong}>{endKey}</Text>
+                        <Text style={styles.dot}> · </Text>
+                        Contando hasta <Text style={styles.strong}>{endKeyEffective}</Text>
+                    </Text>
                 </View>
 
                 <View style={styles.moneyChip}>
@@ -445,17 +499,19 @@ export default function AdminWeeklyCloseScreen() {
                 <IconBtn icon="refresh-outline" onPress={setThisWeek} label="Esta semana" />
             </View>
 
-            {/* Icons-only row (ahorra espacio) */}
+            {/* Icons-only row
+          ✅ assigned/visited/rejected = por rango
+          ✅ pending = SIN rango (pendientes actuales)
+      */}
             <View style={styles.statsRow}>
-                <StatIcon icon="people-outline" color={COLORS.muted2} value={globalTotals.assigned} label="Asignados" />
-                <StatIcon icon="checkmark-circle-outline" color={COLORS.ok} value={globalTotals.visited} label="Visitados" />
-                <StatIcon icon="close-circle-outline" color={COLORS.bad} value={globalTotals.rejected} label="Rechazados" />
-                <StatIcon icon="time-outline" color={COLORS.warn} value={globalTotals.pending} label="Pendientes" />
+                <StatIcon icon="people-outline" color={COLORS.muted2} value={rangeTotals.assigned} label="Asignados (rango)" />
+                <StatIcon icon="checkmark-circle-outline" color={COLORS.ok} value={rangeTotals.visited} label="Visitados (rango)" />
+                <StatIcon icon="close-circle-outline" color={COLORS.bad} value={rangeTotals.rejected} label="Rechazados (rango)" />
+                <StatIcon icon="time-outline" color={COLORS.warn} value={pendingNowTotal} label="Pendientes (ahora)" />
             </View>
 
-            {/* Compact controls card */}
+            {/* Controls */}
             <View style={styles.card}>
-                {/* Rango + selector user en una sola fila */}
                 <View style={styles.controlsRow}>
                     <Pressable
                         onPress={() => openPicker("start")}
@@ -495,6 +551,12 @@ export default function AdminWeeklyCloseScreen() {
                 </View>
 
                 {!validRange ? <Text style={styles.warn}>Rango inválido. Usa YYYY-MM-DD.</Text> : null}
+
+                {/* ✅ mini hint */}
+                <Text style={styles.warn} numberOfLines={2}>
+                    Nota: Pendientes se calcula por estado actual (sin rango). Visitados/Rechazados/Asignados se calculan por rango, y se
+                    ignoran eventos de clientes eliminados o reasignados.
+                </Text>
             </View>
 
             {/* List */}
@@ -507,21 +569,17 @@ export default function AdminWeeklyCloseScreen() {
 
                     return (
                         <View style={styles.dayCard}>
-                            <Pressable
-                                onPress={() => toggleDay(item.dayKey)}
-                                style={({ pressed }) => [styles.dayTop, pressed && styles.pressed]}
-                            >
+                            <Pressable onPress={() => toggleDay(item.dayKey)} style={({ pressed }) => [styles.dayTop, pressed && styles.pressed]}>
                                 <View style={{ flex: 1, gap: 8 }}>
                                     <Text style={styles.dayTitle} numberOfLines={1}>
                                         {item.label}
                                     </Text>
 
-                                    {/* pillas compactas con icon + valor (casi sin texto) */}
+                                    {/* ✅ Día = SOLO métricas por rango (no ponemos pendientes aquí para no duplicar por día) */}
                                     <View style={styles.pillsRow}>
                                         <MiniPill icon="people-outline" color={COLORS.muted2} text={`${item.totals.assigned}`} />
                                         <MiniPill icon="checkmark" color={COLORS.okSoft} text={`${item.totals.visited}`} />
                                         <MiniPill icon="close" color={COLORS.badSoft} text={`${item.totals.rejected}`} />
-                                        <MiniPill icon="time" color={COLORS.warnSoft} text={`${item.totals.pending}`} />
                                     </View>
                                 </View>
 
@@ -547,13 +605,13 @@ export default function AdminWeeklyCloseScreen() {
                                                 )}
                                             </View>
 
-                                            {/* compacto: solo números */}
+                                            {/* ✅ Aquí sí mostramos Pending NOW sin rango */}
                                             <View style={styles.userNumsWrap}>
                                                 <Text style={styles.userNums} numberOfLines={1}>
-                                                    {u.assigned} · {u.visited} · {u.rejected} · {u.pending}
+                                                    {u.assigned} · {u.visited} · {u.rejected} · {u.pendingNow}
                                                 </Text>
                                                 <Text style={styles.userNumsHint} numberOfLines={1}>
-                                                    A · V · R · P
+                                                    A(rango) · V · R · P(ahora)
                                                 </Text>
                                             </View>
                                         </View>
@@ -567,7 +625,7 @@ export default function AdminWeeklyCloseScreen() {
                     <View style={styles.empty}>
                         <Ionicons name="time-outline" size={22} color={COLORS.muted} />
                         <Text style={styles.emptyText}>
-                            {validRange ? "No hay datos en este rango." : "Corrige el rango para ver resultados."}
+                            {validRange ? "No hay datos en este rango (hasta hoy)." : "Corrige el rango para ver resultados."}
                         </Text>
                     </View>
                 }
@@ -626,16 +684,10 @@ export default function AdminWeeklyCloseScreen() {
                         </Pressable>
                     </View>
 
-                    {/* Search mini */}
                     <View style={styles.searchMini}>
                         <Ionicons name="search-outline" size={16} color={COLORS.muted} />
-                        <Text
-                            // NOTE: sin TextInput para mantener imports mínimos? (pero ya lo quitamos arriba)
-                            // Querías selector y ahorrar; aquí lo mantenemos simple con botones.
-                            // Si quieres búsqueda real, dime y lo meto con TextInput.
-                            style={styles.searchHint}
-                        >
-                            Tip: toca “Todos” o el usuario (ordenado). Si quieres búsqueda aquí, te lo dejo con TextInput.
+                        <Text style={styles.searchHint}>
+                            Tip: toca “Todos” o el usuario. (Si quieres búsqueda real aquí con TextInput, te lo dejo igual que en otras pantallas.)
                         </Text>
                     </View>
 
@@ -720,7 +772,6 @@ const styles = StyleSheet.create({
     title: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.3 },
     subtitle: { marginTop: 2, fontSize: 12, fontWeight: "900", color: COLORS.muted },
     strong: { color: COLORS.text, fontWeight: "900" },
-    subMuted: { color: COLORS.muted, fontWeight: "900" },
     dot: { color: COLORS.muted, fontWeight: "900" },
 
     moneyChip: {
@@ -925,8 +976,6 @@ const styles = StyleSheet.create({
     },
     userSheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
 
-    // NOTE: para ahorrar imports, aquí dejé un “hint” en vez de TextInput.
-    // Si quieres búsqueda real, dime y lo agrego con TextInput (como en las otras pantallas).
     searchMini: {
         flexDirection: "row",
         alignItems: "center",

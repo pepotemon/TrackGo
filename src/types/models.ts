@@ -55,7 +55,11 @@ export type ClientDoc = {
     createdAt: number; // ms
     updatedAt: number; // ms
 
-    note?: string;
+    /**
+     * ✅ Motivo / nota
+     * Ej: "clavo" | "localización" | "otro" | null
+     */
+    note?: string | null;
 };
 
 export type DailyEventType = "visited" | "rejected" | "pending";
@@ -69,7 +73,7 @@ export type DailyEventDoc = {
 
     type: DailyEventType;
 
-    userId: string;     // actor que hizo el cambio
+    userId: string; // actor que hizo el cambio
     clientId: string;
 
     // snapshot opcional (debug / historial)
@@ -78,6 +82,12 @@ export type DailyEventDoc = {
     business?: string;
     address?: string;
 
-    createdAt: number;  // ms
-    dayKey: string;     // "YYYY-MM-DD"
+    /**
+     * ✅ Motivo / nota (opcional)
+     * Ej: "clavo" | "localización" | "otro"
+     */
+    note?: string | null;
+
+    createdAt: number; // ms
+    dayKey: string; // "YYYY-MM-DD"
 };

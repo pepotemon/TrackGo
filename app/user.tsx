@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Clipboard from "expo-clipboard";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -6,6 +7,7 @@ import {
     Alert,
     FlatList,
     Linking,
+    Modal,
     Pressable,
     StatusBar,
     StyleSheet,
@@ -14,12 +16,14 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { useAuth } from "../src/auth/useAuth";
 import { subscribeUserClients, updateClientStatus } from "../src/data/repositories/clientsRepo";
 import { dayKeyFromMs, subscribeDailyEventsByDay } from "../src/data/repositories/dailyEventsRepo";
 import type { ClientDoc, DailyEventDoc } from "../src/types/models";
 
 type Filter = "pending" | "visited" | "rejected" | "all";
+type RejectReason = "clavo" | "localizacion" | "otro";
 
 function safeText(x?: string) {
     return (x ?? "").toLowerCase();
@@ -84,6 +88,23 @@ function buildNewClientToast(c: ClientDoc) {
     return label ? `Cliente nuevo · ${label}` : "Cliente nuevo";
 }
 
+function pickFirstName(full?: string) {
+    const t = (full ?? "").trim();
+    if (!t) return "";
+    return t.split(/\s+/)[0] ?? "";
+}
+
+/**
+ * ✅ Notas locales por usuario
+ * - key por usuario: trackgo:userNotes:<uid>
+ * - value: { [clientId]: "nota..." }
+ */
+function notesStorageKey(uid: string) {
+    return `trackgo:userNotes:${uid}`;
+}
+
+type NotesMap = Record<string, string>;
+
 export default function UserHome() {
     const { firebaseUser, profile, loading, logout } = useAuth();
     const router = useRouter();
@@ -104,6 +125,18 @@ export default function UserHome() {
     const [toasts, setToasts] = useState<Toast[]>([]);
     const prevClientIdsRef = useRef<Set<string>>(new Set());
     const initialClientsLoadedRef = useRef(false);
+
+    // ✅ Notas locales (solo UI)
+    const [notesByClientId, setNotesByClientId] = useState<NotesMap>({});
+    const [noteModalOpen, setNoteModalOpen] = useState(false);
+    const [noteClientId, setNoteClientId] = useState<string | null>(null);
+    const [noteDraft, setNoteDraft] = useState("");
+    const saveNotesTimer = useRef<any>(null);
+
+    const helloName = useMemo(() => {
+        const n = pickFirstName(profile?.name ?? "");
+        return n ? ` · Hola ${n}` : "";
+    }, [profile?.name]);
 
     // -------------------------
     // Guard de sesión / rol
@@ -128,6 +161,55 @@ export default function UserHome() {
     }, [loading, firebaseUser?.uid, profile?.role, profile?.active]);
 
     // -------------------------
+    // Load notes (local) por usuario
+    // -------------------------
+    useEffect(() => {
+        if (!firebaseUser?.uid) return;
+
+        let mounted = true;
+        (async () => {
+            try {
+                const raw = await AsyncStorage.getItem(notesStorageKey(firebaseUser.uid));
+                if (!mounted) return;
+                if (!raw) {
+                    setNotesByClientId({});
+                    return;
+                }
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === "object") setNotesByClientId(parsed as NotesMap);
+                else setNotesByClientId({});
+            } catch {
+                setNotesByClientId({});
+            }
+        })();
+
+        return () => {
+            mounted = false;
+        };
+    }, [firebaseUser?.uid]);
+
+    // -------------------------
+    // Persist notes (debounced)
+    // -------------------------
+    useEffect(() => {
+        if (!firebaseUser?.uid) return;
+
+        if (saveNotesTimer.current) clearTimeout(saveNotesTimer.current);
+
+        saveNotesTimer.current = setTimeout(async () => {
+            try {
+                await AsyncStorage.setItem(notesStorageKey(firebaseUser.uid), JSON.stringify(notesByClientId ?? {}));
+            } catch {
+                // silent
+            }
+        }, 350);
+
+        return () => {
+            if (saveNotesTimer.current) clearTimeout(saveNotesTimer.current);
+        };
+    }, [notesByClientId, firebaseUser?.uid]);
+
+    // -------------------------
     // Subscripción a clients asignados + 🔔 detectar nuevos
     // -------------------------
     useEffect(() => {
@@ -137,7 +219,6 @@ export default function UserHome() {
             setClients(list);
 
             // ---- NEW CLIENT NOTIFICATION (in-app)
-            // Evita notificar en la primera carga (cuando la sesión ya estaba guardada).
             const prev = prevClientIdsRef.current;
 
             if (!initialClientsLoadedRef.current) {
@@ -158,7 +239,6 @@ export default function UserHome() {
             for (const c of list) prev.add(c.id);
 
             if (newOnes.length) {
-                // Muestra toasts (máx 2 a la vez para no spamear la UI)
                 const now = Date.now();
                 const nextToasts: Toast[] = newOnes.slice(0, 2).map((c) => ({
                     id: `${c.id}-${now}`,
@@ -168,13 +248,27 @@ export default function UserHome() {
 
                 setToasts((prevToasts) => [...nextToasts, ...prevToasts].slice(0, 3));
 
-                // auto-dismiss
                 for (const t of nextToasts) {
                     setTimeout(() => {
                         setToasts((p) => p.filter((x) => x.id !== t.id));
                     }, 3800);
                 }
             }
+
+            // ✅ limpieza suave de notas huérfanas (si el cliente ya no está asignado)
+            // (no obligatorio, pero evita crecer infinito)
+            setNotesByClientId((prevNotes) => {
+                const alive = new Set(list.map((c) => c.id));
+                let changed = false;
+                const next: NotesMap = { ...prevNotes };
+                for (const id of Object.keys(next)) {
+                    if (!alive.has(id)) {
+                        delete next[id];
+                        changed = true;
+                    }
+                }
+                return changed ? next : prevNotes;
+            });
         });
 
         return () => unsub();
@@ -267,7 +361,6 @@ export default function UserHome() {
                 return hay.includes(queryText);
             })
             .sort((a, b) => {
-                // Pendientes primero
                 const ap = a.status === "pending" ? 0 : 1;
                 const bp = b.status === "pending" ? 0 : 1;
                 if (ap !== bp) return ap - bp;
@@ -276,7 +369,7 @@ export default function UserHome() {
     }, [clients, filter, q]);
 
     // -------------------------
-    // Acciones externas (✅ FIX APK: openURL directo + try/catch)
+    // Acciones externas
     // -------------------------
     const openWhatsApp = async (phone: string) => {
         const waDigits = normalizeBRPhoneToWa(phone);
@@ -289,7 +382,7 @@ export default function UserHome() {
 
         try {
             await Linking.openURL(url);
-        } catch (e) {
+        } catch {
             Alert.alert("WhatsApp", "No se pudo abrir WhatsApp en este dispositivo.");
         }
     };
@@ -303,7 +396,7 @@ export default function UserHome() {
 
         try {
             await Linking.openURL(url);
-        } catch (e) {
+        } catch {
             Alert.alert("Maps", "No se pudo abrir el link de Maps.");
         }
     };
@@ -315,50 +408,100 @@ export default function UserHome() {
     };
 
     // -------------------------
-    // Estado: solo 1 botón cuando ya está marcado
+    // Status handlers
     // -------------------------
-    const confirmSetStatus = (client: ClientDoc, nextStatus: "pending" | "visited" | "rejected") => {
-        const title =
-            nextStatus === "pending"
-                ? "Volver a pendiente"
-                : nextStatus === "visited"
-                    ? "Marcar como visitado"
-                    : "Marcar como rechazado";
+    const doUpdateStatus = async (client: ClientDoc, nextStatus: "pending" | "visited" | "rejected", reason?: RejectReason) => {
+        if (!firebaseUser || !client.id) return;
 
-        const msg =
-            nextStatus === "pending"
-                ? "¿Quieres quitar el estado actual y volver a Pendiente?"
-                : nextStatus === "visited"
-                    ? "¿Confirmas que ya fue visitado?"
-                    : "¿Confirmas que fue rechazado?";
+        const snapshot = {
+            phone: client.phone,
+            name: ((client as any).name ?? "").trim() || undefined,
+            business: ((client as any).business ?? "").trim() || undefined,
+        };
+
+        try {
+            setBusyId(client.id);
+            await updateClientStatus(client.id, nextStatus, firebaseUser.uid, snapshot, reason);
+        } catch (e: any) {
+            Alert.alert("Error", e?.message ?? "No se pudo actualizar el estado.");
+        } finally {
+            setBusyId(null);
+        }
+    };
+
+    const confirmRejectedWithReason = (client: ClientDoc) => {
+        Alert.alert("Rechazado por", "Selecciona el motivo:", [
+            { text: "Cancelar", style: "cancel" },
+            { text: "Clavo", onPress: () => doUpdateStatus(client, "rejected", "clavo") },
+            { text: "Localización", onPress: () => doUpdateStatus(client, "rejected", "localizacion") },
+            { text: "Otro", onPress: () => doUpdateStatus(client, "rejected", "otro") },
+        ]);
+    };
+
+    const confirmSetStatus = (client: ClientDoc, nextStatus: "pending" | "visited" | "rejected") => {
+        if (nextStatus === "rejected") {
+            confirmRejectedWithReason(client);
+            return;
+        }
+
+        const title = nextStatus === "pending" ? "Volver a pendiente" : "Marcar como visitado";
+        const msg = nextStatus === "pending" ? "¿Quieres quitar el estado actual y volver a Pendiente?" : "¿Confirmas que ya fue visitado?";
 
         Alert.alert(title, msg, [
             { text: "Cancelar", style: "cancel" },
-            {
-                text: "Confirmar",
-                style: "default",
-                onPress: async () => {
-                    if (!firebaseUser || !client.id) return;
-                    try {
-                        setBusyId(client.id);
-                        await updateClientStatus(client.id, nextStatus, firebaseUser.uid);
-                    } catch (e: any) {
-                        Alert.alert("Error", e?.message ?? "No se pudo actualizar el estado.");
-                    } finally {
-                        setBusyId(null);
-                    }
-                },
-            },
+            { text: "Confirmar", style: "default", onPress: () => doUpdateStatus(client, nextStatus) },
         ]);
     };
 
     const clearSearch = () => setQ("");
 
     // -------------------------
+    // Notes UI handlers (LOCAL)
+    // -------------------------
+    const openNoteModal = (clientId: string) => {
+        const existing = (notesByClientId?.[clientId] ?? "").trim();
+        setNoteClientId(clientId);
+        setNoteDraft(existing);
+        setNoteModalOpen(true);
+    };
+
+    const closeNoteModal = () => {
+        setNoteModalOpen(false);
+        setNoteClientId(null);
+        setNoteDraft("");
+    };
+
+    const saveNote = () => {
+        const cid = noteClientId;
+        if (!cid) return;
+
+        const text = (noteDraft ?? "").trim();
+
+        setNotesByClientId((prev) => {
+            const next: NotesMap = { ...(prev ?? {}) };
+            if (!text) delete next[cid];
+            else next[cid] = text;
+            return next;
+        });
+
+        closeNoteModal();
+    };
+
+    const clearNote = () => {
+        const cid = noteClientId;
+        if (!cid) return;
+
+        setNotesByClientId((prev) => {
+            const next: NotesMap = { ...(prev ?? {}) };
+            delete next[cid];
+            return next;
+        });
+
+        closeNoteModal();
+    };
+
+    // -------------------------
     // Filters UI (minimal)
-    // - Pendientes: texto + badge
-    // - Visitados/Rechazados: solo icono + badge
-    // - Todos: solo icono + badge
     // -------------------------
     const MiniChip = ({
         active,
@@ -415,11 +558,7 @@ export default function UserHome() {
         <Pressable
             onPress={onPress}
             disabled={disabled}
-            style={({ pressed }) => [
-                styles.iconBtn,
-                disabled && styles.iconBtnDisabled,
-                pressed && !disabled && styles.iconBtnPressed,
-            ]}
+            style={({ pressed }) => [styles.iconBtn, disabled && styles.iconBtnDisabled, pressed && !disabled && styles.iconBtnPressed]}
             accessibilityLabel={label}
         >
             <Ionicons name={icon} size={18} color={COLORS.text} />
@@ -466,9 +605,20 @@ export default function UserHome() {
         const isBusy = busyId === item.id;
 
         const isPending = item.status === "pending";
+        const localNote = (notesByClientId?.[item.id] ?? "").trim();
 
         return (
             <View style={styles.card}>
+                {/* ✅ Nota local (solo user) */}
+                {localNote ? (
+                    <View style={styles.noteBanner}>
+                        <Ionicons name="bookmark-outline" size={16} color={COLORS.pending} />
+                        <Text style={styles.noteText} numberOfLines={3}>
+                            {localNote}
+                        </Text>
+                    </View>
+                ) : null}
+
                 <View style={styles.cardTop}>
                     <View style={styles.cardTitleWrap}>
                         <Text numberOfLines={1} style={styles.clientName}>
@@ -481,8 +631,24 @@ export default function UserHome() {
                         ) : null}
                     </View>
 
-                    <View style={[styles.pill, statusPillStyle(item.status)]}>
-                        <Text style={[styles.pillText, statusPillTextStyle(item.status)]}>{statusLabel(item.status)}</Text>
+                    <View style={styles.cardTopRight}>
+                        {/* ✅ botón de nota */}
+                        <Pressable
+                            onPress={() => openNoteModal(item.id)}
+                            disabled={isBusy}
+                            style={({ pressed }) => [
+                                styles.noteBtn,
+                                isBusy && styles.noteBtnDisabled,
+                                pressed && !isBusy && styles.noteBtnPressed,
+                            ]}
+                            accessibilityLabel="Nota del cliente"
+                        >
+                            <Ionicons name={localNote ? "create" : "create-outline"} size={16} color={COLORS.text} />
+                        </Pressable>
+
+                        <View style={[styles.pill, statusPillStyle(item.status)]}>
+                            <Text style={[styles.pillText, statusPillTextStyle(item.status)]}>{statusLabel(item.status)}</Text>
+                        </View>
                     </View>
                 </View>
 
@@ -506,18 +672,8 @@ export default function UserHome() {
 
                 <View style={styles.actionsRow}>
                     <View style={styles.actionsLeft}>
-                        <IconBtn
-                            icon="logo-whatsapp"
-                            label="Abrir WhatsApp"
-                            onPress={() => openWhatsApp(phone)}
-                            disabled={!phone || isBusy}
-                        />
-                        <IconBtn
-                            icon="map-outline"
-                            label="Abrir Maps"
-                            onPress={() => openMaps(mapsUrl)}
-                            disabled={!mapsUrl || isBusy}
-                        />
+                        <IconBtn icon="logo-whatsapp" label="Abrir WhatsApp" onPress={() => openWhatsApp(phone)} disabled={!phone || isBusy} />
+                        <IconBtn icon="map-outline" label="Abrir Maps" onPress={() => openMaps(mapsUrl)} disabled={!mapsUrl || isBusy} />
                         <IconBtn icon="copy-outline" label="Copiar datos" onPress={() => copyClient(item)} disabled={isBusy} />
                     </View>
 
@@ -563,7 +719,10 @@ export default function UserHome() {
 
             <View style={[styles.header, { paddingTop: Math.max(12, insets.top + 8) }]}>
                 <View style={styles.headerLeft}>
-                    <Text style={styles.hTitle}>TrackGo</Text>
+                    <Text style={styles.hTitle}>
+                        TrackGo<Text style={styles.hTitleSoft}>{helloName}</Text>
+                    </Text>
+
                     <Text style={styles.hSub}>
                         Hoy: <Text style={styles.hSubStrong}>{todayCounts.visited}</Text> visitados ·{" "}
                         <Text style={styles.hSubStrong}>{todayCounts.rejected}</Text> rechazados
@@ -650,10 +809,46 @@ export default function UserHome() {
                 }
             />
 
-            {/* ✅ listo para notificaciones del sistema (push/local)
-          - aquí solo implementamos "toast" in-app.
-          - cuando quieras push real: integra expo-notifications y dispara una localNotification
-            al detectar newOnes.length > 0 (con permisos y channel Android). */}
+            {/* ✅ Modal Nota (local) */}
+            <Modal visible={noteModalOpen} transparent animationType="fade" onRequestClose={closeNoteModal}>
+                <Pressable style={styles.modalBackdrop} onPress={closeNoteModal} />
+                <View style={styles.modalCard}>
+                    <View style={styles.modalHeader}>
+                        <Text style={styles.modalTitle}>Nota del cliente</Text>
+                        <Pressable onPress={closeNoteModal} style={({ pressed }) => [styles.modalClose, pressed && styles.modalClosePressed]}>
+                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        </Pressable>
+                    </View>
+
+                    <TextInput
+                        value={noteDraft}
+                        onChangeText={setNoteDraft}
+                        placeholder="Ej: Volver a las 5pm / Hablar con el dueño / Está ocupado por la mañana…"
+                        placeholderTextColor={COLORS.muted}
+                        style={styles.noteInput}
+                        multiline
+                    />
+
+                    <View style={styles.modalActions}>
+                        <Pressable
+                            onPress={clearNote}
+                            style={({ pressed }) => [styles.modalBtn, styles.modalBtnDanger, pressed && styles.modalBtnPressed]}
+                        >
+                            <Ionicons name="trash-outline" size={18} color={COLORS.rejected} />
+                            <Text style={styles.modalBtnTextDanger}>Borrar</Text>
+                        </Pressable>
+
+                        <Pressable onPress={saveNote} style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, pressed && styles.modalBtnPressed]}>
+                            <Ionicons name="save-outline" size={18} color={COLORS.text} />
+                            <Text style={styles.modalBtnText}>Guardar</Text>
+                        </Pressable>
+                    </View>
+
+                    <Text style={styles.modalHint}>
+                        * Esta nota se guarda solo en tu teléfono. El admin no la ve.
+                    </Text>
+                </View>
+            </Modal>
         </SafeAreaView>
     );
 }
@@ -716,6 +911,7 @@ const styles = StyleSheet.create({
     },
     headerLeft: { flex: 1, gap: 2 },
     hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.5 },
+    hTitleSoft: { color: COLORS.muted, fontWeight: "900" },
     hSub: { color: COLORS.muted, fontSize: 13, fontWeight: "700", marginTop: 2 },
     hSubStrong: { color: COLORS.text, fontWeight: "900" },
     hErr: { marginTop: 6, color: COLORS.rejected, fontSize: 12, fontWeight: "800" },
@@ -804,10 +1000,45 @@ const styles = StyleSheet.create({
         gap: 12,
     },
 
+    // ✅ note banner
+    noteBanner: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 10,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(251,191,36,0.24)",
+        backgroundColor: "rgba(251,191,36,0.10)",
+    },
+    noteText: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "800",
+        opacity: 0.95,
+    },
+
     cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
     cardTitleWrap: { flex: 1, gap: 2 },
     clientName: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
     clientBusiness: { color: COLORS.muted, fontSize: 13, fontWeight: "700" },
+
+    cardTopRight: { flexDirection: "row", alignItems: "center", gap: 10 },
+
+    noteBtn: {
+        width: 38,
+        height: 28,
+        borderRadius: 12,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.12)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    noteBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
+    noteBtnDisabled: { opacity: 0.45 },
 
     pill: {
         paddingHorizontal: 10,
@@ -867,4 +1098,66 @@ const styles = StyleSheet.create({
 
     empty: { marginTop: 40, alignItems: "center", gap: 10 },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "800" },
+
+    // ✅ modal note
+    modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
+    modalCard: {
+        position: "absolute",
+        left: 16,
+        right: 16,
+        bottom: 16,
+        backgroundColor: COLORS.card,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        padding: 14,
+        gap: 12,
+    },
+    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+    modalTitle: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
+    modalClose: {
+        width: 40,
+        height: 40,
+        borderRadius: 14,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.12)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    modalClosePressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
+
+    noteInput: {
+        minHeight: 110,
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        paddingVertical: 12,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "700",
+        textAlignVertical: "top",
+    },
+
+    modalActions: { flexDirection: "row", gap: 10 },
+    modalBtn: {
+        flex: 1,
+        height: 48,
+        borderRadius: 14,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.12)",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+    },
+    modalBtnPrimary: { backgroundColor: "rgba(255,255,255,0.06)" },
+    modalBtnDanger: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.28)" },
+    modalBtnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
+    modalBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
+    modalBtnTextDanger: { color: COLORS.rejected, fontSize: 13, fontWeight: "900" },
+    modalHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.9 },
 });

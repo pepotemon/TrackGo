@@ -1,3 +1,4 @@
+// src/data/repositories/clientsRepo.ts
 import {
     addDoc,
     deleteDoc,
@@ -37,54 +38,100 @@ export async function createClient(input: Omit<ClientDoc, "id">) {
  * ✅ Actualiza status del client + registra evento diario (SIN INFLAR)
  *
  * FIXES:
- * 1) Si status === "pending": limpia statusBy/statusAt (null) para que pending sea real
+ * 1) Si status === "pending": limpia statusBy/statusAt y también limpia rejectedReason/note.
  * 2) dailyEvents idempotente por día y cliente: eventId = dayKey_clientId
  *    (evita duplicar si cambia actor o si togglea varias veces)
  *
- * Nota: si tu regla de negocio quiere conservar quién hizo el cambio aunque sea pending,
- * lo guardamos en el dailyEvent.userId (actor), pero NO en el client (porque pending no debe contar).
+ * EXTRA:
+ * - Soporta "rechazado por": "clavo" | "localizacion" | "otro"
+ * - Guarda el motivo en:
+ *   - client.rejectedReason
+ *   - dailyEvent.rejectedReason
+ *
+ * ✅ Compat: para arreglar tu error TS "Expected 3-4 arguments, but got 5"
+ * aceptamos un 5to argumento opcional (string u objeto).
  */
 export async function updateClientStatus(
     clientId: string,
     status: ClientStatus,
     actorId: string,
-    snapshot?: { phone?: string; name?: string; business?: string }
+    snapshot?: { phone?: string; name?: string; business?: string; address?: string },
+    extra?:
+        | string
+        | {
+            rejectedReason?: "clavo" | "localizacion" | "otro" | string;
+            note?: string; // texto libre opcional
+        }
 ) {
     const now = Date.now();
     const dayKey = dayKeyFromMs(now);
 
+    const rejectedReason =
+        status === "rejected"
+            ? typeof extra === "string"
+                ? extra
+                : extra?.rejectedReason
+            : null;
+
+    const note =
+        status === "rejected"
+            ? typeof extra === "string"
+                ? null // si te pasan string, asumimos que es reason (no note)
+                : extra?.note ?? null
+            : null;
+
     const batch = writeBatch(db);
 
     // 1) update client (estado actual)
-    const clientPatch =
+    const clientPatch: any =
         status === "pending"
             ? {
                 status: "pending" as const,
-                statusBy: null, // ✅ limpiar
-                statusAt: null, // ✅ limpiar
+                statusBy: null,
+                statusAt: null,
+                rejectedReason: null,
+                note: null,
                 updatedAt: now,
             }
-            : {
-                status,
-                statusBy: actorId,
-                statusAt: now,
-                updatedAt: now,
-            };
+            : status === "visited"
+                ? {
+                    status: "visited" as const,
+                    statusBy: actorId,
+                    statusAt: now,
+                    rejectedReason: null,
+                    note: null,
+                    updatedAt: now,
+                }
+                : {
+                    status: "rejected" as const,
+                    statusBy: actorId,
+                    statusAt: now,
+                    rejectedReason: (rejectedReason ?? "otro") as string,
+                    note: note, // null o string
+                    updatedAt: now,
+                };
 
-    batch.update(docRef.client(clientId), stripUndefined(clientPatch as any));
+    batch.update(docRef.client(clientId), stripUndefined(clientPatch));
 
     // 2) daily event (idempotente por día+cliente)
-    // ✅ 1 evento por cliente por día (se actualiza con merge si cambia tipo)
     const eventId = `${dayKey}_${clientId}`;
 
-    const event = stripUndefined({
+    const event: any = stripUndefined({
         type: status, // "pending" | "visited" | "rejected"
         userId: actorId,
         clientId,
+
+        // snapshot opcional
         phone: snapshot?.phone,
         name: snapshot?.name,
         business: snapshot?.business,
-        createdAt: now, // si vuelve a tocar, se actualiza
+        address: snapshot?.address,
+
+        // motivo / nota solo si rejected
+        rejectedReason: status === "rejected" ? (rejectedReason ?? "otro") : null,
+        note: status === "rejected" ? note : null,
+
+        createdAt: now, // si vuelve a tocar, se actualiza con merge
         dayKey,
     });
 
@@ -99,10 +146,8 @@ export async function updateClientStatus(
  * REGLA DE NEGOCIO:
  * - Al reasignar, el cliente vuelve a "pending"
  * - Limpia statusBy/statusAt para que no herede "rejected/visited" del usuario anterior
+ * - Limpia rejectedReason/note
  * - updatedAt se actualiza para que suba en el listado
- *
- * (Opcional) Si quieres también “marcar” que fue reiniciado, lo ideal sería un campo extra
- * tipo resetAt/resetBy, pero aquí lo dejamos simple.
  */
 export async function assignClient(clientId: string, userId: string) {
     const now = Date.now();
@@ -114,10 +159,11 @@ export async function assignClient(clientId: string, userId: string) {
             assignedAt: now,
             assignedDayKey: dayKeyFromMs(now),
 
-            // ✅ RESET de estado al reasignar
             status: "pending",
             statusBy: null,
             statusAt: null,
+            rejectedReason: null,
+            note: null,
 
             updatedAt: now,
         } as any)
@@ -127,9 +173,7 @@ export async function assignClient(clientId: string, userId: string) {
 /**
  * Admin realtime subscription
  */
-export function subscribeAdminClients(
-    callback: (clients: ClientDoc[]) => void
-): Unsubscribe {
+export function subscribeAdminClients(callback: (clients: ClientDoc[]) => void): Unsubscribe {
     const q = query(col.clients, orderBy("updatedAt", "desc"), limit(200));
 
     return onSnapshot(
@@ -154,7 +198,6 @@ export async function updateClientFields(
         phone: string;
         mapsUrl: string;
         address?: string;
-        // (si algún día quieres permitir editar assignedTo aquí, lo agregamos, pero ahora no)
     }
 ) {
     await updateDoc(
@@ -174,16 +217,8 @@ export async function deleteClient(clientId: string) {
 /**
  * User realtime subscription
  */
-export function subscribeUserClients(
-    userId: string,
-    callback: (clients: ClientDoc[]) => void
-): Unsubscribe {
-    const q = query(
-        col.clients,
-        where("assignedTo", "==", userId),
-        orderBy("updatedAt", "desc"),
-        limit(200)
-    );
+export function subscribeUserClients(userId: string, callback: (clients: ClientDoc[]) => void): Unsubscribe {
+    const q = query(col.clients, where("assignedTo", "==", userId), orderBy("updatedAt", "desc"), limit(200));
 
     return onSnapshot(
         q,

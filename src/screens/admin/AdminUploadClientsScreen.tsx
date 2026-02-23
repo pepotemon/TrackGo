@@ -27,11 +27,11 @@ import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, UserDoc } from "../../types/models";
 
 function normalizePhone(raw: string) {
-    return raw.replace(/\D+/g, "");
+    return (raw ?? "").replace(/\D+/g, "");
 }
 
 function looksLikeMapsUrl(url: string) {
-    const u = url.trim().toLowerCase();
+    const u = (url ?? "").trim().toLowerCase();
     return u.includes("maps") || u.includes("goo.gl") || u.includes("google.com");
 }
 
@@ -53,11 +53,24 @@ type PickerMode = "create" | "assignExisting" | "edit";
 
 type Section = {
     key: string; // userId o "UNASSIGNED"
-    title: string; // nombre + email
-    subtitle?: string;
+    title: string; // nombre (sin UID)
+    subtitle?: string; // email
     totals: { total: number; pending: number; visited: number; rejected: number };
     data: ClientDoc[];
 };
+
+function getRejectReason(c: ClientDoc): string | null {
+    const anyC: any = c as any;
+    const rr = (anyC.rejectedReason ?? "").toString().trim().toLowerCase();
+    const note = (c.note ?? "").toString().trim().toLowerCase();
+
+    const val = rr || note;
+    if (!val) return null;
+
+    // normaliza acentos / variantes
+    if (val === "localización") return "localizacion";
+    return val;
+}
 
 export default function AdminUploadClientsScreen() {
     const insets = useSafeAreaInsets();
@@ -71,6 +84,9 @@ export default function AdminUploadClientsScreen() {
 
     // Busy
     const [busyId, setBusyId] = useState<string | null>(null);
+
+    // Acordeón: quién está expandido
+    const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set(["UNASSIGNED"]));
 
     // Modals
     const [createOpen, setCreateOpen] = useState(false);
@@ -115,7 +131,7 @@ export default function AdminUploadClientsScreen() {
     }, []);
 
     // -------------------------
-    // users list (eager) -> evita mostrar UID en "Asignado"
+    // users list (eager)
     // -------------------------
     const reloadUsers = async () => {
         if (usersLoading) return;
@@ -158,6 +174,19 @@ export default function AdminUploadClientsScreen() {
         return m;
     }, [users]);
 
+    // -------------------------
+    // pending count por usuario (para badges)
+    // -------------------------
+    const pendingByUser = useMemo(() => {
+        const m = new Map<string, number>();
+        for (const c of clients) {
+            if (c.status !== "pending") continue;
+            const k = c.assignedTo ? c.assignedTo : "UNASSIGNED";
+            m.set(k, (m.get(k) ?? 0) + 1);
+        }
+        return m;
+    }, [clients]);
+
     const counts = useMemo(() => {
         const pending = clients.filter((c) => c.status === "pending").length;
         const visited = clients.filter((c) => c.status === "visited").length;
@@ -166,21 +195,32 @@ export default function AdminUploadClientsScreen() {
     }, [clients]);
 
     // -------------------------
-    // Search (sin UID visible)
+    // Search: si coincide con un usuario, mostramos su sección completa
+    // y si coincide con cliente, filtramos por campos de cliente (incluye teléfono)
     // -------------------------
     const filteredClients = useMemo(() => {
         const qt = q.trim().toLowerCase();
         if (!qt) return clients;
 
+        // usuarios que matchean el search -> incluir todos sus clientes
+        const matchedUserIds = new Set<string>();
+        for (const u of users) {
+            const hayU = `${safeText(u.name)} ${safeText(u.email)}`;
+            if (hayU.includes(qt)) matchedUserIds.add(u.id);
+        }
+
         return clients.filter((c) => {
+            if (c.assignedTo && matchedUserIds.has(c.assignedTo)) return true;
+
             const name = safeText((c as any).name);
             const business = safeText((c as any).business);
             const assigneeLabel = c.assignedTo ? safeText(userLabelById.get(c.assignedTo) ?? "") : "sin asignar";
 
+            // ✅ teléfono entra directo, y también address/maps/name/business
             const hay = `${safeText(c.phone)} ${safeText(c.address)} ${safeText(c.mapsUrl)} ${name} ${business} ${assigneeLabel}`;
             return hay.includes(qt);
         });
-    }, [clients, q, userLabelById]);
+    }, [clients, q, users, userLabelById]);
 
     // -------------------------
     // Group by user (SectionList)
@@ -263,6 +303,15 @@ export default function AdminUploadClientsScreen() {
     // -------------------------
     // Helpers (UI)
     // -------------------------
+    const toggleExpanded = (key: string) => {
+        setExpandedKeys((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
+    };
+
     const openUserPickerForCreate = async () => {
         await ensureUsers();
         setPickerMode("create");
@@ -369,10 +418,11 @@ export default function AdminUploadClientsScreen() {
                 payload.assignedAt = now;
                 payload.assignedDayKey = dayKeyFromMs(now);
 
+                // ✅ cumple reglas: pending real -> statusBy/statusAt/note deben ser null o no existir
                 payload.status = "pending";
-                payload.statusBy = "";
-                payload.statusAt = 0;
-                payload.note = "";
+                payload.statusBy = null;
+                payload.statusAt = null;
+                payload.note = null;
             }
 
             await createClient(cleanUndefined(payload) as any);
@@ -454,6 +504,7 @@ export default function AdminUploadClientsScreen() {
                 patch.assignedAt = now;
                 patch.assignedDayKey = dayKeyFromMs(now);
             } else {
+                // si tu modelo usa "undefined" mejor quitar, pero aquí lo dejamos limpio:
                 patch.assignedTo = "";
                 patch.assignedAt = 0;
                 patch.assignedDayKey = "";
@@ -501,8 +552,17 @@ export default function AdminUploadClientsScreen() {
         return [styles.pillText, styles.pillTextPending];
     };
 
+    const statusLabel = (c: ClientDoc) => {
+        if (c.status === "visited") return "visitado";
+        if (c.status === "rejected") {
+            const r = getRejectReason(c);
+            return r ? `rechazado · ${r}` : "rechazado";
+        }
+        return "pendiente";
+    };
+
     // -------------------------
-    // User picker data
+    // User picker data (+ badge pending)
     // -------------------------
     const pickerUsers = useMemo(() => {
         const qt = pickerQuery.trim().toLowerCase();
@@ -517,11 +577,34 @@ export default function AdminUploadClientsScreen() {
     // FAB: subir un poco + respetar home indicator
     const fabBottom = Math.max(18, insets.bottom + 18) + 14;
 
+    const AssigneeRowValue = (userId: string | null, mode: "create" | "edit") => {
+        if (!userId) return "Sin asignar";
+        const u = userById.get(userId);
+        if (!u) return "Asignado (cargando…)";
+
+        const name = (u.name ?? "").trim();
+        const email = (u.email ?? "").trim();
+        const label = name && email ? `${name} · ${email}` : name ? name : email ? email : "Usuario";
+        const p = pendingByUser.get(userId) ?? 0;
+
+        return (
+            <View style={styles.assigneeInline}>
+                <Text style={styles.selectValue} numberOfLines={1}>
+                    {label}
+                </Text>
+                <View style={styles.pendingBadge}>
+                    <Ionicons name="time-outline" size={14} color={COLORS.pending} />
+                    <Text style={styles.pendingBadgeText}>{p}</Text>
+                </View>
+            </View>
+        );
+    };
+
     return (
         <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
-            {/* Header (compacto) */}
+            {/* Header */}
             <View style={styles.header}>
                 <View style={{ flex: 1 }}>
                     <Text style={styles.hTitle}>Clientes</Text>
@@ -553,7 +636,7 @@ export default function AdminUploadClientsScreen() {
                 <TextInput
                     value={q}
                     onChangeText={setQ}
-                    placeholder="Buscar…"
+                    placeholder="Buscar usuario o cliente (teléfono, nombre, negocio)…"
                     placeholderTextColor={COLORS.muted}
                     style={styles.searchInput}
                 />
@@ -564,43 +647,68 @@ export default function AdminUploadClientsScreen() {
                 ) : null}
             </View>
 
-            {/* Grouped list by user */}
+            {/* Grouped list by user (ACORDEÓN) */}
             <SectionList
                 sections={sections}
                 keyExtractor={(c) => c.id}
                 contentContainerStyle={styles.listContent}
                 stickySectionHeadersEnabled={false}
-                renderSectionHeader={({ section }) => (
-                    <View style={styles.sectionHeader}>
-                        <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={styles.sectionTitle} numberOfLines={1}>
-                                {section.title}
-                            </Text>
-                            {section.subtitle ? (
-                                <Text style={styles.sectionSub} numberOfLines={1}>
-                                    {section.subtitle}
-                                </Text>
-                            ) : null}
-                        </View>
+                renderSectionHeader={({ section }) => {
+                    const expanded = expandedKeys.has(section.key);
+                    const userPending = pendingByUser.get(section.key) ?? 0;
 
-                        <View style={styles.sectionPills}>
-                            <View style={[styles.miniPill, styles.miniPillPending]}>
-                                <Text style={[styles.miniPillText, styles.miniTextPending]}>{section.totals.pending}</Text>
+                    return (
+                        <Pressable
+                            onPress={() => toggleExpanded(section.key)}
+                            style={({ pressed }) => [styles.sectionHeader, pressed && styles.sectionHeaderPressed]}
+                            accessibilityLabel={`Acordeón ${section.title}`}
+                        >
+                            <View style={{ flex: 1, gap: 2 }}>
+                                <View style={styles.sectionTitleRow}>
+                                    <Ionicons
+                                        name={expanded ? "chevron-down" : "chevron-forward"}
+                                        size={16}
+                                        color={COLORS.muted}
+                                    />
+                                    <Text style={styles.sectionTitle} numberOfLines={1}>
+                                        {section.title}
+                                    </Text>
+
+                                    {/* ✅ badge de pendientes al lado del usuario */}
+                                    <View style={styles.pendingBadgeMini}>
+                                        <Ionicons name="time-outline" size={12} color={COLORS.pending} />
+                                        <Text style={styles.pendingBadgeMiniText}>{userPending}</Text>
+                                    </View>
+                                </View>
+
+                                {section.subtitle ? (
+                                    <Text style={styles.sectionSub} numberOfLines={1}>
+                                        {section.subtitle}
+                                    </Text>
+                                ) : null}
                             </View>
-                            <View style={[styles.miniPill, styles.miniPillVisited]}>
-                                <Text style={[styles.miniPillText, styles.miniTextVisited]}>{section.totals.visited}</Text>
+
+                            <View style={styles.sectionPills}>
+                                <View style={[styles.miniPill, styles.miniPillPending]}>
+                                    <Text style={[styles.miniPillText, styles.miniTextPending]}>{section.totals.pending}</Text>
+                                </View>
+                                <View style={[styles.miniPill, styles.miniPillVisited]}>
+                                    <Text style={[styles.miniPillText, styles.miniTextVisited]}>{section.totals.visited}</Text>
+                                </View>
+                                <View style={[styles.miniPill, styles.miniPillRejected]}>
+                                    <Text style={[styles.miniPillText, styles.miniTextRejected]}>{section.totals.rejected}</Text>
+                                </View>
                             </View>
-                            <View style={[styles.miniPill, styles.miniPillRejected]}>
-                                <Text style={[styles.miniPillText, styles.miniTextRejected]}>{section.totals.rejected}</Text>
-                            </View>
-                        </View>
-                    </View>
-                )}
-                renderItem={({ item }) => {
+                        </Pressable>
+                    );
+                }}
+                renderItem={({ item, section }) => {
+                    // ✅ acordeón: si está colapsado, no renderizamos items
+                    if (!expandedKeys.has(section.key)) return null;
+
                     const displayName = ((item as any).name ?? "").trim();
                     const displayBiz = ((item as any).business ?? "").trim();
 
-                    // ✅ NUNCA mostramos UID: solo nombre/email o “Sin asignar”
                     const assigneeLabel = item.assignedTo
                         ? userLabelById.get(item.assignedTo) ?? "Asignado (cargando…)"
                         : "Sin asignar";
@@ -614,11 +722,13 @@ export default function AdminUploadClientsScreen() {
                                     <Text style={styles.phone} numberOfLines={1}>
                                         {item.phone}
                                     </Text>
+
                                     {!!displayName ? (
                                         <Text style={styles.meta} numberOfLines={1}>
                                             {displayName}
                                         </Text>
                                     ) : null}
+
                                     {!!displayBiz ? (
                                         <Text style={styles.meta} numberOfLines={1}>
                                             {displayBiz}
@@ -627,7 +737,9 @@ export default function AdminUploadClientsScreen() {
                                 </View>
 
                                 <View style={pill(item.status)}>
-                                    <Text style={pillText(item.status)}>{item.status ?? "pending"}</Text>
+                                    <Text style={pillText(item.status)} numberOfLines={1}>
+                                        {statusLabel(item)}
+                                    </Text>
                                 </View>
                             </View>
 
@@ -703,7 +815,7 @@ export default function AdminUploadClientsScreen() {
                 }
             />
 
-            {/* FAB Create (subido y sin chocar con home indicator) */}
+            {/* FAB Create */}
             <Pressable
                 onPress={async () => {
                     await ensureUsers();
@@ -731,25 +843,24 @@ export default function AdminUploadClientsScreen() {
 
                             <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
                                 {/* Assignee */}
-                                <Pressable
-                                    onPress={openUserPickerForCreate}
-                                    style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}
-                                >
+                                <Pressable onPress={openUserPickerForCreate} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
                                     <View style={{ flex: 1, gap: 2 }}>
                                         <Text style={styles.selectLabel}>Asignar a</Text>
-                                        <Text style={styles.selectValue} numberOfLines={1}>
-                                            {cAssigneeId
-                                                ? selectedCreateUser
-                                                    ? `${selectedCreateUser.name}${selectedCreateUser.email ? ` · ${selectedCreateUser.email}` : ""}`
-                                                    : "Asignado (cargando…)"
-                                                : "Sin asignar"}
-                                        </Text>
+
+                                        {/* ✅ con badge de pendientes */}
+                                        {typeof cAssigneeId === "string" ? (
+                                            AssigneeRowValue(cAssigneeId, "create")
+                                        ) : (
+                                            <Text style={styles.selectValue} numberOfLines={1}>
+                                                Sin asignar
+                                            </Text>
+                                        )}
                                     </View>
                                     <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
                                 </Pressable>
 
                                 <View style={styles.grid2}>
-                                    <View style={styles.field}>
+                                    <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Nombre</Text>
                                         <TextInput
                                             value={cName}
@@ -760,7 +871,7 @@ export default function AdminUploadClientsScreen() {
                                         />
                                     </View>
 
-                                    <View style={styles.field}>
+                                    <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Negocio</Text>
                                         <TextInput
                                             value={cBusiness}
@@ -773,7 +884,7 @@ export default function AdminUploadClientsScreen() {
                                 </View>
 
                                 <View style={styles.grid2}>
-                                    <View style={styles.field}>
+                                    <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Teléfono *</Text>
                                         <TextInput
                                             value={cPhone}
@@ -785,7 +896,7 @@ export default function AdminUploadClientsScreen() {
                                         />
                                     </View>
 
-                                    <View style={styles.field}>
+                                    <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Dirección</Text>
                                         <TextInput
                                             value={cAddress}
@@ -860,25 +971,24 @@ export default function AdminUploadClientsScreen() {
 
                             <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
                                 {/* Assignee */}
-                                <Pressable
-                                    onPress={openUserPickerForEdit}
-                                    style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}
-                                >
+                                <Pressable onPress={openUserPickerForEdit} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
                                     <View style={{ flex: 1, gap: 2 }}>
                                         <Text style={styles.selectLabel}>Asignado a</Text>
-                                        <Text style={styles.selectValue} numberOfLines={1}>
-                                            {eAssigneeId
-                                                ? selectedEditUser
-                                                    ? `${selectedEditUser.name}${selectedEditUser.email ? ` · ${selectedEditUser.email}` : ""}`
-                                                    : "Asignado (cargando…)"
-                                                : "Sin asignar"}
-                                        </Text>
+
+                                        {/* ✅ con badge de pendientes */}
+                                        {typeof eAssigneeId === "string" ? (
+                                            AssigneeRowValue(eAssigneeId, "edit")
+                                        ) : (
+                                            <Text style={styles.selectValue} numberOfLines={1}>
+                                                Sin asignar
+                                            </Text>
+                                        )}
                                     </View>
                                     <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
                                 </Pressable>
 
                                 <View style={styles.grid2}>
-                                    <View style={styles.field}>
+                                    <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Nombre</Text>
                                         <TextInput
                                             value={eName}
@@ -889,7 +999,7 @@ export default function AdminUploadClientsScreen() {
                                         />
                                     </View>
 
-                                    <View style={styles.field}>
+                                    <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Negocio</Text>
                                         <TextInput
                                             value={eBusiness}
@@ -902,7 +1012,7 @@ export default function AdminUploadClientsScreen() {
                                 </View>
 
                                 <View style={styles.grid2}>
-                                    <View style={styles.field}>
+                                    <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Teléfono *</Text>
                                         <TextInput
                                             value={ePhone}
@@ -914,7 +1024,7 @@ export default function AdminUploadClientsScreen() {
                                         />
                                     </View>
 
-                                    <View style={styles.field}>
+                                    <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Dirección</Text>
                                         <TextInput
                                             value={eAddress}
@@ -939,11 +1049,7 @@ export default function AdminUploadClientsScreen() {
                                 </View>
 
                                 <View style={{ flexDirection: "row", gap: 10 }}>
-                                    <Pressable
-                                        onPress={cancelEdit}
-                                        style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
-                                        disabled={eSaving}
-                                    >
+                                    <Pressable onPress={cancelEdit} style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]} disabled={eSaving}>
                                         <Ionicons name="close-outline" size={18} color={COLORS.text} />
                                         <Text style={styles.ghostBtnText}>Cancelar</Text>
                                     </Pressable>
@@ -1011,30 +1117,40 @@ export default function AdminUploadClientsScreen() {
                                             <Text style={styles.userName}>Sin asignar</Text>
                                             <Text style={styles.userEmail}>Crear / editar sin asignación</Text>
                                         </View>
-                                        <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
+
+                                        <View style={styles.pendingBadgeMini}>
+                                            <Ionicons name="time-outline" size={12} color={COLORS.pending} />
+                                            <Text style={styles.pendingBadgeMiniText}>{pendingByUser.get("UNASSIGNED") ?? 0}</Text>
+                                        </View>
                                     </Pressable>
                                 ) : null}
 
-                                {pickerUsers.map((u) => (
-                                    <Pressable
-                                        key={u.id}
-                                        onPress={() => onPickUser(u)}
-                                        style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
-                                    >
-                                        <View style={styles.userAvatar}>
-                                            <Ionicons name="person-outline" size={18} color={COLORS.text} />
-                                        </View>
-                                        <View style={{ flex: 1 }}>
-                                            <Text style={styles.userName} numberOfLines={1}>
-                                                {u.name}
-                                            </Text>
-                                            <Text style={styles.userEmail} numberOfLines={1}>
-                                                {u.email}
-                                            </Text>
-                                        </View>
-                                        <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-                                    </Pressable>
-                                ))}
+                                {pickerUsers.map((u) => {
+                                    const p = pendingByUser.get(u.id) ?? 0;
+
+                                    return (
+                                        <Pressable key={u.id} onPress={() => onPickUser(u)} style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}>
+                                            <View style={styles.userAvatar}>
+                                                <Ionicons name="person-outline" size={18} color={COLORS.text} />
+                                            </View>
+
+                                            <View style={{ flex: 1 }}>
+                                                <Text style={styles.userName} numberOfLines={1}>
+                                                    {u.name}
+                                                </Text>
+                                                <Text style={styles.userEmail} numberOfLines={1}>
+                                                    {u.email}
+                                                </Text>
+                                            </View>
+
+                                            {/* ✅ badge pendientes */}
+                                            <View style={styles.pendingBadgeMini}>
+                                                <Ionicons name="time-outline" size={12} color={COLORS.pending} />
+                                                <Text style={styles.pendingBadgeMiniText}>{p}</Text>
+                                            </View>
+                                        </Pressable>
+                                    );
+                                })}
 
                                 {!pickerUsers.length ? (
                                     <View style={styles.emptySmall}>
@@ -1135,7 +1251,10 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 10,
     },
-    sectionTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
+    sectionHeaderPressed: { opacity: 0.96, transform: [{ scale: 0.995 }] },
+
+    sectionTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    sectionTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900", maxWidth: "85%" },
     sectionSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
     sectionPills: { flexDirection: "row", gap: 6 },
@@ -1176,6 +1295,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
+        maxWidth: 150,
     },
     pillText: { fontSize: 12, fontWeight: "900", textTransform: "lowercase" },
     pillPending: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.35)" },
@@ -1360,4 +1480,35 @@ const styles = StyleSheet.create({
     primaryBtnText: { color: "#fff", fontWeight: "900", fontSize: 14 },
     btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     btnDisabled: { opacity: 0.55 },
+
+    // ✅ badges
+    pendingBadge: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 10,
+        height: 28,
+        borderRadius: 999,
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(251,191,36,0.28)",
+        marginTop: 6,
+        alignSelf: "flex-start",
+    },
+    pendingBadgeText: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
+
+    pendingBadgeMini: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 10,
+        height: 26,
+        borderRadius: 999,
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(251,191,36,0.28)",
+    },
+    pendingBadgeMiniText: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
+
+    assigneeInline: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 2 },
 });

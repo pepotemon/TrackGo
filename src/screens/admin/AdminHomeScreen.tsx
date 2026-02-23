@@ -1,3 +1,8 @@
+// app/admin/index.tsx (o donde tengas este Home)
+// ✅ FIX: el contador de rejected/visited (hoy y semana) ya NO se infla con:
+// - eventos de clientes ELIMINADOS
+// - eventos viejos de clientes REASIGNADOS / RESTAURADOS (porque ya no coinciden con el status actual del client)
+
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
@@ -12,10 +17,10 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../../auth/useAuth";
-import { subscribeAdminClients } from "../../data/repositories/clientsRepo"; // ✅ NUEVO
+import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models"; // ✅ ClientDoc
+import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
 
 type AdminAction = {
     title: string;
@@ -59,6 +64,10 @@ function toMs(v: any): number {
     return 0;
 }
 
+/**
+ * Último evento por clientId dentro del rango.
+ * (Luego filtramos por estado actual del client para evitar inflado)
+ */
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
     for (const e of events) {
@@ -85,7 +94,7 @@ export default function AdminHomeScreen() {
     const router = useRouter();
 
     const [users, setUsers] = useState<UserDoc[]>([]);
-    const [clients, setClients] = useState<ClientDoc[]>([]); // ✅ NUEVO
+    const [clients, setClients] = useState<ClientDoc[]>([]);
     const [todayEvents, setTodayEvents] = useState<DailyEventDoc[]>([]);
     const [weekEvents, setWeekEvents] = useState<DailyEventDoc[]>([]);
 
@@ -119,13 +128,13 @@ export default function AdminHomeScreen() {
         reloadUsers();
     }, [reloadUsers]);
 
-    // ✅ Clientes realtime (para PENDIENTES reales)
+    // ✅ Clientes realtime (estado actual)
     useEffect(() => {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
         return () => unsub();
     }, []);
 
-    // ✅ Events realtime HOY (resuscribe en refreshTick)
+    // ✅ Events realtime HOY
     useEffect(() => {
         const tk = todayKey();
         const unsub = subscribeDailyEventsByRange(
@@ -137,7 +146,7 @@ export default function AdminHomeScreen() {
         return () => unsub();
     }, [refreshTick]);
 
-    // ✅ Events realtime SEMANA (resuscribe en refreshTick)
+    // ✅ Events realtime SEMANA
     useEffect(() => {
         const { startKey, endKey } = weekRangeKeys(new Date());
         const unsub = subscribeDailyEventsByRange(
@@ -155,10 +164,41 @@ export default function AdminHomeScreen() {
         return m;
     }, [users]);
 
+    const clientById = useMemo(() => {
+        const m = new Map<string, ClientDoc>();
+        for (const c of clients) m.set(c.id, c);
+        return m;
+    }, [clients]);
+
     // ✅ Pendientes reales (estado actual en clients)
     const pendingNow = useMemo(() => {
         return clients.filter((c) => c.status === "pending").length;
     }, [clients]);
+
+    /**
+     * ✅ FILTRO ANTI-INFLADO
+     * Solo contamos el evento si:
+     * 1) el cliente todavía existe (no fue eliminado)
+     * 2) el estado actual del cliente COINCIDE con el type del evento más reciente dentro del rango
+     *
+     * Esto elimina:
+     * - eventos de clientes borrados
+     * - rejected/visited viejos que ya fueron "restaurados" o "reasignados"
+     */
+    const shouldCountEvent = useCallback(
+        (e: DailyEventDoc) => {
+            const cid = (e as any)?.clientId;
+            if (!cid) return false;
+
+            const c = clientById.get(cid);
+            if (!c) return false; // eliminado
+
+            // Si el admin reasignó y reseteó a pending, o el user restauró, el status ya no coincide:
+            // entonces NO lo contamos en los contadores.
+            return c.status === e.type;
+        },
+        [clientById]
+    );
 
     const todayStats = useMemo(() => {
         const latest = latestEventByClient(todayEvents);
@@ -170,10 +210,14 @@ export default function AdminHomeScreen() {
         const perUserAmount: Record<string, number> = {};
 
         for (const e of latest.values()) {
+            if (!shouldCountEvent(e)) continue;
+
             if (e.type === "visited") {
                 visited += 1;
                 perUserVisits[e.userId] = (perUserVisits[e.userId] ?? 0) + 1;
-            } else if (e.type === "rejected") rejected += 1;
+            } else if (e.type === "rejected") {
+                rejected += 1;
+            }
         }
 
         for (const [uid, cnt] of Object.entries(perUserVisits)) {
@@ -193,7 +237,7 @@ export default function AdminHomeScreen() {
         }
 
         return { visited, rejected, amountTotal, topUid, topAmount };
-    }, [todayEvents, userById]);
+    }, [todayEvents, userById, shouldCountEvent]);
 
     const weekStats = useMemo(() => {
         const latest = latestEventByClient(weekEvents);
@@ -205,10 +249,14 @@ export default function AdminHomeScreen() {
         const perUserAmount: Record<string, number> = {};
 
         for (const e of latest.values()) {
+            if (!shouldCountEvent(e)) continue;
+
             if (e.type === "visited") {
                 visited += 1;
                 perUserVisits[e.userId] = (perUserVisits[e.userId] ?? 0) + 1;
-            } else if (e.type === "rejected") rejected += 1;
+            } else if (e.type === "rejected") {
+                rejected += 1;
+            }
         }
 
         for (const [uid, cnt] of Object.entries(perUserVisits)) {
@@ -218,7 +266,7 @@ export default function AdminHomeScreen() {
 
         const amountTotal = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
         return { visited, rejected, amountTotal };
-    }, [weekEvents, userById]);
+    }, [weekEvents, userById, shouldCountEvent]);
 
     const topUserLabel = useMemo(() => {
         if (!todayStats.topUid) return "—";
@@ -296,7 +344,6 @@ export default function AdminHomeScreen() {
                         <View style={styles.tinyRow}>
                             <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={todayStats.visited} label="Visitados" />
                             <TinyStat icon="close-circle-outline" color={COLORS.bad} value={todayStats.rejected} label="Rechazados" />
-                            {/* ✅ Pendientes reales (clients) */}
                             <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
                         </View>
 
@@ -324,7 +371,6 @@ export default function AdminHomeScreen() {
                         <View style={styles.tinyRow}>
                             <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={weekStats.visited} label="Visitados" />
                             <TinyStat icon="close-circle-outline" color={COLORS.bad} value={weekStats.rejected} label="Rechazados" />
-                            {/* ✅ Pendientes reales (clients) */}
                             <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
                         </View>
 
