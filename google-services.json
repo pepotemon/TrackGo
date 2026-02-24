@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "31593558566",
+    "project_id": "trackgo-f2461",
+    "storage_bucket": "trackgo-f2461.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:31593558566:android:05166a023b37fa84132ce7",
+        "android_client_info": {
+          "package_name": "com.pepotemon.trackgo"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCeWxbSYOwmBLnDfnXdCYFrhhouYWqh2I4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
