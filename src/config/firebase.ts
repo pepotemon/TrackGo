@@ -1,6 +1,13 @@
 import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
+import { Platform } from "react-native";
+
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { getAuth, initializeAuth } from "firebase/auth";
+import {
+    browserLocalPersistence,
+    getAuth,
+    initializeAuth,
+    setPersistence,
+} from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 // ✅ workaround: el runtime lo tiene, pero TS a veces no lo expone en v12.x
@@ -18,17 +25,35 @@ const firebaseConfig = {
 
 export const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-// ✅ Importante en RN: initializeAuth SOLO una vez.
-// Si ya existe, usamos getAuth(app).
-let _auth;
-try {
-    _auth = getAuth(app);
-} catch {
-    _auth = initializeAuth(app, {
-        persistence: getReactNativePersistence(ReactNativeAsyncStorage),
-    });
+// ------------------------------
+// AUTH (persistencia real en RN)
+// ------------------------------
+declare global {
+    // eslint-disable-next-line no-var
+    var __TRACKGO_AUTH__: ReturnType<typeof getAuth> | undefined;
 }
 
-export const auth = _auth;
+function getOrInitAuth() {
+    // Web: usa getAuth + persistence del browser
+    if (Platform.OS === "web") {
+        const a = getAuth(app);
+        // No es obligatorio, pero recomendado:
+        setPersistence(a, browserLocalPersistence).catch(() => { });
+        return a;
+    }
+
+    // Native (Android/iOS): necesitamos initializeAuth + AsyncStorage
+    // ✅ Guardamos en global para sobrevivir a Fast Refresh / Dev Client
+    if (globalThis.__TRACKGO_AUTH__) return globalThis.__TRACKGO_AUTH__;
+
+    const a = initializeAuth(app, {
+        persistence: getReactNativePersistence(ReactNativeAsyncStorage),
+    });
+
+    globalThis.__TRACKGO_AUTH__ = a;
+    return a;
+}
+
+export const auth = getOrInitAuth();
 
 export const db = getFirestore(app);
