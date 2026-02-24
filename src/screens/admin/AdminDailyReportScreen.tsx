@@ -11,31 +11,24 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
+import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, UserDoc } from "../../types/models";
+import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
 
-function startOfTodayMs() {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d.getTime();
+// ----------------------
+// DayKey helpers (igual que AdminHome)
+// ----------------------
+function dayKeyFromDate(d: Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
 }
-
-type Row = {
-    userId: string;
-    name: string;
-    email?: string;
-
-    ratePerVisit: number;
-
-    assignedTotal: number;
-    pending: number;
-
-    visitedToday: number;
-    rejectedToday: number;
-
-    amountToday: number;
-};
+function todayKey() {
+    return dayKeyFromDate(new Date());
+}
 
 function safeText(x?: string) {
     return (x ?? "").toLowerCase();
@@ -55,6 +48,38 @@ function money(n: number) {
     return v.toFixed(2);
 }
 
+// ✅ dedupe: último evento por cliente (por createdAt)
+function latestEventByClient(events: DailyEventDoc[]) {
+    const map = new Map<string, DailyEventDoc>();
+    for (const e of events) {
+        if (!e?.clientId) continue;
+        if (e.type !== "visited" && e.type !== "rejected" && e.type !== "pending") continue;
+
+        const prev = map.get(e.clientId);
+        const eMs = typeof (e as any)?.createdAt === "number" ? ((e as any).createdAt as number) : 0;
+        const pMs = prev && typeof (prev as any)?.createdAt === "number" ? ((prev as any).createdAt as number) : 0;
+
+        if (!prev || eMs >= pMs) map.set(e.clientId, e);
+    }
+    return map;
+}
+
+type Row = {
+    userId: string;
+    name: string;
+    email?: string;
+
+    ratePerVisit: number;
+
+    assignedTotal: number; // ✅ estado actual
+    pending: number;       // ✅ estado actual
+
+    visitedToday: number;  // ✅ desde dailyEvents (hoy)
+    rejectedToday: number; // ✅ desde dailyEvents (hoy)
+
+    amountToday: number;
+};
+
 export default function AdminDailyReportScreen() {
     const insets = useSafeAreaInsets();
 
@@ -62,10 +87,24 @@ export default function AdminDailyReportScreen() {
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
 
+    const [todayEvents, setTodayEvents] = useState<DailyEventDoc[]>([]);
     const [q, setQ] = useState("");
 
+    // clients realtime
     useEffect(() => {
-        const unsub = subscribeAdminClients(setClients);
+        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
+        return () => unsub();
+    }, []);
+
+    // events realtime HOY (igual que AdminHome)
+    useEffect(() => {
+        const tk = todayKey();
+        const unsub = subscribeDailyEventsByRange(
+            tk,
+            tk,
+            (list) => setTodayEvents(list ?? []),
+            (err) => console.log("[AdminDailyReport] today events err:", err?.code, err?.message)
+        );
         return () => unsub();
     }, []);
 
@@ -83,11 +122,15 @@ export default function AdminDailyReportScreen() {
         reloadUsers();
     }, []);
 
-    const todayStart = useMemo(() => startOfTodayMs(), []);
+    // ✅ hoy: último evento por cliente
+    const lastEventTodayByClient = useMemo(() => {
+        return latestEventByClient(todayEvents);
+    }, [todayEvents]);
 
     const rows: Row[] = useMemo(() => {
         const byUser: Record<string, Row> = {};
 
+        // base: users
         for (const u of users) {
             const rate = getRatePerVisit(u);
             byUser[u.id] = {
@@ -98,6 +141,7 @@ export default function AdminDailyReportScreen() {
 
                 assignedTotal: 0,
                 pending: 0,
+
                 visitedToday: 0,
                 rejectedToday: 0,
 
@@ -105,6 +149,7 @@ export default function AdminDailyReportScreen() {
             };
         }
 
+        // 1) assignedTotal + pending desde CLIENTS (estado actual, no histórico)
         for (const c of clients) {
             const uid = c.assignedTo;
             if (!uid) continue;
@@ -118,6 +163,7 @@ export default function AdminDailyReportScreen() {
 
                     assignedTotal: 0,
                     pending: 0,
+
                     visitedToday: 0,
                     rejectedToday: 0,
 
@@ -128,21 +174,44 @@ export default function AdminDailyReportScreen() {
             const row = byUser[uid];
             row.assignedTotal += 1;
 
+            // ✅ pendientes: siempre el estado actual del cliente
             if (c.status === "pending") row.pending += 1;
-
-            const statusAt = (c.statusAt ?? 0) as number;
-            const isToday = statusAt >= todayStart;
-
-            if (isToday && c.status === "visited") row.visitedToday += 1;
-            if (isToday && c.status === "rejected") row.rejectedToday += 1;
         }
 
+        // 2) visitedToday / rejectedToday desde DAILY EVENTS (hoy) dedupe por cliente
+        for (const ev of lastEventTodayByClient.values()) {
+            const uid = ev.userId;
+            if (!uid) continue;
+
+            if (!byUser[uid]) {
+                byUser[uid] = {
+                    userId: uid,
+                    name: "(sin perfil)",
+                    email: "",
+                    ratePerVisit: 0,
+
+                    assignedTotal: 0,
+                    pending: 0,
+
+                    visitedToday: 0,
+                    rejectedToday: 0,
+
+                    amountToday: 0,
+                };
+            }
+
+            if (ev.type === "visited") byUser[uid].visitedToday += 1;
+            if (ev.type === "rejected") byUser[uid].rejectedToday += 1;
+        }
+
+        // 3) amount
         for (const r of Object.values(byUser)) {
             r.amountToday = r.visitedToday * (r.ratePerVisit ?? 0);
         }
 
         const all = Object.values(byUser);
 
+        // filter
         const qt = q.trim().toLowerCase();
         const filtered = !qt
             ? all
@@ -151,11 +220,12 @@ export default function AdminDailyReportScreen() {
                 return hay.includes(qt);
             });
 
+        // sort: más actividad hoy
         return filtered.sort(
             (a, b) =>
                 b.visitedToday + b.rejectedToday - (a.visitedToday + a.rejectedToday)
         );
-    }, [clients, users, todayStart, q]);
+    }, [clients, users, lastEventTodayByClient, q]);
 
     const totals = useMemo(() => {
         return rows.reduce(
@@ -232,6 +302,7 @@ export default function AdminDailyReportScreen() {
     };
 
     const ProgressBar = ({ done, total }: { done: number; total: number }) => {
+        // ✅ clamp
         const pct = total <= 0 ? 0 : Math.max(0, Math.min(1, done / total));
         return (
             <View style={styles.progressTrack}>
@@ -242,11 +313,7 @@ export default function AdminDailyReportScreen() {
 
     return (
         <SafeAreaView style={styles.safe}>
-            <StatusBar
-                barStyle="light-content"
-                translucent={false}
-                backgroundColor={COLORS.bg}
-            />
+            <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
             {/* Compact header */}
             <View style={[styles.header, { paddingTop: 0 }]}>
@@ -275,30 +342,10 @@ export default function AdminDailyReportScreen() {
 
             {/* Icons-only summary row (no labels) */}
             <View style={styles.statsRow}>
-                <StatIcon
-                    icon="checkmark-circle-outline"
-                    color={COLORS.visited}
-                    value={totals.visitedToday}
-                    label="Visitados"
-                />
-                <StatIcon
-                    icon="close-circle-outline"
-                    color={COLORS.rejected}
-                    value={totals.rejectedToday}
-                    label="Rechazados"
-                />
-                <StatIcon
-                    icon="time-outline"
-                    color={COLORS.pending}
-                    value={totals.pending}
-                    label="Pendientes"
-                />
-                <StatIcon
-                    icon="people-outline"
-                    color={COLORS.muted2}
-                    value={totals.assignedTotal}
-                    label="Asignados"
-                />
+                <StatIcon icon="checkmark-circle-outline" color={COLORS.visited} value={totals.visitedToday} label="Visitados" />
+                <StatIcon icon="close-circle-outline" color={COLORS.rejected} value={totals.rejectedToday} label="Rechazados" />
+                <StatIcon icon="time-outline" color={COLORS.pending} value={totals.pending} label="Pendientes" />
+                <StatIcon icon="people-outline" color={COLORS.muted2} value={totals.assignedTotal} label="Asignados" />
             </View>
 
             {/* Search (compact) */}
@@ -327,7 +374,7 @@ export default function AdminDailyReportScreen() {
                 renderItem={({ item }) => {
                     const done = item.visitedToday + item.rejectedToday;
                     const total = item.assignedTotal;
-                    const pct = total <= 0 ? 0 : Math.round((done / total) * 100);
+                    const pct = total <= 0 ? 0 : Math.round((Math.min(done, total) / total) * 100);
 
                     return (
                         <View style={styles.card}>
@@ -361,7 +408,7 @@ export default function AdminDailyReportScreen() {
 
                             <ProgressBar done={done} total={Math.max(1, total)} />
 
-                            {/* Metrics row with icons + tiny numbers (minimal text) */}
+                            {/* Metrics row */}
                             <View style={styles.metricsRow}>
                                 <View style={[styles.miniStat, styles.miniOk]}>
                                     <Ionicons name="checkmark" size={14} color={COLORS.visitedSoft} />
@@ -391,12 +438,7 @@ export default function AdminDailyReportScreen() {
                                     <Text style={styles.rateTextMuted}>/visita</Text>
                                 </View>
 
-                                <IconBtn
-                                    icon="mail-outline"
-                                    label="Copiar email"
-                                    disabled={!item.email}
-                                    onPress={() => copy(item.email ?? "")}
-                                />
+                                <IconBtn icon="mail-outline" label="Copiar email" disabled={!item.email} onPress={() => copy(item.email ?? "")} />
                             </View>
                         </View>
                     );
@@ -404,9 +446,7 @@ export default function AdminDailyReportScreen() {
                 ListEmptyComponent={
                     <View style={styles.empty}>
                         <Ionicons name="analytics-outline" size={24} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>
-                            {q.trim() ? "Sin resultados." : "Sin datos aún."}
-                        </Text>
+                        <Text style={styles.emptyText}>{q.trim() ? "Sin resultados." : "Sin datos aún."}</Text>
                     </View>
                 }
             />
@@ -445,17 +485,8 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 10,
     },
-    hTitle: {
-        color: COLORS.text,
-        fontSize: 22,
-        fontWeight: "900",
-        letterSpacing: 0.4,
-    },
-    hSub: {
-        marginTop: 2,
-        fontSize: 12,
-        fontWeight: "800",
-    },
+    hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.4 },
+    hSub: { marginTop: 2, fontSize: 12, fontWeight: "800" },
     hStrong: { color: COLORS.text, fontWeight: "900" },
     hMuted: { color: COLORS.muted, fontWeight: "900" },
 
@@ -535,12 +566,7 @@ const styles = StyleSheet.create({
         padding: 14,
         gap: 10,
     },
-    cardTop: {
-        flexDirection: "row",
-        alignItems: "flex-start",
-        justifyContent: "space-between",
-        gap: 10,
-    },
+    cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
     userName: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
     userEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
     userEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
@@ -582,12 +608,7 @@ const styles = StyleSheet.create({
     },
     progressFill: { height: "100%", backgroundColor: "rgba(34,197,94,0.55)" },
 
-    metricsRow: {
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: 8,
-        marginTop: 2,
-    },
+    metricsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
     miniStat: {
         flexDirection: "row",
         alignItems: "center",
@@ -599,30 +620,12 @@ const styles = StyleSheet.create({
     },
     miniText: { fontSize: 12, fontWeight: "900" },
 
-    miniOk: {
-        backgroundColor: "rgba(34,197,94,0.10)",
-        borderColor: "rgba(34,197,94,0.22)",
-    },
-    miniBad: {
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderColor: "rgba(248,113,113,0.22)",
-    },
-    miniWarn: {
-        backgroundColor: "rgba(251,191,36,0.12)",
-        borderColor: "rgba(251,191,36,0.22)",
-    },
-    miniNeutral: {
-        backgroundColor: "rgba(255,255,255,0.05)",
-        borderColor: "rgba(255,255,255,0.08)",
-    },
+    miniOk: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" },
+    miniBad: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.22)" },
+    miniWarn: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.22)" },
+    miniNeutral: { backgroundColor: "rgba(255,255,255,0.05)", borderColor: "rgba(255,255,255,0.08)" },
 
-    actionsRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 10,
-        marginTop: 2,
-    },
+    actionsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 2 },
     rateChip: {
         flexDirection: "row",
         alignItems: "center",

@@ -20,7 +20,12 @@
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
-      }
+      },
+      "googleServicesFile": "./google-services.json"
+    },
+    "notification": {
+      "icon": "./assets/images/notification-icon.png",
+      "color": "#000000"
     },
     "web": {
       "output": "static",

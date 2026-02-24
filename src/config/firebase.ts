@@ -1,6 +1,6 @@
 import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { initializeAuth } from "firebase/auth";
+import { getAuth, initializeAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 // ✅ workaround: el runtime lo tiene, pero TS a veces no lo expone en v12.x
@@ -18,9 +18,17 @@ const firebaseConfig = {
 
 export const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-// ✅ Persistencia real: NO se pierde al cerrar la app
-export const auth = initializeAuth(app, {
-    persistence: getReactNativePersistence(ReactNativeAsyncStorage),
-});
+// ✅ Importante en RN: initializeAuth SOLO una vez.
+// Si ya existe, usamos getAuth(app).
+let _auth;
+try {
+    _auth = getAuth(app);
+} catch {
+    _auth = initializeAuth(app, {
+        persistence: getReactNativePersistence(ReactNativeAsyncStorage),
+    });
+}
+
+export const auth = _auth;
 
 export const db = getFirestore(app);

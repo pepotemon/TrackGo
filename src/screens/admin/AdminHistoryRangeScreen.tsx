@@ -98,6 +98,14 @@ type DayGroup = {
     totals: { assigned: number; visited: number; rejected: number };
 };
 
+type EarningsRowView = {
+    userId: string;
+    name: string;
+    email?: string;
+    visited: number;
+    amount: number;
+};
+
 export default function AdminWeeklyCloseScreen() {
     const insets = useSafeAreaInsets();
 
@@ -128,6 +136,9 @@ export default function AdminWeeklyCloseScreen() {
     const [pickerOpen, setPickerOpen] = useState(false);
     const [pickerTarget, setPickerTarget] = useState<"start" | "end">("start");
     const [pickerDate, setPickerDate] = useState<Date>(new Date());
+
+    // ✅ modal recaudado
+    const [moneyModalOpen, setMoneyModalOpen] = useState(false);
 
     // ✅ HOY (para no “mostrar futuro”)
     const todayKey = useMemo(() => formatDayKeyFromDate(new Date()), []);
@@ -263,8 +274,6 @@ export default function AdminWeeklyCloseScreen() {
 
     /**
      * ✅ Pendientes SIN rango (estado actual)
-     * - SOLO clientes existentes (snapshot actual)
-     * - SOLO según assignedTo actual (si lo reasignaste, ya no cuenta al usuario anterior)
      */
     const pendingNowByUser = useMemo(() => {
         const m: Record<string, number> = {};
@@ -306,8 +315,6 @@ export default function AdminWeeklyCloseScreen() {
 
     // ----------------------
     // Build day groups (operativo)
-    // - assigned/visited/rejected: POR RANGO
-    // - pendingNow: SIN rango (pero NO se suma por día; se muestra por usuario)
     // ----------------------
     const dayGroups: DayGroup[] = useMemo(() => {
         const s = startKey.trim();
@@ -327,7 +334,6 @@ export default function AdminWeeklyCloseScreen() {
             if (dk < s || dk > e) continue;
             if (userFilter && uid !== userFilter) continue;
 
-            // ✅ SOLO si sigue asignado actualmente a ese uid (ya lo es, porque uid = c.assignedTo)
             if (!byDay[dk]) byDay[dk] = {};
             if (!byDay[dk][uid]) byDay[dk][uid] = { assigned: 0, visited: 0, rejected: 0 };
             byDay[dk][uid].assigned += 1;
@@ -374,7 +380,6 @@ export default function AdminWeeklyCloseScreen() {
                 };
             });
 
-            // orden por “actividad” del rango
             userRows.sort((a, b) => b.visited + b.rejected - (a.visited + a.rejected));
 
             const totals = userRows.reduce(
@@ -418,10 +423,58 @@ export default function AdminWeeklyCloseScreen() {
     }, [dayGroups]);
 
     // ----------------------
+    // Modal data: resumen por usuario (solo visitados + valor)
+    // ----------------------
+    const earningsRowsForModal: EarningsRowView[] = useMemo(() => {
+        const rowsAny = (earnings?.rows ?? []) as any[];
+
+        const base = rowsAny
+            .map((r) => {
+                const userId = String(r?.userId ?? r?.uid ?? r?.id ?? "");
+                if (!userId) return null;
+
+                const visited = Number(r?.visited ?? r?.visitedCount ?? r?.totalVisited ?? 0) || 0;
+                const amount = Number(r?.amount ?? r?.totalAmount ?? r?.value ?? 0) || 0;
+
+                const info = userInfoById.get(userId);
+                return {
+                    userId,
+                    name: info?.name ?? "(sin perfil)",
+                    email: info?.email,
+                    visited,
+                    amount,
+                } as EarningsRowView;
+            })
+            .filter(Boolean) as EarningsRowView[];
+
+        const filtered =
+            selectedUserId === "ALL" ? base : base.filter((x) => x.userId === selectedUserId);
+
+        return filtered
+            .filter((x) => x.visited > 0 || x.amount > 0)
+            .sort((a, b) => b.amount - a.amount);
+    }, [earnings?.rows, userInfoById, selectedUserId]);
+
+    const earningsTotalsForModal = useMemo(() => {
+        return earningsRowsForModal.reduce(
+            (acc, r) => {
+                acc.visited += r.visited;
+                acc.amount += r.amount;
+                return acc;
+            },
+            { visited: 0, amount: 0 }
+        );
+    }, [earningsRowsForModal]);
+
+    // ----------------------
     // UI atoms
     // ----------------------
     const IconBtn = ({ icon, onPress, label }: { icon: any; onPress: () => void; label: string }) => (
-        <Pressable onPress={onPress} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]} accessibilityLabel={label}>
+        <Pressable
+            onPress={onPress}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+            accessibilityLabel={label}
+        >
             <Ionicons name={icon} size={18} color={COLORS.text} />
         </Pressable>
     );
@@ -476,6 +529,9 @@ export default function AdminWeeklyCloseScreen() {
         closeUserPicker();
     };
 
+    const openMoneyModal = () => setMoneyModalOpen(true);
+    const closeMoneyModal = () => setMoneyModalOpen(false);
+
     return (
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
@@ -491,10 +547,16 @@ export default function AdminWeeklyCloseScreen() {
                     </Text>
                 </View>
 
-                <View style={styles.moneyChip}>
+                {/* ✅ ahora es botón */}
+                <Pressable
+                    onPress={openMoneyModal}
+                    style={({ pressed }) => [styles.moneyChip, pressed && styles.pressed]}
+                    accessibilityLabel="Ver resumen recaudado"
+                >
                     <Ionicons name="cash-outline" size={14} color={COLORS.money} />
                     <Text style={styles.moneyChipText}>R$ {money(earnings.totalAmount)}</Text>
-                </View>
+                    <Ionicons name="chevron-down" size={14} color={COLORS.muted} />
+                </Pressable>
 
                 <IconBtn icon="refresh-outline" onPress={setThisWeek} label="Esta semana" />
             </View>
@@ -551,12 +613,6 @@ export default function AdminWeeklyCloseScreen() {
                 </View>
 
                 {!validRange ? <Text style={styles.warn}>Rango inválido. Usa YYYY-MM-DD.</Text> : null}
-
-                {/* ✅ mini hint */}
-                <Text style={styles.warn} numberOfLines={2}>
-                    Nota: Pendientes se calcula por estado actual (sin rango). Visitados/Rechazados/Asignados se calculan por rango, y se
-                    ignoran eventos de clientes eliminados o reasignados.
-                </Text>
             </View>
 
             {/* List */}
@@ -605,13 +661,16 @@ export default function AdminWeeklyCloseScreen() {
                                                 )}
                                             </View>
 
-                                            {/* ✅ Aquí sí mostramos Pending NOW sin rango */}
+                                            {/* ✅ números sin texto, con color por estado */}
                                             <View style={styles.userNumsWrap}>
-                                                <Text style={styles.userNums} numberOfLines={1}>
-                                                    {u.assigned} · {u.visited} · {u.rejected} · {u.pendingNow}
-                                                </Text>
-                                                <Text style={styles.userNumsHint} numberOfLines={1}>
-                                                    A(rango) · V · R · P(ahora)
+                                                <Text style={styles.userNumsLine} numberOfLines={1}>
+                                                    <Text style={[styles.userNum, { color: COLORS.muted2 }]}>{u.assigned}</Text>
+                                                    <Text style={styles.sep}> · </Text>
+                                                    <Text style={[styles.userNum, { color: COLORS.okSoft }]}>{u.visited}</Text>
+                                                    <Text style={styles.sep}> · </Text>
+                                                    <Text style={[styles.userNum, { color: COLORS.badSoft }]}>{u.rejected}</Text>
+                                                    <Text style={styles.sep}> · </Text>
+                                                    <Text style={[styles.userNum, { color: COLORS.warnSoft }]}>{u.pendingNow}</Text>
                                                 </Text>
                                             </View>
                                         </View>
@@ -666,6 +725,85 @@ export default function AdminWeeklyCloseScreen() {
                             style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, pressed && styles.pressed]}
                         >
                             <Text style={styles.modalBtnText}>OK</Text>
+                        </Pressable>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* ✅ Money summary modal */}
+            <Modal visible={moneyModalOpen} transparent animationType="fade" onRequestClose={closeMoneyModal}>
+                <Pressable style={styles.modalBackdrop} onPress={closeMoneyModal} />
+
+                <View style={styles.modalSheet}>
+                    <View style={styles.modalHeader}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={styles.modalTitle}>Resumen · Visitados</Text>
+                            <Text style={styles.modalSubtitle} numberOfLines={1}>
+                                {selectedUserId === "ALL" ? "Todos" : selectedUserLabel} · {startKey} → {endKeyEffective}
+                            </Text>
+                        </View>
+
+                        <Pressable onPress={closeMoneyModal} style={({ pressed }) => [styles.modalIcon, pressed && styles.pressed]}>
+                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        </Pressable>
+                    </View>
+
+                    <View style={styles.summaryTotals}>
+                        <View style={styles.summaryPill}>
+                            <Ionicons name="checkmark-circle-outline" size={16} color={COLORS.okSoft} />
+                            <Text style={styles.summaryPillText}>{earningsTotalsForModal.visited}</Text>
+                        </View>
+
+                        <View style={styles.summaryPillMoney}>
+                            <Ionicons name="cash-outline" size={16} color={COLORS.money} />
+                            <Text style={styles.summaryPillMoneyText}>R$ {money(earningsTotalsForModal.amount)}</Text>
+                        </View>
+                    </View>
+
+                    <FlatList
+                        data={earningsRowsForModal}
+                        keyExtractor={(r) => r.userId}
+                        style={{ maxHeight: 340 }}
+                        contentContainerStyle={{ gap: 10, paddingTop: 8 }}
+                        ListEmptyComponent={
+                            <View style={{ paddingVertical: 10, alignItems: "center" }}>
+                                <Text style={styles.emptyText}>Sin visitados en este rango.</Text>
+                            </View>
+                        }
+                        renderItem={({ item }) => (
+                            <View style={styles.summaryRow}>
+                                <View style={{ flex: 1, gap: 2 }}>
+                                    <Text style={styles.summaryName} numberOfLines={1}>
+                                        {item.name}
+                                    </Text>
+                                    {!!item.email ? (
+                                        <Text style={styles.summaryEmail} numberOfLines={1}>
+                                            {item.email}
+                                        </Text>
+                                    ) : (
+                                        <Text style={styles.summaryEmailMuted} numberOfLines={1}>
+                                            (sin email)
+                                        </Text>
+                                    )}
+                                </View>
+
+                                <View style={styles.summaryRight}>
+                                    <View style={styles.summaryVisitedChip}>
+                                        <Ionicons name="checkmark" size={14} color={COLORS.okSoft} />
+                                        <Text style={styles.summaryVisitedText}>{item.visited}</Text>
+                                    </View>
+
+                                    <View style={styles.summaryMoneyChip}>
+                                        <Text style={styles.summaryMoneyText}>R$ {money(item.amount)}</Text>
+                                    </View>
+                                </View>
+                            </View>
+                        )}
+                    />
+
+                    <View style={styles.modalActions}>
+                        <Pressable onPress={closeMoneyModal} style={({ pressed }) => [styles.modalBtn, pressed && styles.pressed]}>
+                            <Text style={styles.modalBtnText}>Cerrar</Text>
                         </Pressable>
                     </View>
                 </View>
@@ -914,8 +1052,9 @@ const styles = StyleSheet.create({
     userEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
 
     userNumsWrap: { alignItems: "flex-end" },
-    userNums: { color: COLORS.text, opacity: 0.92, fontSize: 12, fontWeight: "900" },
-    userNumsHint: { color: COLORS.muted, fontSize: 10, fontWeight: "900", marginTop: 2 },
+    userNumsLine: { fontSize: 12, fontWeight: "900" },
+    userNum: { fontSize: 12, fontWeight: "900" },
+    sep: { color: COLORS.muted, fontWeight: "900" },
 
     pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
 
@@ -935,8 +1074,9 @@ const styles = StyleSheet.create({
         borderColor: COLORS.border,
         padding: 14,
     },
-    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 },
     modalTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
+    modalSubtitle: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
     modalIcon: {
         width: 40,
         height: 40,
@@ -961,6 +1101,77 @@ const styles = StyleSheet.create({
     modalBtnPrimary: { backgroundColor: "rgba(255,255,255,0.08)", borderColor: "rgba(255,255,255,0.12)" },
     modalBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
     modalBtnTextMuted: { color: COLORS.muted, fontSize: 13, fontWeight: "900" },
+
+    // money modal extras
+    summaryTotals: {
+        flexDirection: "row",
+        gap: 10,
+        alignItems: "center",
+        justifyContent: "space-between",
+    },
+    summaryPill: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 12,
+        height: 36,
+        borderRadius: 999,
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.22)",
+    },
+    summaryPillText: { color: COLORS.okSoft, fontWeight: "900" },
+    summaryPillMoney: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 12,
+        height: 36,
+        borderRadius: 999,
+        backgroundColor: "rgba(167,243,208,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(167,243,208,0.22)",
+    },
+    summaryPillMoneyText: { color: COLORS.money, fontWeight: "900" },
+
+    summaryRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        borderRadius: 14,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+    },
+    summaryName: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
+    summaryEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    summaryEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
+    summaryRight: { alignItems: "flex-end", gap: 8 },
+    summaryVisitedChip: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 10,
+        height: 30,
+        borderRadius: 999,
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.22)",
+    },
+    summaryVisitedText: { color: COLORS.okSoft, fontWeight: "900" },
+    summaryMoneyChip: {
+        paddingHorizontal: 10,
+        height: 30,
+        borderRadius: 999,
+        backgroundColor: "rgba(167,243,208,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(167,243,208,0.22)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    summaryMoneyText: { color: COLORS.money, fontWeight: "900", fontSize: 12 },
 
     // user picker
     userSheet: {

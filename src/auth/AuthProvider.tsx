@@ -1,19 +1,42 @@
+import Constants from "expo-constants";
+import * as Device from "expo-device";
+import * as Notifications from "expo-notifications";
 import {
     onAuthStateChanged,
     signInWithEmailAndPassword,
     signOut,
     type User,
 } from "firebase/auth";
+import { doc, setDoc } from "firebase/firestore";
 import React, {
     createContext,
     useContext,
     useEffect,
     useMemo,
+    useRef,
     useState,
 } from "react";
-import { auth } from "../config/firebase";
+import { Platform } from "react-native";
+
+import { auth, db } from "../config/firebase";
 import { getUserDoc } from "../data/repositories/usersRepo";
 import type { UserDoc } from "../types/models";
+
+/**
+ * ✅ Mostrar notificación incluso con app abierta
+ * ✅ FIX TS: NotificationBehavior ahora pide shouldShowBanner + shouldShowList
+ */
+Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+
+        // ✅ nuevas props (expo-notifications recientes)
+        shouldShowBanner: true,
+        shouldShowList: true,
+    }),
+});
 
 type AuthState = {
     firebaseUser: User | null;
@@ -25,13 +48,92 @@ type AuthState = {
 
 const Ctx = createContext<AuthState | null>(null);
 
+// -------------------------
+// Push helpers
+// -------------------------
+
+function getExpoProjectId(): string | undefined {
+    // EAS (recommended)
+    const easProjectId =
+        (Constants as any)?.expoConfig?.extra?.eas?.projectId ??
+        (Constants as any)?.easConfig?.projectId;
+
+    // fallback (algunas versiones)
+    const legacyId = (Constants as any)?.expoConfig?.extra?.projectId;
+
+    return easProjectId ?? legacyId;
+}
+
+async function registerForPushNotificationsAsync(): Promise<string | null> {
+    // Expo Push en Android/iOS requiere dispositivo real
+    if (!Device.isDevice) {
+        console.log("[PUSH] Not a physical device. Skipping token.");
+        return null;
+    }
+
+    // Permisos
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== "granted") {
+        const req = await Notifications.requestPermissionsAsync();
+        finalStatus = req.status;
+    }
+
+    if (finalStatus !== "granted") {
+        console.log("[PUSH] Permission not granted.");
+        return null;
+    }
+
+    // Android: canal
+    if (Platform.OS === "android") {
+        await Notifications.setNotificationChannelAsync("default", {
+            name: "Default",
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250],
+            lightColor: "#7C3AED",
+        });
+    }
+
+    const projectId = getExpoProjectId();
+    if (!projectId) {
+        console.log(
+            "[PUSH] Missing projectId. Add extra.eas.projectId in app.json (EAS projectId)."
+        );
+        // Igual intentamos sin projectId por si tu entorno lo permite
+    }
+
+    // ✅ Token Expo (mejor con projectId)
+    const token = (
+        await Notifications.getExpoPushTokenAsync(
+            projectId ? { projectId } : undefined
+        )
+    ).data;
+
+    return token || null;
+}
+
+async function saveExpoPushToken(uid: string, expoPushToken: string) {
+    await setDoc(
+        doc(db, "users", uid),
+        {
+            expoPushToken,
+            expoPushTokenUpdatedAt: Date.now(),
+        },
+        { merge: true }
+    );
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
     const [profile, setProfile] = useState<UserDoc | null>(null);
     const [loading, setLoading] = useState(true);
 
+    // evita re-registrar token en loop
+    const lastSavedTokenRef = useRef<string | null>(null);
+    const registeringRef = useRef(false);
+
     useEffect(() => {
-        // Arrancamos en loading hasta saber el estado de auth
         setLoading(true);
 
         const unsub = onAuthStateChanged(auth, async (u) => {
@@ -39,7 +141,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setProfile(null);
 
             if (!u) {
-                // No hay sesión
                 setLoading(false);
                 return;
             }
@@ -47,11 +148,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             try {
                 console.log("[AUTH] uid:", u.uid, "email:", u.email);
 
-                const doc = await getUserDoc(u.uid);
+                const docProfile = await getUserDoc(u.uid);
+                console.log("[AUTH] profile doc:", docProfile);
 
-                console.log("[AUTH] profile doc:", doc);
+                setProfile(docProfile);
 
-                setProfile(doc); // puede ser null si no existe
+                // ✅ SOLO usuarios activos (no admin) guardan token
+                if (docProfile?.active && docProfile?.role === "user") {
+                    if (!registeringRef.current) {
+                        registeringRef.current = true;
+                        try {
+                            const token = await registerForPushNotificationsAsync();
+                            if (token && token !== lastSavedTokenRef.current) {
+                                await saveExpoPushToken(u.uid, token);
+                                lastSavedTokenRef.current = token;
+                                console.log("[PUSH] Saved expo token:", token);
+                            }
+                        } catch (e) {
+                            console.log("[PUSH] register/save error:", e);
+                        } finally {
+                            registeringRef.current = false;
+                        }
+                    }
+                }
             } catch (err) {
                 console.log("[AUTH] error loading profile:", err);
                 setProfile(null);
@@ -64,7 +183,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, []);
 
     const login = async (email: string, password: string) => {
-        // Opcional: podrías setLoading(true) aquí, pero onAuthStateChanged se encarga
         await signInWithEmailAndPassword(auth, email.trim(), password);
     };
 
