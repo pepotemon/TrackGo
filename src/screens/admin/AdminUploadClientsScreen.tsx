@@ -67,7 +67,6 @@ function getRejectReason(c: ClientDoc): string | null {
     const val = rr || note;
     if (!val) return null;
 
-    // normaliza acentos / variantes
     if (val === "localización") return "localizacion";
     return val;
 }
@@ -86,7 +85,9 @@ export default function AdminUploadClientsScreen() {
     const [busyId, setBusyId] = useState<string | null>(null);
 
     // Acordeón: quién está expandido
-    const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set(["UNASSIGNED"]));
+    const [expandedKeys, setExpandedKeys] = useState<Set<string>>(
+        () => new Set(["UNASSIGNED"])
+    );
 
     // Modals
     const [createOpen, setCreateOpen] = useState(false);
@@ -96,7 +97,9 @@ export default function AdminUploadClientsScreen() {
     const [userPickerOpen, setUserPickerOpen] = useState(false);
     const [pickerQuery, setPickerQuery] = useState("");
     const [pickerMode, setPickerMode] = useState<PickerMode>("create");
-    const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(null);
+    const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(
+        null
+    );
 
     // -------------------------
     // Create form state
@@ -139,7 +142,6 @@ export default function AdminUploadClientsScreen() {
         try {
             const u = await listUsers("user");
             setUsers(u);
-            // defaults (solo si están vacíos)
             if (!cAssigneeId && u[0]) setCAssigneeId(u[0].id);
             if (!eAssigneeId && u[0]) setEAssigneeId(u[0].id);
         } finally {
@@ -168,7 +170,8 @@ export default function AdminUploadClientsScreen() {
         for (const u of users) {
             const name = (u.name ?? "").trim();
             const email = (u.email ?? "").trim();
-            const label = name && email ? `${name} · ${email}` : name ? name : email ? email : "Usuario";
+            const label =
+                name && email ? `${name} · ${email}` : name ? name : email ? email : "Usuario";
             m.set(u.id, label);
         }
         return m;
@@ -195,30 +198,48 @@ export default function AdminUploadClientsScreen() {
     }, [clients]);
 
     // -------------------------
-    // Search: si coincide con un usuario, mostramos su sección completa
-    // y si coincide con cliente, filtramos por campos de cliente (incluye teléfono)
+    // ✅ Search mejorado:
+    // - Texto normal (name/business/email/etc)
+    // - Teléfono: compara por dígitos para soportar espacios/+/-.
     // -------------------------
     const filteredClients = useMemo(() => {
-        const qt = q.trim().toLowerCase();
-        if (!qt) return clients;
+        const qtText = q.trim().toLowerCase();
+        const qtDigits = normalizePhone(q);
+
+        if (!qtText && !qtDigits) return clients;
 
         // usuarios que matchean el search -> incluir todos sus clientes
         const matchedUserIds = new Set<string>();
-        for (const u of users) {
-            const hayU = `${safeText(u.name)} ${safeText(u.email)}`;
-            if (hayU.includes(qt)) matchedUserIds.add(u.id);
+        if (qtText) {
+            for (const u of users) {
+                const hayU = `${safeText(u.name)} ${safeText(u.email)}`;
+                if (hayU.includes(qtText)) matchedUserIds.add(u.id);
+            }
         }
 
         return clients.filter((c) => {
+            // match por usuario
             if (c.assignedTo && matchedUserIds.has(c.assignedTo)) return true;
 
-            const name = safeText((c as any).name);
-            const business = safeText((c as any).business);
-            const assigneeLabel = c.assignedTo ? safeText(userLabelById.get(c.assignedTo) ?? "") : "sin asignar";
+            // match por teléfono (por dígitos)
+            if (qtDigits) {
+                const phoneDigits = normalizePhone(c.phone ?? "");
+                if (phoneDigits.includes(qtDigits)) return true;
+            }
 
-            // ✅ teléfono entra directo, y también address/maps/name/business
-            const hay = `${safeText(c.phone)} ${safeText(c.address)} ${safeText(c.mapsUrl)} ${name} ${business} ${assigneeLabel}`;
-            return hay.includes(qt);
+            // match por texto
+            if (qtText) {
+                const name = safeText((c as any).name);
+                const business = safeText((c as any).business);
+                const assigneeLabel = c.assignedTo
+                    ? safeText(userLabelById.get(c.assignedTo) ?? "")
+                    : "sin asignar";
+
+                const hay = `${safeText(c.address)} ${safeText(c.mapsUrl)} ${name} ${business} ${assigneeLabel}`;
+                return hay.includes(qtText);
+            }
+
+            return false;
         });
     }, [clients, q, users, userLabelById]);
 
@@ -249,7 +270,7 @@ export default function AdminUploadClientsScreen() {
         const makeTitle = (key: string) => {
             if (key === "UNASSIGNED") return "Sin asignar";
             const u = userById.get(key);
-            if (!u) return "Asignado (cargando…)"; // ✅ jamás mostramos UID
+            if (!u) return "Asignado (cargando…)";
             const name = (u.name ?? "").trim();
             const email = (u.email ?? "").trim();
             return name && email ? `${name}` : name ? name : email ? email : "Usuario";
@@ -264,7 +285,6 @@ export default function AdminUploadClientsScreen() {
         };
 
         const sortClients = (arr: ClientDoc[]) => {
-            // ✅ pendientes arriba, luego visited, luego rejected; dentro por updatedAt desc
             const rank = (s?: string) => (s === "pending" ? 0 : s === "visited" ? 1 : 2);
             return arr.sort((a, b) => {
                 const ra = rank(a.status);
@@ -276,7 +296,6 @@ export default function AdminUploadClientsScreen() {
 
         const keys = Object.keys(byKey);
 
-        // sort: UNASSIGNED primero, luego alfabético por label
         keys.sort((a, b) => {
             if (a === "UNASSIGNED") return -1;
             if (b === "UNASSIGNED") return 1;
@@ -296,9 +315,6 @@ export default function AdminUploadClientsScreen() {
             };
         });
     }, [filteredClients, userById, userLabelById]);
-
-    const selectedCreateUser = cAssigneeId ? userById.get(cAssigneeId) : undefined;
-    const selectedEditUser = eAssigneeId ? userById.get(eAssigneeId) : undefined;
 
     // -------------------------
     // Helpers (UI)
@@ -375,6 +391,14 @@ export default function AdminUploadClientsScreen() {
         setCErr(null);
     };
 
+    const phoneExists = (phoneDigits: string, excludeId?: string | null) => {
+        if (!phoneDigits) return false;
+        return clients.some((c) => {
+            if (excludeId && c.id === excludeId) return false;
+            return normalizePhone(c.phone ?? "") === phoneDigits;
+        });
+    };
+
     const submitCreate = async () => {
         setCErr(null);
 
@@ -386,6 +410,10 @@ export default function AdminUploadClientsScreen() {
 
         if (!cleanPhone) {
             setCErr("Teléfono es obligatorio.");
+            return;
+        }
+        if (phoneExists(cleanPhone)) {
+            setCErr("Ese teléfono ya existe en la base de datos. No se puede crear duplicado.");
             return;
         }
         if (!cleanMaps) {
@@ -418,7 +446,6 @@ export default function AdminUploadClientsScreen() {
                 payload.assignedAt = now;
                 payload.assignedDayKey = dayKeyFromMs(now);
 
-                // ✅ cumple reglas: pending real -> statusBy/statusAt/note deben ser null o no existir
                 payload.status = "pending";
                 payload.statusBy = null;
                 payload.statusAt = null;
@@ -477,6 +504,10 @@ export default function AdminUploadClientsScreen() {
             Alert.alert("Error", "Teléfono es obligatorio.");
             return;
         }
+        if (phoneExists(cleanPhone, editingId)) {
+            Alert.alert("Duplicado", "Ese teléfono ya existe. No se puede guardar duplicado.");
+            return;
+        }
         if (!cleanMaps) {
             Alert.alert("Error", "Link de Google Maps es obligatorio.");
             return;
@@ -504,7 +535,6 @@ export default function AdminUploadClientsScreen() {
                 patch.assignedAt = now;
                 patch.assignedDayKey = dayKeyFromMs(now);
             } else {
-                // si tu modelo usa "undefined" mejor quitar, pero aquí lo dejamos limpio:
                 patch.assignedTo = "";
                 patch.assignedAt = 0;
                 patch.assignedDayKey = "";
@@ -577,7 +607,7 @@ export default function AdminUploadClientsScreen() {
     // FAB: subir un poco + respetar home indicator
     const fabBottom = Math.max(18, insets.bottom + 18) + 14;
 
-    const AssigneeRowValue = (userId: string | null, mode: "create" | "edit") => {
+    const AssigneeRowValue = (userId: string | null) => {
         if (!userId) return "Sin asignar";
         const u = userById.get(userId);
         if (!u) return "Asignado (cargando…)";
@@ -593,7 +623,6 @@ export default function AdminUploadClientsScreen() {
                     {label}
                 </Text>
                 <View style={styles.pendingBadge}>
-                    <Ionicons name="time-outline" size={14} color={COLORS.pending} />
                     <Text style={styles.pendingBadgeText}>{p}</Text>
                 </View>
             </View>
@@ -626,7 +655,11 @@ export default function AdminUploadClientsScreen() {
                     disabled={usersLoading}
                     accessibilityLabel="Refrescar usuarios"
                 >
-                    <Ionicons name={usersLoading ? "sync" : "people-outline"} size={18} color={COLORS.text} />
+                    <Ionicons
+                        name={usersLoading ? "sync" : "people-outline"}
+                        size={18}
+                        color={COLORS.text}
+                    />
                 </Pressable>
             </View>
 
@@ -636,7 +669,7 @@ export default function AdminUploadClientsScreen() {
                 <TextInput
                     value={q}
                     onChangeText={setQ}
-                    placeholder="Buscar usuario o cliente (teléfono, nombre, negocio)…"
+                    placeholder="Buscar usuario o cliente"
                     placeholderTextColor={COLORS.muted}
                     style={styles.searchInput}
                 />
@@ -660,50 +693,54 @@ export default function AdminUploadClientsScreen() {
                     return (
                         <Pressable
                             onPress={() => toggleExpanded(section.key)}
-                            style={({ pressed }) => [styles.sectionHeader, pressed && styles.sectionHeaderPressed]}
+                            style={({ pressed }) => [
+                                styles.sectionCard,
+                                pressed && styles.sectionHeaderPressed,
+                            ]}
                             accessibilityLabel={`Acordeón ${section.title}`}
                         >
-                            <View style={{ flex: 1, gap: 2 }}>
-                                <View style={styles.sectionTitleRow}>
-                                    <Ionicons
-                                        name={expanded ? "chevron-down" : "chevron-forward"}
-                                        size={16}
-                                        color={COLORS.muted}
-                                    />
-                                    <Text style={styles.sectionTitle} numberOfLines={1}>
-                                        {section.title}
-                                    </Text>
-
-                                    {/* ✅ badge de pendientes al lado del usuario */}
-                                    <View style={styles.pendingBadgeMini}>
-                                        <Ionicons name="time-outline" size={12} color={COLORS.pending} />
-                                        <Text style={styles.pendingBadgeMiniText}>{userPending}</Text>
+                            <View style={styles.sectionHeaderRow}>
+                                <View style={{ flex: 1, gap: 2 }}>
+                                    <View style={styles.sectionTitleRow}>
+                                        <Ionicons
+                                            name={expanded ? "chevron-down" : "chevron-forward"}
+                                            size={16}
+                                            color={COLORS.muted}
+                                        />
+                                        <Text style={styles.sectionTitle} numberOfLines={1}>
+                                            {section.title}
+                                        </Text>
                                     </View>
+
+                                    {section.subtitle ? (
+                                        <Text style={styles.sectionSub} numberOfLines={1}>
+                                            {section.subtitle}
+                                        </Text>
+                                    ) : null}
                                 </View>
 
-                                {section.subtitle ? (
-                                    <Text style={styles.sectionSub} numberOfLines={1}>
-                                        {section.subtitle}
-                                    </Text>
-                                ) : null}
-                            </View>
-
-                            <View style={styles.sectionPills}>
-                                <View style={[styles.miniPill, styles.miniPillPending]}>
-                                    <Text style={[styles.miniPillText, styles.miniTextPending]}>{section.totals.pending}</Text>
-                                </View>
-                                <View style={[styles.miniPill, styles.miniPillVisited]}>
-                                    <Text style={[styles.miniPillText, styles.miniTextVisited]}>{section.totals.visited}</Text>
-                                </View>
-                                <View style={[styles.miniPill, styles.miniPillRejected]}>
-                                    <Text style={[styles.miniPillText, styles.miniTextRejected]}>{section.totals.rejected}</Text>
+                                <View style={styles.sectionPills}>
+                                    <View style={[styles.miniPill, styles.miniPillPending]}>
+                                        <Text style={[styles.miniPillText, styles.miniTextPending]}>
+                                            {section.totals.pending}
+                                        </Text>
+                                    </View>
+                                    <View style={[styles.miniPill, styles.miniPillVisited]}>
+                                        <Text style={[styles.miniPillText, styles.miniTextVisited]}>
+                                            {section.totals.visited}
+                                        </Text>
+                                    </View>
+                                    <View style={[styles.miniPill, styles.miniPillRejected]}>
+                                        <Text style={[styles.miniPillText, styles.miniTextRejected]}>
+                                            {section.totals.rejected}
+                                        </Text>
+                                    </View>
                                 </View>
                             </View>
                         </Pressable>
                     );
                 }}
                 renderItem={({ item, section }) => {
-                    // ✅ acordeón: si está colapsado, no renderizamos items
                     if (!expandedKeys.has(section.key)) return null;
 
                     const displayName = ((item as any).name ?? "").trim();
@@ -833,7 +870,7 @@ export default function AdminUploadClientsScreen() {
             <Modal visible={createOpen} transparent animationType="fade" onRequestClose={() => setCreateOpen(false)}>
                 <View style={styles.modalOverlay}>
                     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                        <View style={styles.modalCard}>
+                        <View style={styles.modalCardBig}>
                             <View style={styles.modalHeader}>
                                 <Text style={styles.modalTitle}>Crear cliente</Text>
                                 <Pressable onPress={() => setCreateOpen(false)} style={styles.modalClose}>
@@ -841,15 +878,13 @@ export default function AdminUploadClientsScreen() {
                                 </Pressable>
                             </View>
 
-                            <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
                                 {/* Assignee */}
                                 <Pressable onPress={openUserPickerForCreate} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
                                     <View style={{ flex: 1, gap: 2 }}>
                                         <Text style={styles.selectLabel}>Asignar a</Text>
-
-                                        {/* ✅ con badge de pendientes */}
                                         {typeof cAssigneeId === "string" ? (
-                                            AssigneeRowValue(cAssigneeId, "create")
+                                            AssigneeRowValue(cAssigneeId)
                                         ) : (
                                             <Text style={styles.selectValue} numberOfLines={1}>
                                                 Sin asignar
@@ -890,7 +925,7 @@ export default function AdminUploadClientsScreen() {
                                             value={cPhone}
                                             onChangeText={setCPhone}
                                             keyboardType="phone-pad"
-                                            placeholder="5591..."
+                                            placeholder="+55 91 954 23 232"
                                             placeholderTextColor={COLORS.muted}
                                             style={styles.input}
                                         />
@@ -961,7 +996,7 @@ export default function AdminUploadClientsScreen() {
             <Modal visible={editOpen} transparent animationType="fade" onRequestClose={cancelEdit}>
                 <View style={styles.modalOverlay}>
                     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                        <View style={styles.modalCard}>
+                        <View style={styles.modalCardBig}>
                             <View style={styles.modalHeader}>
                                 <Text style={styles.modalTitle}>Editar</Text>
                                 <Pressable onPress={cancelEdit} style={styles.modalClose}>
@@ -969,15 +1004,13 @@ export default function AdminUploadClientsScreen() {
                                 </Pressable>
                             </View>
 
-                            <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
                                 {/* Assignee */}
                                 <Pressable onPress={openUserPickerForEdit} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
                                     <View style={{ flex: 1, gap: 2 }}>
                                         <Text style={styles.selectLabel}>Asignado a</Text>
-
-                                        {/* ✅ con badge de pendientes */}
                                         {typeof eAssigneeId === "string" ? (
-                                            AssigneeRowValue(eAssigneeId, "edit")
+                                            AssigneeRowValue(eAssigneeId)
                                         ) : (
                                             <Text style={styles.selectValue} numberOfLines={1}>
                                                 Sin asignar
@@ -990,24 +1023,12 @@ export default function AdminUploadClientsScreen() {
                                 <View style={styles.grid2}>
                                     <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Nombre</Text>
-                                        <TextInput
-                                            value={eName}
-                                            onChangeText={setEName}
-                                            placeholder="Opcional"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
-                                        />
+                                        <TextInput value={eName} onChangeText={setEName} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
                                     </View>
 
                                     <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Negocio</Text>
-                                        <TextInput
-                                            value={eBusiness}
-                                            onChangeText={setEBusiness}
-                                            placeholder="Opcional"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
-                                        />
+                                        <TextInput value={eBusiness} onChangeText={setEBusiness} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
                                     </View>
                                 </View>
 
@@ -1018,7 +1039,7 @@ export default function AdminUploadClientsScreen() {
                                             value={ePhone}
                                             onChangeText={setEPhone}
                                             keyboardType="phone-pad"
-                                            placeholder="5591..."
+                                            placeholder="+55 91 954 23 232"
                                             placeholderTextColor={COLORS.muted}
                                             style={styles.input}
                                         />
@@ -1026,13 +1047,7 @@ export default function AdminUploadClientsScreen() {
 
                                     <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Dirección</Text>
-                                        <TextInput
-                                            value={eAddress}
-                                            onChangeText={setEAddress}
-                                            placeholder="Opcional"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
-                                        />
+                                        <TextInput value={eAddress} onChangeText={setEAddress} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
                                     </View>
                                 </View>
 
@@ -1054,11 +1069,7 @@ export default function AdminUploadClientsScreen() {
                                         <Text style={styles.ghostBtnText}>Cancelar</Text>
                                     </Pressable>
 
-                                    <Pressable
-                                        onPress={submitEdit}
-                                        style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, eSaving && styles.btnDisabled]}
-                                        disabled={eSaving}
-                                    >
+                                    <Pressable onPress={submitEdit} style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, eSaving && styles.btnDisabled]} disabled={eSaving}>
                                         <Ionicons name="save-outline" size={18} color="#fff" />
                                         <Text style={styles.primaryBtnText}>{eSaving ? "Guardando..." : "Guardar"}</Text>
                                     </Pressable>
@@ -1085,13 +1096,7 @@ export default function AdminUploadClientsScreen() {
 
                             <View style={styles.searchWrapModal}>
                                 <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                                <TextInput
-                                    value={pickerQuery}
-                                    onChangeText={setPickerQuery}
-                                    placeholder="Buscar…"
-                                    placeholderTextColor={COLORS.muted}
-                                    style={styles.searchInput}
-                                />
+                                <TextInput value={pickerQuery} onChangeText={setPickerQuery} placeholder="Buscar…" placeholderTextColor={COLORS.muted} style={styles.searchInput} />
                                 {!!pickerQuery ? (
                                     <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
                                         <Ionicons name="close" size={18} color={COLORS.text} />
@@ -1100,7 +1105,6 @@ export default function AdminUploadClientsScreen() {
                             </View>
 
                             <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                {/* Opción: sin asignar (solo para create/edit) */}
                                 {pickerMode !== "assignExisting" ? (
                                     <Pressable
                                         onPress={() => {
@@ -1119,7 +1123,6 @@ export default function AdminUploadClientsScreen() {
                                         </View>
 
                                         <View style={styles.pendingBadgeMini}>
-                                            <Ionicons name="time-outline" size={12} color={COLORS.pending} />
                                             <Text style={styles.pendingBadgeMiniText}>{pendingByUser.get("UNASSIGNED") ?? 0}</Text>
                                         </View>
                                     </Pressable>
@@ -1143,9 +1146,7 @@ export default function AdminUploadClientsScreen() {
                                                 </Text>
                                             </View>
 
-                                            {/* ✅ badge pendientes */}
                                             <View style={styles.pendingBadgeMini}>
-                                                <Ionicons name="time-outline" size={12} color={COLORS.pending} />
                                                 <Text style={styles.pendingBadgeMiniText}>{p}</Text>
                                             </View>
                                         </Pressable>
@@ -1244,17 +1245,21 @@ const styles = StyleSheet.create({
 
     listContent: { paddingHorizontal: 16, paddingBottom: 140 },
 
-    sectionHeader: {
-        paddingTop: 10,
-        paddingBottom: 8,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
+    // ✅ Section header ahora en tarjeta
+    sectionCard: {
+        backgroundColor: COLORS.card,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        borderRadius: 18,
+        padding: 12,
+        marginTop: 10,
+        marginBottom: 10,
     },
     sectionHeaderPressed: { opacity: 0.96, transform: [{ scale: 0.995 }] },
+    sectionHeaderRow: { flexDirection: "row", alignItems: "center", gap: 10 },
 
     sectionTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-    sectionTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900", maxWidth: "85%" },
+    sectionTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900", maxWidth: "75%" },
     sectionSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
     sectionPills: { flexDirection: "row", gap: 6 },
@@ -1351,15 +1356,15 @@ const styles = StyleSheet.create({
     },
     fabPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
 
-    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 16, justifyContent: "center" },
+    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 12, justifyContent: "center" },
     modalWrap: { width: "100%" },
-    modalCard: {
+    modalCardBig: {
         backgroundColor: COLORS.card,
         borderRadius: 18,
         borderWidth: 1,
         borderColor: COLORS.border,
         padding: 14,
-        maxHeight: "85%",
+        maxHeight: "92%",
     },
     modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 },
     modalTitle: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
@@ -1481,11 +1486,8 @@ const styles = StyleSheet.create({
     btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     btnDisabled: { opacity: 0.55 },
 
-    // ✅ badges
+    // ✅ badges (SIN icono reloj)
     pendingBadge: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
         paddingHorizontal: 10,
         height: 28,
         borderRadius: 999,
@@ -1494,19 +1496,20 @@ const styles = StyleSheet.create({
         borderColor: "rgba(251,191,36,0.28)",
         marginTop: 6,
         alignSelf: "flex-start",
+        alignItems: "center",
+        justifyContent: "center",
     },
     pendingBadgeText: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
 
     pendingBadgeMini: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
         paddingHorizontal: 10,
         height: 26,
         borderRadius: 999,
         backgroundColor: "rgba(251,191,36,0.10)",
         borderWidth: 1,
         borderColor: "rgba(251,191,36,0.28)",
+        alignItems: "center",
+        justifyContent: "center",
     },
     pendingBadgeMiniText: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
 

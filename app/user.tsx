@@ -18,8 +18,14 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAuth } from "../src/auth/useAuth";
-import { subscribeUserClients, updateClientStatus } from "../src/data/repositories/clientsRepo";
-import { dayKeyFromMs, subscribeDailyEventsByDay } from "../src/data/repositories/dailyEventsRepo";
+import {
+    subscribeUserClients,
+    updateClientStatus,
+} from "../src/data/repositories/clientsRepo";
+import {
+    dayKeyFromMs,
+    subscribeDailyEventsByDay,
+} from "../src/data/repositories/dailyEventsRepo";
 import type { ClientDoc, DailyEventDoc } from "../src/types/models";
 
 type Filter = "pending" | "visited" | "rejected" | "all";
@@ -138,6 +144,8 @@ export default function UserHome() {
         return n ? ` · Hola ${n}` : "";
     }, [profile?.name]);
 
+    const todayDayKey = useMemo(() => dayKeyFromMs(Date.now()), []);
+
     // -------------------------
     // Guard de sesión / rol
     // -------------------------
@@ -255,8 +263,7 @@ export default function UserHome() {
                 }
             }
 
-            // ✅ limpieza suave de notas huérfanas (si el cliente ya no está asignado)
-            // (no obligatorio, pero evita crecer infinito)
+            // ✅ limpieza suave de notas huérfanas
             setNotesByClientId((prevNotes) => {
                 const alive = new Set(list.map((c) => c.id));
                 let changed = false;
@@ -334,38 +341,67 @@ export default function UserHome() {
     }, [todayEvents]);
 
     // -------------------------
-    // Lista filtrada + orden
+    // PRIORIDAD: ranking SOLO pendientes (oldest-first)
+    // #1 = más viejo (primero asignado / creado)
+    // -------------------------
+    const pendingPriorityMap = useMemo(() => {
+        const pendingOnly = clients
+            .filter((c) => c.status === "pending")
+            .slice()
+            .sort((a, b) => {
+                const aKey = (a.createdAt ?? a.assignedAt ?? a.updatedAt ?? 0) as number;
+                const bKey = (b.createdAt ?? b.assignedAt ?? b.updatedAt ?? 0) as number;
+                return aKey - bKey; // ✅ oldest first
+            });
+
+        const map = new Map<string, number>();
+        pendingOnly.forEach((c, idx) => map.set(c.id, idx + 1));
+        return map;
+    }, [clients]);
+
+    // -------------------------
+    // Lista filtrada + orden (oldest-first)
+    // - Dentro de cada status: oldest-first
+    // - En "all": pending arriba (opcional, se mantiene), luego visited, luego rejected
     // -------------------------
     const filteredClients = useMemo(() => {
         const queryText = q.trim().toLowerCase();
 
-        return clients
-            .filter((c) => {
-                if (filter !== "all" && c.status !== filter) return false;
-                if (!queryText) return true;
+        const base = clients.filter((c) => {
+            if (filter !== "all" && c.status !== filter) return false;
+            if (!queryText) return true;
 
-                const name = safeText((c as any).name);
-                const business = safeText((c as any).business);
+            const name = safeText((c as any).name);
+            const business = safeText((c as any).business);
 
-                const hay =
-                    safeText(c.phone) +
-                    " " +
-                    safeText(c.address) +
-                    " " +
-                    safeText(c.mapsUrl) +
-                    " " +
-                    name +
-                    " " +
-                    business;
+            const hay =
+                safeText(c.phone) +
+                " " +
+                safeText(c.address) +
+                " " +
+                safeText(c.mapsUrl) +
+                " " +
+                name +
+                " " +
+                business;
 
-                return hay.includes(queryText);
-            })
-            .sort((a, b) => {
-                const ap = a.status === "pending" ? 0 : 1;
-                const bp = b.status === "pending" ? 0 : 1;
-                if (ap !== bp) return ap - bp;
-                return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
-            });
+            return hay.includes(queryText);
+        });
+
+        const rankStatus = (s?: string) => (s === "pending" ? 0 : s === "visited" ? 1 : 2);
+
+        return base.sort((a, b) => {
+            // si estamos en "all", mantenemos pending arriba; si no, ambos ya son mismo status
+            if (filter === "all") {
+                const ra = rankStatus(a.status);
+                const rb = rankStatus(b.status);
+                if (ra !== rb) return ra - rb;
+            }
+
+            const aKey = (a.createdAt ?? a.assignedAt ?? a.updatedAt ?? 0) as number;
+            const bKey = (b.createdAt ?? b.assignedAt ?? b.updatedAt ?? 0) as number;
+            return aKey - bKey; // ✅ oldest first
+        });
     }, [clients, filter, q]);
 
     // -------------------------
@@ -410,7 +446,11 @@ export default function UserHome() {
     // -------------------------
     // Status handlers
     // -------------------------
-    const doUpdateStatus = async (client: ClientDoc, nextStatus: "pending" | "visited" | "rejected", reason?: RejectReason) => {
+    const doUpdateStatus = async (
+        client: ClientDoc,
+        nextStatus: "pending" | "visited" | "rejected",
+        reason?: RejectReason
+    ) => {
         if (!firebaseUser || !client.id) return;
 
         const snapshot = {
@@ -438,14 +478,35 @@ export default function UserHome() {
         ]);
     };
 
+    const canRestoreToPendingToday = (client: ClientDoc) => {
+        // si no hay statusAt, usamos updatedAt como fallback
+        const at = (client.statusAt ?? client.updatedAt ?? 0) as number;
+        if (!at) return false;
+        return dayKeyFromMs(at) === todayDayKey;
+    };
+
     const confirmSetStatus = (client: ClientDoc, nextStatus: "pending" | "visited" | "rejected") => {
         if (nextStatus === "rejected") {
             confirmRejectedWithReason(client);
             return;
         }
 
+        // ✅ Bloqueo: NO permitir restaurar si no fue HOY
+        if (nextStatus === "pending" && client.status !== "pending") {
+            if (!canRestoreToPendingToday(client)) {
+                Alert.alert(
+                    "No permitido",
+                    "Solo puedes restaurar a Pendiente los clientes que visitaste o rechazaste HOY."
+                );
+                return;
+            }
+        }
+
         const title = nextStatus === "pending" ? "Volver a pendiente" : "Marcar como visitado";
-        const msg = nextStatus === "pending" ? "¿Quieres quitar el estado actual y volver a Pendiente?" : "¿Confirmas que ya fue visitado?";
+        const msg =
+            nextStatus === "pending"
+                ? "¿Quieres quitar el estado actual y volver a Pendiente?"
+                : "¿Confirmas que ya fue visitado?";
 
         Alert.alert(title, msg, [
             { text: "Cancelar", style: "cancel" },
@@ -535,7 +596,9 @@ export default function UserHome() {
             accessibilityLabel={label ?? "Filtro"}
         >
             <Ionicons name={icon} size={10} color={tint ?? COLORS.text} />
-            {showLabel && label ? <Text style={[styles.miniChipText, active && styles.miniChipTextActive]}>{label}</Text> : null}
+            {showLabel && label ? (
+                <Text style={[styles.miniChipText, active && styles.miniChipTextActive]}>{label}</Text>
+            ) : null}
             {typeof badge === "number" ? (
                 <View style={[styles.miniBadge, active && styles.miniBadgeActive]}>
                     <Text style={[styles.miniBadgeText, active && styles.miniBadgeTextActive]}>{badge}</Text>
@@ -558,7 +621,11 @@ export default function UserHome() {
         <Pressable
             onPress={onPress}
             disabled={disabled}
-            style={({ pressed }) => [styles.iconBtn, disabled && styles.iconBtnDisabled, pressed && !disabled && styles.iconBtnPressed]}
+            style={({ pressed }) => [
+                styles.iconBtn,
+                disabled && styles.iconBtnDisabled,
+                pressed && !disabled && styles.iconBtnPressed,
+            ]}
             accessibilityLabel={label}
         >
             <Ionicons name={icon} size={18} color={COLORS.text} />
@@ -607,9 +674,16 @@ export default function UserHome() {
         const isPending = item.status === "pending";
         const localNote = (notesByClientId?.[item.id] ?? "").trim();
 
+        // ✅ prioridad SOLO pendientes: mostrar etiqueta solo si está en top 5
+        const prio = isPending ? pendingPriorityMap.get(item.id) ?? null : null;
+        const showPrio = !!prio && prio <= 3;
+
+        // ✅ si no es del día, deshabilitamos visualmente el undo (solo para feedback)
+        const canUndo = item.status === "pending" ? false : canRestoreToPendingToday(item);
+
         return (
             <View style={styles.card}>
-                {/* ✅ Nota local (solo user) */}
+                {/* ✅ Nota local */}
                 {localNote ? (
                     <View style={styles.noteBanner}>
                         <Ionicons name="bookmark-outline" size={16} color={COLORS.pending} />
@@ -621,9 +695,20 @@ export default function UserHome() {
 
                 <View style={styles.cardTop}>
                     <View style={styles.cardTitleWrap}>
-                        <Text numberOfLines={1} style={styles.clientName}>
-                            {name}
-                        </Text>
+                        <View style={styles.titleRow}>
+                            <Text numberOfLines={1} style={styles.clientName}>
+                                {name}
+                            </Text>
+
+                            {/* ✅ badge prioridad top 5 (solo pending) */}
+                            {showPrio ? (
+                                <View style={styles.priorityPill}>
+                                    <Ionicons name="flame-outline" size={14} color={COLORS.pending} />
+                                    <Text style={styles.priorityText}>Prioridad #{prio}</Text>
+                                </View>
+                            ) : null}
+                        </View>
+
                         {business ? (
                             <Text numberOfLines={1} style={styles.clientBusiness}>
                                 {business}
@@ -684,10 +769,22 @@ export default function UserHome() {
                                 <StatusIconBtn kind="rejected" onPress={() => confirmSetStatus(item, "rejected")} disabled={isBusy} />
                             </>
                         ) : (
-                            <StatusIconBtn kind="undo" onPress={() => confirmSetStatus(item, "pending")} disabled={isBusy} />
+                            <StatusIconBtn
+                                kind="undo"
+                                onPress={() => confirmSetStatus(item, "pending")}
+                                disabled={isBusy || !canUndo}
+                            />
                         )}
                     </View>
                 </View>
+
+                {/* ✅ mensaje si el undo está bloqueado por fecha */}
+                {!isPending && !canUndo ? (
+                    <View style={styles.lockHintRow}>
+                        <Ionicons name="lock-closed-outline" size={14} color={COLORS.muted} />
+                        <Text style={styles.lockHintText}>No se puede restaurar: solo el mismo día.</Text>
+                    </View>
+                ) : null}
 
                 {isBusy ? (
                     <View style={styles.busyRow}>
@@ -751,7 +848,7 @@ export default function UserHome() {
                 ) : null}
             </View>
 
-            {/* Filters (minimal) */}
+            {/* Filters */}
             <View style={styles.filtersRow}>
                 <MiniChip
                     active={filter === "pending"}
@@ -830,10 +927,7 @@ export default function UserHome() {
                     />
 
                     <View style={styles.modalActions}>
-                        <Pressable
-                            onPress={clearNote}
-                            style={({ pressed }) => [styles.modalBtn, styles.modalBtnDanger, pressed && styles.modalBtnPressed]}
-                        >
+                        <Pressable onPress={clearNote} style={({ pressed }) => [styles.modalBtn, styles.modalBtnDanger, pressed && styles.modalBtnPressed]}>
                             <Ionicons name="trash-outline" size={18} color={COLORS.rejected} />
                             <Text style={styles.modalBtnTextDanger}>Borrar</Text>
                         </Pressable>
@@ -844,9 +938,7 @@ export default function UserHome() {
                         </Pressable>
                     </View>
 
-                    <Text style={styles.modalHint}>
-                        * Esta nota se guarda solo en tu teléfono. El admin no la ve.
-                    </Text>
+                    <Text style={styles.modalHint}>* Esta nota se guarda solo en tu teléfono. El admin no la ve.</Text>
                 </View>
             </Modal>
         </SafeAreaView>
@@ -952,7 +1044,7 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(255,255,255,0.06)",
     },
 
-    // Filters (minimal)
+    // Filters
     filtersRow: {
         paddingHorizontal: 16,
         flexDirection: "row",
@@ -1000,7 +1092,7 @@ const styles = StyleSheet.create({
         gap: 12,
     },
 
-    // ✅ note banner
+    // note banner
     noteBanner: {
         flexDirection: "row",
         alignItems: "flex-start",
@@ -1022,7 +1114,24 @@ const styles = StyleSheet.create({
 
     cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
     cardTitleWrap: { flex: 1, gap: 2 },
-    clientName: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
+
+    titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+    clientName: { flex: 1, color: COLORS.text, fontSize: 16, fontWeight: "900" },
+
+    // ✅ prioridad (top 5 pending)
+    priorityPill: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 10,
+        height: 28,
+        borderRadius: 999,
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(251,191,36,0.28)",
+    },
+    priorityText: { color: "#FDE68A", fontSize: 12, fontWeight: "900" },
+
     clientBusiness: { color: COLORS.muted, fontSize: 13, fontWeight: "700" },
 
     cardTopRight: { flexDirection: "row", alignItems: "center", gap: 10 },
@@ -1093,13 +1202,17 @@ const styles = StyleSheet.create({
     statusIconBtnPressed: { transform: [{ scale: 0.97 }], opacity: 0.96 },
     statusIconBtnDisabled: { opacity: 0.5 },
 
+    // ✅ hint bloqueo undo
+    lockHintRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingTop: 2 },
+    lockHintText: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+
     busyRow: { paddingTop: 4 },
     busyText: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
     empty: { marginTop: 40, alignItems: "center", gap: 10 },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "800" },
 
-    // ✅ modal note
+    // modal note
     modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
     modalCard: {
         position: "absolute",
