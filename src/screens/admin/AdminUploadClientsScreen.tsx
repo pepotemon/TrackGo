@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
     Alert,
@@ -73,6 +74,7 @@ function getRejectReason(c: ClientDoc): string | null {
 
 export default function AdminUploadClientsScreen() {
     const insets = useSafeAreaInsets();
+    const params = useLocalSearchParams<{ mapsUrl?: string; maps?: string }>();
 
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
@@ -176,6 +178,27 @@ export default function AdminUploadClientsScreen() {
         }
         return m;
     }, [users]);
+
+    // -------------------------
+    // ✅ Prefill desde deep link (mapsUrl) y abrir modal Create
+    // -------------------------
+    useEffect(() => {
+        const raw = (params?.mapsUrl ?? params?.maps ?? "") as any;
+        const incoming = (typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "").trim();
+
+        if (!incoming) return;
+
+        // Evita re-abrir si ya está abierto o ya se puso el mismo link
+        if (createOpen) return;
+        if (cMapsUrl.trim() === incoming) return;
+
+        (async () => {
+            await ensureUsers();
+            setCMapsUrl(incoming);
+            setCreateOpen(true);
+        })();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [params?.mapsUrl, params?.maps]);
 
     // -------------------------
     // pending count por usuario (para badges)
@@ -688,7 +711,6 @@ export default function AdminUploadClientsScreen() {
                 stickySectionHeadersEnabled={false}
                 renderSectionHeader={({ section }) => {
                     const expanded = expandedKeys.has(section.key);
-                    const userPending = pendingByUser.get(section.key) ?? 0;
 
                     return (
                         <Pressable

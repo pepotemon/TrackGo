@@ -21,7 +21,44 @@
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "intentFilters": [
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "text/plain"
+            }
+          ]
+        },
+        {
+          "action": "VIEW",
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "scheme": "trackgo"
+            },
+            {
+              "scheme": "https",
+              "host": "maps.google.com"
+            },
+            {
+              "scheme": "https",
+              "host": "www.google.com"
+            },
+            {
+              "scheme": "https",
+              "host": "goo.gl"
+            }
+          ]
+        }
+      ]
     },
     "notification": {
       "icon": "./assets/images/notification-icon.png",
