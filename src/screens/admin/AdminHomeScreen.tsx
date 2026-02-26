@@ -26,7 +26,7 @@ type AdminAction = {
     title: string;
     subtitle: string;
     icon: any;
-    route: "/admin/users" | "/admin/clients";
+    route: "/admin/users" | "/admin/clients" | "/admin/accounting";
 };
 
 function dayKeyFromDate(d: Date) {
@@ -115,6 +115,12 @@ export default function AdminHomeScreen() {
                 icon: "briefcase-outline",
                 route: "/admin/clients",
             },
+            {
+                title: "Contabilidad",
+                subtitle: "Inversión semanal y ganancia real",
+                icon: "stats-chart-outline",
+                route: "/admin/accounting",
+            },
         ],
         []
     );
@@ -180,10 +186,6 @@ export default function AdminHomeScreen() {
      * Solo contamos el evento si:
      * 1) el cliente todavía existe (no fue eliminado)
      * 2) el estado actual del cliente COINCIDE con el type del evento más reciente dentro del rango
-     *
-     * Esto elimina:
-     * - eventos de clientes borrados
-     * - rejected/visited viejos que ya fueron "restaurados" o "reasignados"
      */
     const shouldCountEvent = useCallback(
         (e: DailyEventDoc) => {
@@ -193,8 +195,6 @@ export default function AdminHomeScreen() {
             const c = clientById.get(cid);
             if (!c) return false; // eliminado
 
-            // Si el admin reasignó y reseteó a pending, o el user restauró, el status ya no coincide:
-            // entonces NO lo contamos en los contadores.
             return c.status === e.type;
         },
         [clientById]

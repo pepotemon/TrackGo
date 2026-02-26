@@ -1,3 +1,8 @@
+// types/models.ts
+
+// ----------------------
+// USERS
+// ----------------------
 export type UserRole = "admin" | "user";
 
 export type UserDoc = {
@@ -17,9 +22,24 @@ export type UserDoc = {
      * Tarifa por cliente visitado (R$)
      */
     ratePerVisit?: number;
+
+    /**
+     * ✅ Push notifications (Expo)
+     * El user puede actualizar esto (rules).
+     */
+    expoPushToken?: string | null;
+    expoPushTokenUpdatedAt?: number; // ms
 };
 
+// ----------------------
+// CLIENTS
+// ----------------------
 export type ClientStatus = "pending" | "visited" | "rejected";
+
+/**
+ * Motivos permitidos (nuevo campo)
+ */
+export type RejectedReason = "clavo" | "localizacion" | "otro";
 
 export type ClientDoc = {
     id: string;
@@ -56,17 +76,27 @@ export type ClientDoc = {
     updatedAt: number; // ms
 
     /**
-     * ✅ Motivo / nota
-     * Ej: "clavo" | "localización" | "otro" | null
+     * ✅ Compat (legacy):
+     * algunos flujos viejos guardaban el motivo en note.
+     * Puede ser texto libre.
      */
     note?: string | null;
+
+    /**
+     * ✅ Nuevo (preferido):
+     * motivo estructurado para rejected.
+     */
+    rejectedReason?: RejectedReason | null;
 };
 
+// ----------------------
+// DAILY EVENTS
+// ----------------------
 export type DailyEventType = "visited" | "rejected" | "pending";
 
 /**
  * Historial (auditoría).
- * ⚠️ NO usar para monetización.
+ * ⚠️ NO usar para monetización si no filtras por status actual del client.
  */
 export type DailyEventDoc = {
     id: string;
@@ -83,11 +113,33 @@ export type DailyEventDoc = {
     address?: string;
 
     /**
-     * ✅ Motivo / nota (opcional)
-     * Ej: "clavo" | "localización" | "otro"
+     * ✅ Compat (legacy): motivo como texto
      */
     note?: string | null;
 
+    /**
+     * ✅ Nuevo (preferido): motivo estructurado
+     * Solo debería venir cuando type === "rejected"
+     */
+    rejectedReason?: RejectedReason | null;
+
     createdAt: number; // ms
     dayKey: string; // "YYYY-MM-DD"
+};
+
+// ----------------------
+// ACCOUNTING / INVESTMENTS
+// ----------------------
+export type WeeklyInvestmentDoc = {
+    id: string; // weekStartKey (docId recomendado)
+    weekStartKey: string; // "YYYY-MM-DD" (lunes)
+    weekEndKey: string;   // "YYYY-MM-DD" (domingo)
+
+    /**
+     * Monto invertido esa semana (R$)
+     */
+    amount: number;
+
+    createdAt: number; // ms
+    updatedAt: number; // ms
 };
