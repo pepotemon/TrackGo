@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     KeyboardAvoidingView,
@@ -180,17 +180,19 @@ export default function AdminUploadClientsScreen() {
     }, [users]);
 
     // -------------------------
-    // ✅ Prefill desde deep link (mapsUrl) y abrir modal Create
+    // ✅ Prefill desde params (mapsUrl) y abrir modal Create
     // -------------------------
+    const lastHandledMapsUrlRef = useRef<string>("");
+
     useEffect(() => {
         const raw = (params?.mapsUrl ?? params?.maps ?? "") as any;
         const incoming = (typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "").trim();
 
         if (!incoming) return;
 
-        // Evita re-abrir si ya está abierto o ya se puso el mismo link
-        if (createOpen) return;
-        if (cMapsUrl.trim() === incoming) return;
+        // evita loops
+        if (lastHandledMapsUrlRef.current === incoming) return;
+        lastHandledMapsUrlRef.current = incoming;
 
         (async () => {
             await ensureUsers();
@@ -869,7 +871,9 @@ export default function AdminUploadClientsScreen() {
                 ListEmptyComponent={
                     <View style={styles.empty}>
                         <Ionicons name="people-outline" size={24} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>{q.trim() ? "No hay resultados." : "Aún no hay clientes."}</Text>
+                        <Text style={styles.emptyText}>
+                            {q.trim() ? "No hay resultados." : "Aún no hay clientes."}
+                        </Text>
                     </View>
                 }
             />
@@ -887,8 +891,8 @@ export default function AdminUploadClientsScreen() {
             </Pressable>
 
             {/* =========================
-          CREATE MODAL
-         ========================= */}
+        CREATE MODAL
+      ========================= */}
             <Modal visible={createOpen} transparent animationType="fade" onRequestClose={() => setCreateOpen(false)}>
                 <View style={styles.modalOverlay}>
                     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
@@ -919,49 +923,24 @@ export default function AdminUploadClientsScreen() {
                                 <View style={styles.grid2}>
                                     <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Nombre</Text>
-                                        <TextInput
-                                            value={cName}
-                                            onChangeText={setCName}
-                                            placeholder="Opcional"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
-                                        />
+                                        <TextInput value={cName} onChangeText={setCName} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
                                     </View>
 
                                     <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Negocio</Text>
-                                        <TextInput
-                                            value={cBusiness}
-                                            onChangeText={setCBusiness}
-                                            placeholder="Opcional"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
-                                        />
+                                        <TextInput value={cBusiness} onChangeText={setCBusiness} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
                                     </View>
                                 </View>
 
                                 <View style={styles.grid2}>
                                     <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Teléfono *</Text>
-                                        <TextInput
-                                            value={cPhone}
-                                            onChangeText={setCPhone}
-                                            keyboardType="phone-pad"
-                                            placeholder="+55 91 954 23 232"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
-                                        />
+                                        <TextInput value={cPhone} onChangeText={setCPhone} keyboardType="phone-pad" placeholder="+55 91 954 23 232" placeholderTextColor={COLORS.muted} style={styles.input} />
                                     </View>
 
                                     <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Dirección</Text>
-                                        <TextInput
-                                            value={cAddress}
-                                            onChangeText={setCAddress}
-                                            placeholder="Opcional"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
-                                        />
+                                        <TextInput value={cAddress} onChangeText={setCAddress} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
                                     </View>
                                 </View>
 
@@ -1013,8 +992,8 @@ export default function AdminUploadClientsScreen() {
             </Modal>
 
             {/* =========================
-          EDIT MODAL
-         ========================= */}
+        EDIT MODAL
+      ========================= */}
             <Modal visible={editOpen} transparent animationType="fade" onRequestClose={cancelEdit}>
                 <View style={styles.modalOverlay}>
                     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
@@ -1057,14 +1036,7 @@ export default function AdminUploadClientsScreen() {
                                 <View style={styles.grid2}>
                                     <View style={[styles.field, { flex: 1 }]}>
                                         <Text style={styles.label}>Teléfono *</Text>
-                                        <TextInput
-                                            value={ePhone}
-                                            onChangeText={setEPhone}
-                                            keyboardType="phone-pad"
-                                            placeholder="+55 91 954 23 232"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
-                                        />
+                                        <TextInput value={ePhone} onChangeText={setEPhone} keyboardType="phone-pad" placeholder="+55 91 954 23 232" placeholderTextColor={COLORS.muted} style={styles.input} />
                                     </View>
 
                                     <View style={[styles.field, { flex: 1 }]}>
@@ -1103,8 +1075,8 @@ export default function AdminUploadClientsScreen() {
             </Modal>
 
             {/* =========================
-          USER PICKER MODAL
-         ========================= */}
+        USER PICKER MODAL
+      ========================= */}
             <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={() => setUserPickerOpen(false)}>
                 <View style={styles.modalOverlay}>
                     <View style={styles.pickerWrap}>
@@ -1267,7 +1239,6 @@ const styles = StyleSheet.create({
 
     listContent: { paddingHorizontal: 16, paddingBottom: 140 },
 
-    // ✅ Section header ahora en tarjeta
     sectionCard: {
         backgroundColor: COLORS.card,
         borderWidth: 1,
@@ -1508,7 +1479,6 @@ const styles = StyleSheet.create({
     btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     btnDisabled: { opacity: 0.55 },
 
-    // ✅ badges (SIN icono reloj)
     pendingBadge: {
         paddingHorizontal: 10,
         height: 28,

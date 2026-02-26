@@ -19,7 +19,13 @@ export default function AdminLayout() {
             router.replace({ pathname: "/no-access" as any });
             return;
         }
-    }, [loading, firebaseUser?.uid, profile?.role, profile?.active]);
+    }, [
+        loading,
+        firebaseUser?.uid,
+        profile?.role,
+        profile?.active,
+        router,
+    ]);
 
     if (loading || !firebaseUser || !profile) {
         return (
@@ -32,7 +38,6 @@ export default function AdminLayout() {
     return (
         <Stack
             screenOptions={{
-                // ✅ siempre TrackGo
                 headerTitle: "TrackGo",
                 headerTitleAlign: "center",
                 headerStyle: { backgroundColor: "#0A0F1E" },
@@ -40,11 +45,11 @@ export default function AdminLayout() {
                 headerTitleStyle: { fontWeight: "900" },
                 headerShadowVisible: false,
 
-                // ✅ evita “large title” en iOS (si está soportado en tu versión, ok)
+                // en algunas versiones puede no existir, pero no rompe
+                // @ts-ignore
                 headerLargeTitle: false,
             }}
         >
-            {/* ✅ no pongas title por pantalla si quieres TrackGo fijo */}
             <Stack.Screen name="index" options={{ headerShown: true }} />
             <Stack.Screen name="users" options={{ headerShown: true }} />
             <Stack.Screen name="upload-clients" options={{ headerShown: true }} />
