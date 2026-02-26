@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams } from "expo-router";
+import * as Clipboard from "expo-clipboard";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
@@ -16,6 +17,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+
 import {
     assignClient,
     createClient,
@@ -26,6 +28,9 @@ import {
 import { dayKeyFromMs } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, UserDoc } from "../../types/models";
+
+// ✅ Ajusta esta ruta a donde tengas el hook
+import { useShareText } from "../../share/receiveShareText";
 
 function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
@@ -74,6 +79,7 @@ function getRejectReason(c: ClientDoc): string | null {
 
 export default function AdminUploadClientsScreen() {
     const insets = useSafeAreaInsets();
+    const router = useRouter();
     const params = useLocalSearchParams<{ mapsUrl?: string; maps?: string }>();
 
     const [clients, setClients] = useState<ClientDoc[]>([]);
@@ -126,6 +132,54 @@ export default function AdminUploadClientsScreen() {
     const [eAddress, setEAddress] = useState("");
     const [eAssigneeId, setEAssigneeId] = useState<string | null>(null);
     const [eSaving, setESaving] = useState(false);
+
+    // ✅ Share receiver (tu DeviceEventEmitter nativo)
+    const { sharedMapsUrl, sharedText, clear } = useShareText();
+    const lastShareRef = useRef<string>("");
+
+    // ✅ Cuando llega share: copia al portapapeles + opción rápida para abrir crear
+    useEffect(() => {
+        const incoming = (sharedMapsUrl || sharedText || "").trim();
+        if (!incoming) return;
+
+        // evita repetir (Android re-dispara a veces)
+        if (lastShareRef.current === incoming) return;
+        lastShareRef.current = incoming;
+
+        // copia al portapapeles (aunque no sea maps, igual útil)
+        Clipboard.setStringAsync(incoming).catch(() => { });
+
+        // si parece maps, ofrécele ir directo a crear
+        if (looksLikeMapsUrl(incoming)) {
+            Alert.alert(
+                "Link copiado ✅",
+                "Ya copié el link de Google Maps. ¿Quieres crear el cliente ahora?",
+                [
+                    { text: "No", style: "cancel", onPress: () => clear() },
+                    {
+                        text: "Ir a crear",
+                        onPress: async () => {
+                            // asegurar que estés en esta pantalla (por si entraste en otra)
+                            try {
+                                router.replace("/admin/upload-clients" as any);
+                            } catch { }
+
+                            // abre modal + prefill (opcional, te ahorra 1 pegado)
+                            await ensureUsers();
+                            setCMapsUrl(incoming);
+                            setCreateOpen(true);
+
+                            clear();
+                        },
+                    },
+                ]
+            );
+        } else {
+            Alert.alert("Copiado ✅", "Pegúalo en el campo de Google Maps.", [
+                { text: "OK", onPress: () => clear() },
+            ]);
+        }
+    }, [sharedMapsUrl, sharedText, clear, router]);
 
     // -------------------------
     // realtime clients
@@ -180,7 +234,7 @@ export default function AdminUploadClientsScreen() {
     }, [users]);
 
     // -------------------------
-    // ✅ Prefill desde params (mapsUrl) y abrir modal Create
+    // ✅ Prefill desde params (si algún día te llega mapsUrl)
     // -------------------------
     const lastHandledMapsUrlRef = useRef<string>("");
 
@@ -189,8 +243,6 @@ export default function AdminUploadClientsScreen() {
         const incoming = (typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "").trim();
 
         if (!incoming) return;
-
-        // evita loops
         if (lastHandledMapsUrlRef.current === incoming) return;
         lastHandledMapsUrlRef.current = incoming;
 
@@ -223,9 +275,7 @@ export default function AdminUploadClientsScreen() {
     }, [clients]);
 
     // -------------------------
-    // ✅ Search mejorado:
-    // - Texto normal (name/business/email/etc)
-    // - Teléfono: compara por dígitos para soportar espacios/+/-.
+    // Search
     // -------------------------
     const filteredClients = useMemo(() => {
         const qtText = q.trim().toLowerCase();
@@ -233,7 +283,6 @@ export default function AdminUploadClientsScreen() {
 
         if (!qtText && !qtDigits) return clients;
 
-        // usuarios que matchean el search -> incluir todos sus clientes
         const matchedUserIds = new Set<string>();
         if (qtText) {
             for (const u of users) {
@@ -243,16 +292,13 @@ export default function AdminUploadClientsScreen() {
         }
 
         return clients.filter((c) => {
-            // match por usuario
             if (c.assignedTo && matchedUserIds.has(c.assignedTo)) return true;
 
-            // match por teléfono (por dígitos)
             if (qtDigits) {
                 const phoneDigits = normalizePhone(c.phone ?? "");
                 if (phoneDigits.includes(qtDigits)) return true;
             }
 
-            // match por texto
             if (qtText) {
                 const name = safeText((c as any).name);
                 const business = safeText((c as any).business);
@@ -281,9 +327,7 @@ export default function AdminUploadClientsScreen() {
         }
 
         const makeTotals = (arr: ClientDoc[]) => {
-            let pending = 0,
-                visited = 0,
-                rejected = 0;
+            let pending = 0, visited = 0, rejected = 0;
             for (const c of arr) {
                 if (c.status === "visited") visited++;
                 else if (c.status === "rejected") rejected++;
@@ -891,8 +935,8 @@ export default function AdminUploadClientsScreen() {
             </Pressable>
 
             {/* =========================
-        CREATE MODAL
-      ========================= */}
+          CREATE MODAL
+         ========================= */}
             <Modal visible={createOpen} transparent animationType="fade" onRequestClose={() => setCreateOpen(false)}>
                 <View style={styles.modalOverlay}>
                     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
@@ -992,8 +1036,8 @@ export default function AdminUploadClientsScreen() {
             </Modal>
 
             {/* =========================
-        EDIT MODAL
-      ========================= */}
+          EDIT MODAL
+         ========================= */}
             <Modal visible={editOpen} transparent animationType="fade" onRequestClose={cancelEdit}>
                 <View style={styles.modalOverlay}>
                     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
@@ -1075,8 +1119,8 @@ export default function AdminUploadClientsScreen() {
             </Modal>
 
             {/* =========================
-        USER PICKER MODAL
-      ========================= */}
+          USER PICKER MODAL
+         ========================= */}
             <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={() => setUserPickerOpen(false)}>
                 <View style={styles.modalOverlay}>
                     <View style={styles.pickerWrap}>
