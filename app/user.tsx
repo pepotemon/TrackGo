@@ -18,14 +18,8 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAuth } from "../src/auth/useAuth";
-import {
-    subscribeUserClients,
-    updateClientStatus,
-} from "../src/data/repositories/clientsRepo";
-import {
-    dayKeyFromMs,
-    subscribeDailyEventsByDay,
-} from "../src/data/repositories/dailyEventsRepo";
+import { subscribeUserClients, updateClientStatus } from "../src/data/repositories/clientsRepo";
+import { dayKeyFromMs, subscribeDailyEventsByRangeForUser } from "../src/data/repositories/dailyEventsRepo";
 import type { ClientDoc, DailyEventDoc } from "../src/types/models";
 
 type Filter = "pending" | "visited" | "rejected" | "all";
@@ -70,7 +64,6 @@ function statusPillTextStyle(s?: string) {
     return styles.pillTextPending;
 }
 
-/** ✅ Normaliza links HTTP/HTTPS para que Linking.openURL no falle por falta de esquema */
 function normalizeHttpUrl(raw: string) {
     const u = (raw ?? "").trim();
     if (!u) return "";
@@ -78,7 +71,6 @@ function normalizeHttpUrl(raw: string) {
     return u;
 }
 
-/** ✅ WA.me requiere número con país. Brasil: 55 + DDD + número */
 function normalizeBRPhoneToWa(phoneRaw: string) {
     const digits = (phoneRaw ?? "").replace(/[^\d]/g, "");
     if (!digits) return "";
@@ -100,16 +92,33 @@ function pickFirstName(full?: string) {
     return t.split(/\s+/)[0] ?? "";
 }
 
-/**
- * ✅ Notas locales por usuario
- * - key por usuario: trackgo:userNotes:<uid>
- * - value: { [clientId]: "nota..." }
- */
 function notesStorageKey(uid: string) {
     return `trackgo:userNotes:${uid}`;
 }
 
 type NotesMap = Record<string, string>;
+
+/**
+ * ✅ Semana local: Lunes → Domingo (igual que admin)
+ */
+function dayKeyFromDate(d: Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
+function weekRangeKeys(base = new Date()) {
+    const d = new Date(base);
+    d.setHours(0, 0, 0, 0);
+    const jsDay = d.getDay(); // 0=Dom..6=Sáb
+    const diffToMonday = jsDay === 0 ? 6 : jsDay - 1; // lunes=0
+    const start = new Date(d);
+    start.setDate(d.getDate() - diffToMonday);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return { startKey: dayKeyFromDate(start), endKey: dayKeyFromDate(end) };
+}
 
 export default function UserHome() {
     const { firebaseUser, profile, loading, logout } = useAuth();
@@ -123,8 +132,8 @@ export default function UserHome() {
     const [filter, setFilter] = useState<Filter>("pending");
     const [q, setQ] = useState("");
 
-    // Daily events (resumen HOY)
-    const [todayEvents, setTodayEvents] = useState<DailyEventDoc[]>([]);
+    // ✅ Weekly events (Lun→Dom)
+    const [weekEvents, setWeekEvents] = useState<DailyEventDoc[]>([]);
     const [eventsErr, setEventsErr] = useState<string | null>(null);
 
     // 🔔 in-app notifications (top toast)
@@ -132,7 +141,7 @@ export default function UserHome() {
     const prevClientIdsRef = useRef<Set<string>>(new Set());
     const initialClientsLoadedRef = useRef(false);
 
-    // ✅ Notas locales (solo UI)
+    // ✅ Notas locales
     const [notesByClientId, setNotesByClientId] = useState<NotesMap>({});
     const [noteModalOpen, setNoteModalOpen] = useState(false);
     const [noteClientId, setNoteClientId] = useState<string | null>(null);
@@ -145,6 +154,12 @@ export default function UserHome() {
     }, [profile?.name]);
 
     const todayDayKey = useMemo(() => dayKeyFromMs(Date.now()), []);
+
+    // ✅ rango semanal actual (cambia solo cuando cambia la semana)
+    const weekRange = useMemo(() => weekRangeKeys(new Date()), [
+        // 👇 fuerza re-evaluación al cambiar el dayKey actual
+        todayDayKey,
+    ]);
 
     // -------------------------
     // Guard de sesión / rol
@@ -206,7 +221,10 @@ export default function UserHome() {
 
         saveNotesTimer.current = setTimeout(async () => {
             try {
-                await AsyncStorage.setItem(notesStorageKey(firebaseUser.uid), JSON.stringify(notesByClientId ?? {}));
+                await AsyncStorage.setItem(
+                    notesStorageKey(firebaseUser.uid),
+                    JSON.stringify(notesByClientId ?? {})
+                );
             } catch {
                 // silent
             }
@@ -226,7 +244,6 @@ export default function UserHome() {
         const unsub = subscribeUserClients(firebaseUser.uid, (list) => {
             setClients(list);
 
-            // ---- NEW CLIENT NOTIFICATION (in-app)
             const prev = prevClientIdsRef.current;
 
             if (!initialClientsLoadedRef.current) {
@@ -236,13 +253,11 @@ export default function UserHome() {
                 return;
             }
 
-            // Detecta ids nuevos en el snapshot
             const newOnes: ClientDoc[] = [];
             for (const c of list) {
                 if (!prev.has(c.id)) newOnes.push(c);
             }
 
-            // Actualiza prev set
             prev.clear();
             for (const c of list) prev.add(c.id);
 
@@ -282,18 +297,21 @@ export default function UserHome() {
     }, [firebaseUser?.uid]);
 
     // -------------------------
-    // Subscripción a dailyEvents de HOY
+    // ✅ Subscripción a dailyEvents de la SEMANA (Lun→Dom)
+    // (Esto es lo que hace el “reinicio” automático cada lunes)
     // -------------------------
     useEffect(() => {
-        if (!firebaseUser) return;
+        if (!firebaseUser?.uid) return;
 
-        const dk = dayKeyFromMs(Date.now());
-        const unsub = subscribeDailyEventsByDay(
-            dk,
+        const { startKey, endKey } = weekRange;
+
+        const unsub = subscribeDailyEventsByRangeForUser(
+            startKey,
+            endKey,
             firebaseUser.uid,
             (list) => {
                 setEventsErr(null);
-                setTodayEvents(list);
+                setWeekEvents(list ?? []);
             },
             (err) => {
                 setEventsErr(`${err?.code ?? "error"}: ${err?.message ?? ""}`);
@@ -301,48 +319,61 @@ export default function UserHome() {
         );
 
         return () => unsub();
-    }, [firebaseUser?.uid]);
+    }, [firebaseUser?.uid, weekRange.startKey, weekRange.endKey]);
 
     // -------------------------
-    // Contadores por estado (lista)
+    // ✅ Pending real (estado actual)
     // -------------------------
-    const counts = useMemo(() => {
-        const pending = clients.filter((c) => c.status === "pending").length;
-        const visited = clients.filter((c) => c.status === "visited").length;
-        const rejected = clients.filter((c) => c.status === "rejected").length;
-        return { pending, visited, rejected, total: clients.length };
+    const pendingNowCount = useMemo(() => {
+        return clients.filter((c) => c.status === "pending").length;
     }, [clients]);
 
     // -------------------------
-    // Contadores HOY (deduplicado por cliente, último evento)
+    // ✅ WEEK: último evento por cliente (dedupe)
     // -------------------------
-    const todayCounts = useMemo(() => {
-        const lastByClient = new Map<string, DailyEventDoc>();
+    const weekLatestByClient = useMemo(() => {
+        const last = new Map<string, DailyEventDoc>();
 
-        for (const e of todayEvents) {
+        for (const e of weekEvents) {
             if (e.type !== "visited" && e.type !== "rejected" && e.type !== "pending") continue;
             if (!e.clientId) continue;
 
-            const prev = lastByClient.get(e.clientId);
-            if (!prev || (e.createdAt ?? 0) > (prev.createdAt ?? 0)) {
-                lastByClient.set(e.clientId, e);
-            }
+            const prev = last.get(e.clientId);
+            if (!prev || (e.createdAt ?? 0) > (prev.createdAt ?? 0)) last.set(e.clientId, e);
         }
 
+        return last;
+    }, [weekEvents]);
+
+    // ids por semana
+    const weekVisitedIds = useMemo(() => {
+        const s = new Set<string>();
+        for (const e of weekLatestByClient.values()) {
+            if (e.type === "visited" && e.clientId) s.add(e.clientId);
+        }
+        return s;
+    }, [weekLatestByClient]);
+
+    const weekRejectedIds = useMemo(() => {
+        const s = new Set<string>();
+        for (const e of weekLatestByClient.values()) {
+            if (e.type === "rejected" && e.clientId) s.add(e.clientId);
+        }
+        return s;
+    }, [weekLatestByClient]);
+
+    const weekCounts = useMemo(() => {
         let visited = 0;
         let rejected = 0;
-
-        for (const e of lastByClient.values()) {
+        for (const e of weekLatestByClient.values()) {
             if (e.type === "visited") visited += 1;
             if (e.type === "rejected") rejected += 1;
         }
-
         return { visited, rejected };
-    }, [todayEvents]);
+    }, [weekLatestByClient]);
 
     // -------------------------
     // PRIORIDAD: ranking SOLO pendientes (oldest-first)
-    // #1 = más viejo (primero asignado / creado)
     // -------------------------
     const pendingPriorityMap = useMemo(() => {
         const pendingOnly = clients
@@ -351,7 +382,7 @@ export default function UserHome() {
             .sort((a, b) => {
                 const aKey = (a.createdAt ?? a.assignedAt ?? a.updatedAt ?? 0) as number;
                 const bKey = (b.createdAt ?? b.assignedAt ?? b.updatedAt ?? 0) as number;
-                return aKey - bKey; // ✅ oldest first
+                return aKey - bKey;
             });
 
         const map = new Map<string, number>();
@@ -360,15 +391,43 @@ export default function UserHome() {
     }, [clients]);
 
     // -------------------------
-    // Lista filtrada + orden (oldest-first)
-    // - Dentro de cada status: oldest-first
-    // - En "all": pending arriba (opcional, se mantiene), luego visited, luego rejected
+    // ✅ Contadores de chips:
+    // - pending = real (estado actual)
+    // - visited/rejected = semana (reinicia lunes)
+    // -------------------------
+    const counts = useMemo(() => {
+        const pending = pendingNowCount;
+        const visited = weekCounts.visited;
+        const rejected = weekCounts.rejected;
+        const total = pending + visited + rejected; // ✅ total “operativo semanal”
+        return { pending, visited, rejected, total };
+    }, [pendingNowCount, weekCounts.visited, weekCounts.rejected]);
+
+    // -------------------------
+    // Lista filtrada + orden
+    // ✅ visited/rejected ahora son por SEMANA (no por status)
+    // ✅ pending sigue siendo por status actual
     // -------------------------
     const filteredClients = useMemo(() => {
         const queryText = q.trim().toLowerCase();
 
         const base = clients.filter((c) => {
-            if (filter !== "all" && c.status !== filter) return false;
+            // filtro por pestaña
+            if (filter === "pending") {
+                if (c.status !== "pending") return false;
+            } else if (filter === "visited") {
+                if (!weekVisitedIds.has(c.id)) return false;
+            } else if (filter === "rejected") {
+                if (!weekRejectedIds.has(c.id)) return false;
+            } else {
+                // all => pending + week visited + week rejected
+                const isPending = c.status === "pending";
+                const isWeekV = weekVisitedIds.has(c.id);
+                const isWeekR = weekRejectedIds.has(c.id);
+                if (!isPending && !isWeekV && !isWeekR) return false;
+            }
+
+            // búsqueda
             if (!queryText) return true;
 
             const name = safeText((c as any).name);
@@ -388,21 +447,24 @@ export default function UserHome() {
             return hay.includes(queryText);
         });
 
-        const rankStatus = (s?: string) => (s === "pending" ? 0 : s === "visited" ? 1 : 2);
+        // orden: pending arriba, luego visited week, luego rejected week
+        const rank = (c: ClientDoc) => {
+            if (c.status === "pending") return 0;
+            if (weekVisitedIds.has(c.id)) return 1;
+            if (weekRejectedIds.has(c.id)) return 2;
+            return 3;
+        };
 
         return base.sort((a, b) => {
-            // si estamos en "all", mantenemos pending arriba; si no, ambos ya son mismo status
-            if (filter === "all") {
-                const ra = rankStatus(a.status);
-                const rb = rankStatus(b.status);
-                if (ra !== rb) return ra - rb;
-            }
+            const ra = rank(a);
+            const rb = rank(b);
+            if (ra !== rb) return ra - rb;
 
             const aKey = (a.createdAt ?? a.assignedAt ?? a.updatedAt ?? 0) as number;
             const bKey = (b.createdAt ?? b.assignedAt ?? b.updatedAt ?? 0) as number;
-            return aKey - bKey; // ✅ oldest first
+            return aKey - bKey;
         });
-    }, [clients, filter, q]);
+    }, [clients, filter, q, weekVisitedIds, weekRejectedIds]);
 
     // -------------------------
     // Acciones externas
@@ -413,9 +475,7 @@ export default function UserHome() {
             Alert.alert("WhatsApp", "Este cliente no tiene teléfono.");
             return;
         }
-
         const url = `https://wa.me/${waDigits}`;
-
         try {
             await Linking.openURL(url);
         } catch {
@@ -429,7 +489,6 @@ export default function UserHome() {
             Alert.alert("Maps", "Este cliente no tiene link de Google Maps.");
             return;
         }
-
         try {
             await Linking.openURL(url);
         } catch {
@@ -444,7 +503,7 @@ export default function UserHome() {
     };
 
     // -------------------------
-    // Status handlers
+    // Status handlers (igual que tenías)
     // -------------------------
     const doUpdateStatus = async (
         client: ClientDoc,
@@ -479,7 +538,6 @@ export default function UserHome() {
     };
 
     const canRestoreToPendingToday = (client: ClientDoc) => {
-        // si no hay statusAt, usamos updatedAt como fallback
         const at = (client.statusAt ?? client.updatedAt ?? 0) as number;
         if (!at) return false;
         return dayKeyFromMs(at) === todayDayKey;
@@ -491,7 +549,6 @@ export default function UserHome() {
             return;
         }
 
-        // ✅ Bloqueo: NO permitir restaurar si no fue HOY
         if (nextStatus === "pending" && client.status !== "pending") {
             if (!canRestoreToPendingToday(client)) {
                 Alert.alert(
@@ -516,9 +573,7 @@ export default function UserHome() {
 
     const clearSearch = () => setQ("");
 
-    // -------------------------
     // Notes UI handlers (LOCAL)
-    // -------------------------
     const openNoteModal = (clientId: string) => {
         const existing = (notesByClientId?.[clientId] ?? "").trim();
         setNoteClientId(clientId);
@@ -561,9 +616,7 @@ export default function UserHome() {
         closeNoteModal();
     };
 
-    // -------------------------
-    // Filters UI (minimal)
-    // -------------------------
+    // UI atoms
     const MiniChip = ({
         active,
         onPress,
@@ -674,16 +727,13 @@ export default function UserHome() {
         const isPending = item.status === "pending";
         const localNote = (notesByClientId?.[item.id] ?? "").trim();
 
-        // ✅ prioridad SOLO pendientes: mostrar etiqueta solo si está en top 5
         const prio = isPending ? pendingPriorityMap.get(item.id) ?? null : null;
         const showPrio = !!prio && prio <= 3;
 
-        // ✅ si no es del día, deshabilitamos visualmente el undo (solo para feedback)
         const canUndo = item.status === "pending" ? false : canRestoreToPendingToday(item);
 
         return (
             <View style={styles.card}>
-                {/* ✅ Nota local */}
                 {localNote ? (
                     <View style={styles.noteBanner}>
                         <Ionicons name="bookmark-outline" size={16} color={COLORS.pending} />
@@ -700,7 +750,6 @@ export default function UserHome() {
                                 {name}
                             </Text>
 
-                            {/* ✅ badge prioridad top 5 (solo pending) */}
                             {showPrio ? (
                                 <View style={styles.priorityPill}>
                                     <Ionicons name="flame-outline" size={14} color={COLORS.pending} />
@@ -717,7 +766,6 @@ export default function UserHome() {
                     </View>
 
                     <View style={styles.cardTopRight}>
-                        {/* ✅ botón de nota */}
                         <Pressable
                             onPress={() => openNoteModal(item.id)}
                             disabled={isBusy}
@@ -769,16 +817,11 @@ export default function UserHome() {
                                 <StatusIconBtn kind="rejected" onPress={() => confirmSetStatus(item, "rejected")} disabled={isBusy} />
                             </>
                         ) : (
-                            <StatusIconBtn
-                                kind="undo"
-                                onPress={() => confirmSetStatus(item, "pending")}
-                                disabled={isBusy || !canUndo}
-                            />
+                            <StatusIconBtn kind="undo" onPress={() => confirmSetStatus(item, "pending")} disabled={isBusy || !canUndo} />
                         )}
                     </View>
                 </View>
 
-                {/* ✅ mensaje si el undo está bloqueado por fecha */}
                 {!isPending && !canUndo ? (
                     <View style={styles.lockHintRow}>
                         <Ionicons name="lock-closed-outline" size={14} color={COLORS.muted} />
@@ -820,10 +863,12 @@ export default function UserHome() {
                         TrackGo<Text style={styles.hTitleSoft}>{helloName}</Text>
                     </Text>
 
+                    {/* ✅ Ahora SEMANA */}
                     <Text style={styles.hSub}>
-                        Hoy: <Text style={styles.hSubStrong}>{todayCounts.visited}</Text> visitados ·{" "}
-                        <Text style={styles.hSubStrong}>{todayCounts.rejected}</Text> rechazados
+                        Semana: <Text style={styles.hSubStrong}>{weekCounts.visited}</Text> visitados ·{" "}
+                        <Text style={styles.hSubStrong}>{weekCounts.rejected}</Text> rechazados
                     </Text>
+
                     {eventsErr ? <Text style={styles.hErr}>{eventsErr}</Text> : null}
                 </View>
 
@@ -959,7 +1004,6 @@ const COLORS = {
 const styles = StyleSheet.create({
     safe: { flex: 1, backgroundColor: COLORS.bg },
 
-    // Toasts
     toastLayer: {
         position: "absolute",
         left: 16,
@@ -1044,7 +1088,6 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(255,255,255,0.06)",
     },
 
-    // Filters
     filtersRow: {
         paddingHorizontal: 16,
         flexDirection: "row",
@@ -1092,7 +1135,6 @@ const styles = StyleSheet.create({
         gap: 12,
     },
 
-    // note banner
     noteBanner: {
         flexDirection: "row",
         alignItems: "flex-start",
@@ -1118,7 +1160,6 @@ const styles = StyleSheet.create({
     titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
     clientName: { flex: 1, color: COLORS.text, fontSize: 16, fontWeight: "900" },
 
-    // ✅ prioridad (top 5 pending)
     priorityPill: {
         flexDirection: "row",
         alignItems: "center",
@@ -1202,7 +1243,6 @@ const styles = StyleSheet.create({
     statusIconBtnPressed: { transform: [{ scale: 0.97 }], opacity: 0.96 },
     statusIconBtnDisabled: { opacity: 0.5 },
 
-    // ✅ hint bloqueo undo
     lockHintRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingTop: 2 },
     lockHintText: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
@@ -1212,7 +1252,6 @@ const styles = StyleSheet.create({
     empty: { marginTop: 40, alignItems: "center", gap: 10 },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "800" },
 
-    // modal note
     modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
     modalCard: {
         position: "absolute",

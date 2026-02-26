@@ -124,3 +124,61 @@ export function subscribeDailyEventsByRange(
         }
     );
 }
+
+/**
+ * ✅ Suscripción por rango PERO filtrando por usuario (para pantalla USER).
+ *
+ * Esto es lo que evita:
+ * permission-denied Missing or insufficient permissions
+ * cuando el user intenta leer dailyEvents de otros usuarios.
+ *
+ * ⚠ Requiere índice compuesto (según tu Firestore):
+ * userId ASC + dayKey ASC + createdAt ASC
+ * (Firestore te dará el link exacto para crearlo si falta)
+ */
+export function subscribeDailyEventsByRangeForUser(
+    startDayKey: string,
+    endDayKey: string,
+    userId: string,
+    cb: (events: DailyEventDoc[]) => void,
+    onErr?: (err: any) => void
+): Unsubscribe {
+    const start = startDayKey.trim();
+    const end = endDayKey.trim();
+    const uid = userId.trim();
+
+    if (!start || !end || !uid) {
+        console.log("[dailyEventsByRangeForUser] rango inválido");
+        cb([]); // intencional
+        return () => { };
+    }
+
+    const q = query(
+        col.dailyEvents,
+        where("userId", "==", uid),
+        where("dayKey", ">=", start),
+        where("dayKey", "<=", end),
+        orderBy("dayKey", "asc"),
+        orderBy("createdAt", "asc"),
+        limit(2000)
+    );
+
+    return onSnapshot(
+        q,
+        (snap) => {
+            const list = snap.docs.map(
+                (d) => ({ id: d.id, ...(d.data() as any) }) as DailyEventDoc
+            );
+            cb(list);
+        },
+        (err) => {
+            console.log(
+                "[dailyEventsByRangeForUser] onSnapshot error:",
+                err?.code,
+                err?.message
+            );
+            onErr?.(err);
+            // ✅ NO limpies la lista aquí
+        }
+    );
+}
