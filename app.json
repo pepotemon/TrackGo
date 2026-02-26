@@ -46,15 +46,26 @@
             },
             {
               "scheme": "https",
+              "host": "maps.app.goo.gl"
+            },
+            {
+              "scheme": "https",
               "host": "maps.google.com"
             },
             {
               "scheme": "https",
-              "host": "www.google.com"
+              "host": "www.google.com",
+              "pathPrefix": "/maps"
             },
             {
               "scheme": "https",
-              "host": "goo.gl"
+              "host": "google.com",
+              "pathPrefix": "/maps"
+            },
+            {
+              "scheme": "https",
+              "host": "goo.gl",
+              "pathPrefix": "/maps"
             }
           ]
         }

@@ -31,7 +31,6 @@ Notifications.setNotificationHandler({
         shouldShowAlert: true,
         shouldPlaySound: true,
         shouldSetBadge: false,
-
         // ✅ nuevas props (expo-notifications recientes)
         shouldShowBanner: true,
         shouldShowList: true,
@@ -44,6 +43,10 @@ type AuthState = {
     loading: boolean;
     login: (email: string, password: string) => Promise<void>;
     logout: () => Promise<void>;
+
+    // ✅ NUEVO: guardar deep link pendiente (ej: mapsUrl)
+    pendingDeepLink: string | null;
+    setPendingDeepLink: (url: string | null) => void;
 };
 
 const Ctx = createContext<AuthState | null>(null);
@@ -105,9 +108,7 @@ async function registerForPushNotificationsAsync(): Promise<string | null> {
 
     // ✅ Token Expo (mejor con projectId)
     const token = (
-        await Notifications.getExpoPushTokenAsync(
-            projectId ? { projectId } : undefined
-        )
+        await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)
     ).data;
 
     return token || null;
@@ -128,6 +129,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
     const [profile, setProfile] = useState<UserDoc | null>(null);
     const [loading, setLoading] = useState(true);
+
+    // ✅ NUEVO: deep link pendiente (ej: /admin/upload-clients?mapsUrl=...)
+    const [pendingDeepLink, setPendingDeepLink] = useState<string | null>(null);
 
     // evita re-registrar token en loop
     const lastSavedTokenRef = useRef<string | null>(null);
@@ -187,12 +191,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     const logout = async () => {
+        setPendingDeepLink(null); // ✅ opcional: limpiar al salir
         await signOut(auth);
     };
 
     const value = useMemo(
-        () => ({ firebaseUser, profile, loading, login, logout }),
-        [firebaseUser, profile, loading]
+        () => ({
+            firebaseUser,
+            profile,
+            loading,
+            login,
+            logout,
+            pendingDeepLink,
+            setPendingDeepLink,
+        }),
+        [firebaseUser, profile, loading, pendingDeepLink]
     );
 
     return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
