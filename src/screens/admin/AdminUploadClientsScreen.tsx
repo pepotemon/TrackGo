@@ -1,3 +1,4 @@
+// src/screens/admin/AdminUploadClientsScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -92,11 +93,6 @@ export default function AdminUploadClientsScreen() {
     // Busy
     const [busyId, setBusyId] = useState<string | null>(null);
 
-    // Acordeón: quién está expandido
-    const [expandedKeys, setExpandedKeys] = useState<Set<string>>(
-        () => new Set(["UNASSIGNED"])
-    );
-
     // Modals
     const [createOpen, setCreateOpen] = useState(false);
     const [editOpen, setEditOpen] = useState(false);
@@ -175,7 +171,7 @@ export default function AdminUploadClientsScreen() {
                 ]
             );
         } else {
-            Alert.alert("Copiado ✅", "Pegúalo en el campo de Google Maps.", [
+            Alert.alert("Copiado ✅", "Pégálo en el campo de Google Maps.", [
                 { text: "OK", onPress: () => clear() },
             ]);
         }
@@ -226,8 +222,7 @@ export default function AdminUploadClientsScreen() {
         for (const u of users) {
             const name = (u.name ?? "").trim();
             const email = (u.email ?? "").trim();
-            const label =
-                name && email ? `${name} · ${email}` : name ? name : email ? email : "Usuario";
+            const label = name && email ? `${name} · ${email}` : name ? name : email ? email : "Usuario";
             m.set(u.id, label);
         }
         return m;
@@ -315,7 +310,8 @@ export default function AdminUploadClientsScreen() {
     }, [clients, q, users, userLabelById]);
 
     // -------------------------
-    // Group by user (SectionList)
+    // Group by user (SectionList) — SOLO cabeceras (sin items)
+    // Ahora al tocar un usuario: navega a /admin/user-clients?userId=...
     // -------------------------
     const sections: Section[] = useMemo(() => {
         const byKey: Record<string, ClientDoc[]> = {};
@@ -327,7 +323,9 @@ export default function AdminUploadClientsScreen() {
         }
 
         const makeTotals = (arr: ClientDoc[]) => {
-            let pending = 0, visited = 0, rejected = 0;
+            let pending = 0,
+                visited = 0,
+                rejected = 0;
             for (const c of arr) {
                 if (c.status === "visited") visited++;
                 else if (c.status === "rejected") rejected++;
@@ -353,16 +351,6 @@ export default function AdminUploadClientsScreen() {
             return email ? email : undefined;
         };
 
-        const sortClients = (arr: ClientDoc[]) => {
-            const rank = (s?: string) => (s === "pending" ? 0 : s === "visited" ? 1 : 2);
-            return arr.sort((a, b) => {
-                const ra = rank(a.status);
-                const rb = rank(b.status);
-                if (ra !== rb) return ra - rb;
-                return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
-            });
-        };
-
         const keys = Object.keys(byKey);
 
         keys.sort((a, b) => {
@@ -374,79 +362,16 @@ export default function AdminUploadClientsScreen() {
         });
 
         return keys.map((key) => {
-            const data = sortClients(byKey[key] ?? []);
+            const data = byKey[key] ?? [];
             return {
                 key,
                 title: makeTitle(key),
                 subtitle: makeSubtitle(key),
                 totals: makeTotals(data),
-                data,
+                data: [], // ✅ ya NO renderizamos clientes aquí
             };
         });
     }, [filteredClients, userById, userLabelById]);
-
-    // -------------------------
-    // Helpers (UI)
-    // -------------------------
-    const toggleExpanded = (key: string) => {
-        setExpandedKeys((prev) => {
-            const next = new Set(prev);
-            if (next.has(key)) next.delete(key);
-            else next.add(key);
-            return next;
-        });
-    };
-
-    const openUserPickerForCreate = async () => {
-        await ensureUsers();
-        setPickerMode("create");
-        setPickerTargetClientId(null);
-        setPickerQuery("");
-        setUserPickerOpen(true);
-    };
-
-    const openUserPickerForEdit = async () => {
-        await ensureUsers();
-        setPickerMode("edit");
-        setPickerTargetClientId(null);
-        setPickerQuery("");
-        setUserPickerOpen(true);
-    };
-
-    const openUserPickerForAssignExisting = async (clientId: string) => {
-        await ensureUsers();
-        setPickerMode("assignExisting");
-        setPickerTargetClientId(clientId);
-        setPickerQuery("");
-        setUserPickerOpen(true);
-    };
-
-    const onPickUser = async (u: UserDoc) => {
-        if (pickerMode === "create") {
-            setCAssigneeId(u.id);
-            setUserPickerOpen(false);
-            return;
-        }
-        if (pickerMode === "edit") {
-            setEAssigneeId(u.id);
-            setUserPickerOpen(false);
-            return;
-        }
-
-        if (pickerMode === "assignExisting" && pickerTargetClientId) {
-            const clientId = pickerTargetClientId;
-            setUserPickerOpen(false);
-
-            try {
-                setBusyId(clientId);
-                await assignClient(clientId, u.id);
-            } catch (e: any) {
-                Alert.alert("Error", e?.message ?? "No se pudo asignar");
-            } finally {
-                setBusyId(null);
-            }
-        }
-    };
 
     // -------------------------
     // Create flow
@@ -533,7 +458,7 @@ export default function AdminUploadClientsScreen() {
     };
 
     // -------------------------
-    // Edit flow
+    // Edit flow (se mantiene, aunque ahora no editas desde lista principal)
     // -------------------------
     const startEdit = async (c: ClientDoc) => {
         await ensureUsers();
@@ -638,29 +563,6 @@ export default function AdminUploadClientsScreen() {
     };
 
     // -------------------------
-    // UI: pills (status)
-    // -------------------------
-    const pill = (status?: string) => {
-        if (status === "visited") return [styles.pill, styles.pillVisited];
-        if (status === "rejected") return [styles.pill, styles.pillRejected];
-        return [styles.pill, styles.pillPending];
-    };
-    const pillText = (status?: string) => {
-        if (status === "visited") return [styles.pillText, styles.pillTextVisited];
-        if (status === "rejected") return [styles.pillText, styles.pillTextRejected];
-        return [styles.pillText, styles.pillTextPending];
-    };
-
-    const statusLabel = (c: ClientDoc) => {
-        if (c.status === "visited") return "visitado";
-        if (c.status === "rejected") {
-            const r = getRejectReason(c);
-            return r ? `rechazado · ${r}` : "rechazado";
-        }
-        return "pendiente";
-    };
-
-    // -------------------------
     // User picker data (+ badge pending)
     // -------------------------
     const pickerUsers = useMemo(() => {
@@ -696,6 +598,62 @@ export default function AdminUploadClientsScreen() {
                 </View>
             </View>
         );
+    };
+
+    const openUserPickerForCreate = async () => {
+        await ensureUsers();
+        setPickerMode("create");
+        setPickerTargetClientId(null);
+        setPickerQuery("");
+        setUserPickerOpen(true);
+    };
+
+    const openUserPickerForEdit = async () => {
+        await ensureUsers();
+        setPickerMode("edit");
+        setPickerTargetClientId(null);
+        setPickerQuery("");
+        setUserPickerOpen(true);
+    };
+
+    const openUserPickerForAssignExisting = async (clientId: string) => {
+        await ensureUsers();
+        setPickerMode("assignExisting");
+        setPickerTargetClientId(clientId);
+        setPickerQuery("");
+        setUserPickerOpen(true);
+    };
+
+    const onPickUser = async (u: UserDoc) => {
+        if (pickerMode === "create") {
+            setCAssigneeId(u.id);
+            setUserPickerOpen(false);
+            return;
+        }
+        if (pickerMode === "edit") {
+            setEAssigneeId(u.id);
+            setUserPickerOpen(false);
+            return;
+        }
+
+        if (pickerMode === "assignExisting" && pickerTargetClientId) {
+            const clientId = pickerTargetClientId;
+            setUserPickerOpen(false);
+
+            try {
+                setBusyId(clientId);
+                await assignClient(clientId, u.id);
+            } catch (e: any) {
+                Alert.alert("Error", e?.message ?? "No se pudo asignar");
+            } finally {
+                setBusyId(null);
+            }
+        }
+    };
+
+    const goUserClients = (key: string) => {
+        // ✅ key puede ser "UNASSIGNED" también (lo soportamos en la pantalla nueva si quieres)
+        router.push({ pathname: "/admin/user-clients" as any, params: { userId: key } });
     };
 
     return (
@@ -749,32 +707,26 @@ export default function AdminUploadClientsScreen() {
                 ) : null}
             </View>
 
-            {/* Grouped list by user (ACORDEÓN) */}
+            {/* Grouped list by user (ahora NAVEGA a pantalla) */}
             <SectionList
                 sections={sections}
-                keyExtractor={(c) => c.id}
+                keyExtractor={(c, i) => `${c.id}_${i}`}
                 contentContainerStyle={styles.listContent}
                 stickySectionHeadersEnabled={false}
                 renderSectionHeader={({ section }) => {
-                    const expanded = expandedKeys.has(section.key);
-
                     return (
                         <Pressable
-                            onPress={() => toggleExpanded(section.key)}
+                            onPress={() => goUserClients(section.key)}
                             style={({ pressed }) => [
                                 styles.sectionCard,
                                 pressed && styles.sectionHeaderPressed,
                             ]}
-                            accessibilityLabel={`Acordeón ${section.title}`}
+                            accessibilityLabel={`Abrir ${section.title}`}
                         >
                             <View style={styles.sectionHeaderRow}>
                                 <View style={{ flex: 1, gap: 2 }}>
                                     <View style={styles.sectionTitleRow}>
-                                        <Ionicons
-                                            name={expanded ? "chevron-down" : "chevron-forward"}
-                                            size={16}
-                                            color={COLORS.muted}
-                                        />
+                                        <Ionicons name="person-outline" size={16} color={COLORS.muted} />
                                         <Text style={styles.sectionTitle} numberOfLines={1}>
                                             {section.title}
                                         </Text>
@@ -803,115 +755,15 @@ export default function AdminUploadClientsScreen() {
                                             {section.totals.rejected}
                                         </Text>
                                     </View>
+
+                                    <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
                                 </View>
                             </View>
                         </Pressable>
                     );
                 }}
-                renderItem={({ item, section }) => {
-                    if (!expandedKeys.has(section.key)) return null;
-
-                    const displayName = ((item as any).name ?? "").trim();
-                    const displayBiz = ((item as any).business ?? "").trim();
-
-                    const assigneeLabel = item.assignedTo
-                        ? userLabelById.get(item.assignedTo) ?? "Asignado (cargando…)"
-                        : "Sin asignar";
-
-                    const isBusy = busyId === item.id;
-
-                    return (
-                        <View style={styles.card}>
-                            <View style={styles.cardTop}>
-                                <View style={{ flex: 1, gap: 2 }}>
-                                    <Text style={styles.phone} numberOfLines={1}>
-                                        {item.phone}
-                                    </Text>
-
-                                    {!!displayName ? (
-                                        <Text style={styles.meta} numberOfLines={1}>
-                                            {displayName}
-                                        </Text>
-                                    ) : null}
-
-                                    {!!displayBiz ? (
-                                        <Text style={styles.meta} numberOfLines={1}>
-                                            {displayBiz}
-                                        </Text>
-                                    ) : null}
-                                </View>
-
-                                <View style={pill(item.status)}>
-                                    <Text style={pillText(item.status)} numberOfLines={1}>
-                                        {statusLabel(item)}
-                                    </Text>
-                                </View>
-                            </View>
-
-                            {!!item.address ? (
-                                <View style={styles.infoRow}>
-                                    <Ionicons name="location-outline" size={16} color={COLORS.muted} />
-                                    <Text style={styles.infoText} numberOfLines={2}>
-                                        {item.address}
-                                    </Text>
-                                </View>
-                            ) : null}
-
-                            <View style={styles.assignedRow}>
-                                <Ionicons name="person-outline" size={16} color={COLORS.muted} />
-                                <Text style={styles.assignedText} numberOfLines={1}>
-                                    {assigneeLabel}
-                                </Text>
-                            </View>
-
-                            <View style={styles.actionsRow}>
-                                <View style={styles.actionsLeft}>
-                                    <Pressable
-                                        onPress={() => openUserPickerForAssignExisting(item.id)}
-                                        style={({ pressed }) => [
-                                            styles.iconBtn,
-                                            pressed && styles.iconBtnPressed,
-                                            isBusy && styles.iconBtnDisabled,
-                                        ]}
-                                        disabled={isBusy}
-                                        accessibilityLabel="Asignar"
-                                    >
-                                        <Ionicons name="person-add-outline" size={18} color={COLORS.text} />
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={() => startEdit(item)}
-                                        style={({ pressed }) => [
-                                            styles.iconBtn,
-                                            pressed && styles.iconBtnPressed,
-                                            isBusy && styles.iconBtnDisabled,
-                                        ]}
-                                        disabled={isBusy}
-                                        accessibilityLabel="Editar"
-                                    >
-                                        <Ionicons name="create-outline" size={18} color={COLORS.text} />
-                                    </Pressable>
-                                </View>
-
-                                <Pressable
-                                    onPress={() => confirmDelete(item.id)}
-                                    style={({ pressed }) => [
-                                        styles.iconBtn,
-                                        styles.iconBtnDanger,
-                                        pressed && styles.iconBtnPressed,
-                                        isBusy && styles.iconBtnDisabled,
-                                    ]}
-                                    disabled={isBusy}
-                                    accessibilityLabel="Eliminar"
-                                >
-                                    <Ionicons name="trash-outline" size={18} color={COLORS.rejected} />
-                                </Pressable>
-                            </View>
-
-                            {isBusy ? <Text style={styles.busyText}>Asignando…</Text> : null}
-                        </View>
-                    );
-                }}
+                // ✅ ya no renderizamos items aquí
+                renderItem={() => null}
                 ListEmptyComponent={
                     <View style={styles.empty}>
                         <Ionicons name="people-outline" size={24} color={COLORS.muted} />
@@ -1299,7 +1151,7 @@ const styles = StyleSheet.create({
     sectionTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900", maxWidth: "75%" },
     sectionSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
-    sectionPills: { flexDirection: "row", gap: 6 },
+    sectionPills: { flexDirection: "row", gap: 6, alignItems: "center" },
     miniPill: {
         minWidth: 28,
         height: 26,
@@ -1317,6 +1169,7 @@ const styles = StyleSheet.create({
     miniPillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.28)" },
     miniTextRejected: { color: "#FCA5A5" },
 
+    // (ya no se usa en lista principal, pero se mantiene por si lo usas en modals u otras vistas)
     card: {
         backgroundColor: COLORS.card,
         borderWidth: 1,
