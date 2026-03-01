@@ -98,9 +98,7 @@ function notesStorageKey(uid: string) {
 
 type NotesMap = Record<string, string>;
 
-/**
- * ✅ Semana local: Lunes → Domingo (igual que admin)
- */
+/** ✅ Semana local: Lunes → Domingo */
 function dayKeyFromDate(d: Date) {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -128,20 +126,16 @@ export default function UserHome() {
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [busyId, setBusyId] = useState<string | null>(null);
 
-    // UI
     const [filter, setFilter] = useState<Filter>("pending");
     const [q, setQ] = useState("");
 
-    // ✅ Weekly events (Lun→Dom)
     const [weekEvents, setWeekEvents] = useState<DailyEventDoc[]>([]);
     const [eventsErr, setEventsErr] = useState<string | null>(null);
 
-    // 🔔 in-app notifications (top toast)
     const [toasts, setToasts] = useState<Toast[]>([]);
     const prevClientIdsRef = useRef<Set<string>>(new Set());
     const initialClientsLoadedRef = useRef(false);
 
-    // ✅ Notas locales
     const [notesByClientId, setNotesByClientId] = useState<NotesMap>({});
     const [noteModalOpen, setNoteModalOpen] = useState(false);
     const [noteClientId, setNoteClientId] = useState<string | null>(null);
@@ -154,15 +148,11 @@ export default function UserHome() {
     }, [profile?.name]);
 
     const todayDayKey = useMemo(() => dayKeyFromMs(Date.now()), []);
-
-    // ✅ rango semanal actual (cambia solo cuando cambia la semana)
-    const weekRange = useMemo(() => weekRangeKeys(new Date()), [
-        // 👇 fuerza re-evaluación al cambiar el dayKey actual
-        todayDayKey,
-    ]);
+    const weekRange = useMemo(() => weekRangeKeys(new Date()), [todayDayKey]);
+    const weekLabel = useMemo(() => `${weekRange.startKey} → ${weekRange.endKey}`, [weekRange.startKey, weekRange.endKey]);
 
     // -------------------------
-    // Guard de sesión / rol
+    // Guard
     // -------------------------
     useEffect(() => {
         if (loading) return;
@@ -184,7 +174,7 @@ export default function UserHome() {
     }, [loading, firebaseUser?.uid, profile?.role, profile?.active]);
 
     // -------------------------
-    // Load notes (local) por usuario
+    // Load notes
     // -------------------------
     useEffect(() => {
         if (!firebaseUser?.uid) return;
@@ -221,13 +211,8 @@ export default function UserHome() {
 
         saveNotesTimer.current = setTimeout(async () => {
             try {
-                await AsyncStorage.setItem(
-                    notesStorageKey(firebaseUser.uid),
-                    JSON.stringify(notesByClientId ?? {})
-                );
-            } catch {
-                // silent
-            }
+                await AsyncStorage.setItem(notesStorageKey(firebaseUser.uid), JSON.stringify(notesByClientId ?? {}));
+            } catch { }
         }, 350);
 
         return () => {
@@ -236,7 +221,7 @@ export default function UserHome() {
     }, [notesByClientId, firebaseUser?.uid]);
 
     // -------------------------
-    // Subscripción a clients asignados + 🔔 detectar nuevos
+    // Subs clients + toasts
     // -------------------------
     useEffect(() => {
         if (!firebaseUser) return;
@@ -278,7 +263,7 @@ export default function UserHome() {
                 }
             }
 
-            // ✅ limpieza suave de notas huérfanas
+            // cleanup notes
             setNotesByClientId((prevNotes) => {
                 const alive = new Set(list.map((c) => c.id));
                 let changed = false;
@@ -297,8 +282,7 @@ export default function UserHome() {
     }, [firebaseUser?.uid]);
 
     // -------------------------
-    // ✅ Subscripción a dailyEvents de la SEMANA (Lun→Dom)
-    // (Esto es lo que hace el “reinicio” automático cada lunes)
+    // Subs week events
     // -------------------------
     useEffect(() => {
         if (!firebaseUser?.uid) return;
@@ -321,16 +305,8 @@ export default function UserHome() {
         return () => unsub();
     }, [firebaseUser?.uid, weekRange.startKey, weekRange.endKey]);
 
-    // -------------------------
-    // ✅ Pending real (estado actual)
-    // -------------------------
-    const pendingNowCount = useMemo(() => {
-        return clients.filter((c) => c.status === "pending").length;
-    }, [clients]);
+    const pendingNowCount = useMemo(() => clients.filter((c) => c.status === "pending").length, [clients]);
 
-    // -------------------------
-    // ✅ WEEK: último evento por cliente (dedupe)
-    // -------------------------
     const weekLatestByClient = useMemo(() => {
         const last = new Map<string, DailyEventDoc>();
 
@@ -345,20 +321,15 @@ export default function UserHome() {
         return last;
     }, [weekEvents]);
 
-    // ids por semana
     const weekVisitedIds = useMemo(() => {
         const s = new Set<string>();
-        for (const e of weekLatestByClient.values()) {
-            if (e.type === "visited" && e.clientId) s.add(e.clientId);
-        }
+        for (const e of weekLatestByClient.values()) if (e.type === "visited" && e.clientId) s.add(e.clientId);
         return s;
     }, [weekLatestByClient]);
 
     const weekRejectedIds = useMemo(() => {
         const s = new Set<string>();
-        for (const e of weekLatestByClient.values()) {
-            if (e.type === "rejected" && e.clientId) s.add(e.clientId);
-        }
+        for (const e of weekLatestByClient.values()) if (e.type === "rejected" && e.clientId) s.add(e.clientId);
         return s;
     }, [weekLatestByClient]);
 
@@ -372,9 +343,6 @@ export default function UserHome() {
         return { visited, rejected };
     }, [weekLatestByClient]);
 
-    // -------------------------
-    // PRIORIDAD: ranking SOLO pendientes (oldest-first)
-    // -------------------------
     const pendingPriorityMap = useMemo(() => {
         const pendingOnly = clients
             .filter((c) => c.status === "pending")
@@ -390,29 +358,18 @@ export default function UserHome() {
         return map;
     }, [clients]);
 
-    // -------------------------
-    // ✅ Contadores de chips:
-    // - pending = real (estado actual)
-    // - visited/rejected = semana (reinicia lunes)
-    // -------------------------
     const counts = useMemo(() => {
         const pending = pendingNowCount;
         const visited = weekCounts.visited;
         const rejected = weekCounts.rejected;
-        const total = pending + visited + rejected; // ✅ total “operativo semanal”
+        const total = pending + visited + rejected;
         return { pending, visited, rejected, total };
     }, [pendingNowCount, weekCounts.visited, weekCounts.rejected]);
 
-    // -------------------------
-    // Lista filtrada + orden
-    // ✅ visited/rejected ahora son por SEMANA (no por status)
-    // ✅ pending sigue siendo por status actual
-    // -------------------------
     const filteredClients = useMemo(() => {
         const queryText = q.trim().toLowerCase();
 
         const base = clients.filter((c) => {
-            // filtro por pestaña
             if (filter === "pending") {
                 if (c.status !== "pending") return false;
             } else if (filter === "visited") {
@@ -420,14 +377,12 @@ export default function UserHome() {
             } else if (filter === "rejected") {
                 if (!weekRejectedIds.has(c.id)) return false;
             } else {
-                // all => pending + week visited + week rejected
                 const isPending = c.status === "pending";
                 const isWeekV = weekVisitedIds.has(c.id);
                 const isWeekR = weekRejectedIds.has(c.id);
                 if (!isPending && !isWeekV && !isWeekR) return false;
             }
 
-            // búsqueda
             if (!queryText) return true;
 
             const name = safeText((c as any).name);
@@ -447,7 +402,6 @@ export default function UserHome() {
             return hay.includes(queryText);
         });
 
-        // orden: pending arriba, luego visited week, luego rejected week
         const rank = (c: ClientDoc) => {
             if (c.status === "pending") return 0;
             if (weekVisitedIds.has(c.id)) return 1;
@@ -467,7 +421,7 @@ export default function UserHome() {
     }, [clients, filter, q, weekVisitedIds, weekRejectedIds]);
 
     // -------------------------
-    // Acciones externas
+    // External actions
     // -------------------------
     const openWhatsApp = async (phone: string) => {
         const waDigits = normalizeBRPhoneToWa(phone);
@@ -503,13 +457,9 @@ export default function UserHome() {
     };
 
     // -------------------------
-    // Status handlers (igual que tenías)
+    // Status handlers
     // -------------------------
-    const doUpdateStatus = async (
-        client: ClientDoc,
-        nextStatus: "pending" | "visited" | "rejected",
-        reason?: RejectReason
-    ) => {
+    const doUpdateStatus = async (client: ClientDoc, nextStatus: "pending" | "visited" | "rejected", reason?: RejectReason) => {
         if (!firebaseUser || !client.id) return;
 
         const snapshot = {
@@ -551,10 +501,7 @@ export default function UserHome() {
 
         if (nextStatus === "pending" && client.status !== "pending") {
             if (!canRestoreToPendingToday(client)) {
-                Alert.alert(
-                    "No permitido",
-                    "Solo puedes restaurar a Pendiente los clientes que visitaste o rechazaste HOY."
-                );
+                Alert.alert("No permitido", "Solo puedes restaurar a Pendiente los clientes que visitaste o rechazaste HOY.");
                 return;
             }
         }
@@ -573,7 +520,7 @@ export default function UserHome() {
 
     const clearSearch = () => setQ("");
 
-    // Notes UI handlers (LOCAL)
+    // Notes handlers
     const openNoteModal = (clientId: string) => {
         const existing = (notesByClientId?.[clientId] ?? "").trim();
         setNoteClientId(clientId);
@@ -714,6 +661,13 @@ export default function UserHome() {
                 <Ionicons name={icon} size={18} color={tint} />
             </Pressable>
         );
+    };
+
+    const goHistory = () => {
+        router.push({
+            pathname: "/user-history" as any,
+            params: { startKey: weekRange.startKey, endKey: weekRange.endKey },
+        });
     };
 
     const renderItem = ({ item }: { item: ClientDoc }) => {
@@ -863,18 +817,24 @@ export default function UserHome() {
                         TrackGo<Text style={styles.hTitleSoft}>{helloName}</Text>
                     </Text>
 
-                    {/* ✅ Ahora SEMANA */}
                     <Text style={styles.hSub}>
-                        Semana: <Text style={styles.hSubStrong}>{weekCounts.visited}</Text> visitados ·{" "}
+                        Semana ({weekLabel}): <Text style={styles.hSubStrong}>{weekCounts.visited}</Text> visitados ·{" "}
                         <Text style={styles.hSubStrong}>{weekCounts.rejected}</Text> rechazados
                     </Text>
 
                     {eventsErr ? <Text style={styles.hErr}>{eventsErr}</Text> : null}
                 </View>
 
-                <Pressable onPress={logout} style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]}>
-                    <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
-                </Pressable>
+                {/* ✅ Historial + Salir */}
+                <View style={styles.headerRight}>
+                    <Pressable onPress={goHistory} style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]} accessibilityLabel="Historial">
+                        <Ionicons name="time-outline" size={18} color={COLORS.text} />
+                    </Pressable>
+
+                    <Pressable onPress={logout} style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]} accessibilityLabel="Salir">
+                        <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
+                    </Pressable>
+                </View>
             </View>
 
             <View style={styles.searchWrap}>
@@ -1046,6 +1006,8 @@ const styles = StyleSheet.create({
         gap: 12,
     },
     headerLeft: { flex: 1, gap: 2 },
+    headerRight: { flexDirection: "row", alignItems: "center", gap: 10 },
+
     hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.5 },
     hTitleSoft: { color: COLORS.muted, fontWeight: "900" },
     hSub: { color: COLORS.muted, fontSize: 13, fontWeight: "700", marginTop: 2 },
@@ -1104,9 +1066,7 @@ const styles = StyleSheet.create({
         borderRadius: 999,
         borderWidth: 1,
     },
-    miniChipActive: {
-        borderColor: "rgba(255,255,255,0.20)",
-    },
+    miniChipActive: { borderColor: "rgba(255,255,255,0.20)" },
     miniChipPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
     miniChipText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
     miniChipTextActive: { color: COLORS.text },
