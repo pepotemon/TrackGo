@@ -1,17 +1,14 @@
 // src/screens/admin/AdminAccountingScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-    Alert,
-    Modal,
     Pressable,
     ScrollView,
     StatusBar,
     StyleSheet,
     Text,
-    TextInput,
     View,
-    type DimensionValue,
     type LayoutChangeEvent,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -30,10 +27,7 @@ import Svg, {
 
 import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
-import {
-    subscribeWeeklyInvestment,
-    upsertWeeklyInvestment,
-} from "../../data/repositories/investmentsRepo";
+import { subscribeWeeklyInvestment, type WeeklyInvestmentAllocations } from "../../data/repositories/investmentsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
 
@@ -151,15 +145,11 @@ const CHART_CFG = {
     paddingTop: 14,
     paddingBottom: 22,
     gridLines: 3,
-
     yAxisGutter: 30,
-
     lineStrokeWidth: 2.6,
     dotRadius: 3.4,
-
     barWidth: 12,
     barRadius: 8,
-
     fontSize: 10,
 };
 
@@ -183,9 +173,9 @@ function buildCatmullRomPath(points: { x: number; y: number }[], tension = 1) {
         const cp2y = p2.y - ((p3.y - p1.y) / 6) * tension;
 
         d.push(
-            `C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(
+            `C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(
                 2
-            )}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`
+            )} ${p2.y.toFixed(2)}`
         );
     }
 
@@ -200,11 +190,7 @@ function ProLineChart({
     strokeWidth = CHART_CFG.lineStrokeWidth,
     dotRadius = CHART_CFG.dotRadius,
     showDots = true,
-
-    // ✅ modo para reducir labels: "labels" | "dots"
     xMode = "labels",
-
-    // ✅ tooltip para dots (por ejemplo: "2026-02-03 → 2026-02-08 · Real R$ 120")
     tooltipItems,
 }: {
     values: number[];
@@ -222,7 +208,6 @@ function ProLineChart({
 
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
 
-    // si cambian data/labels, resetea selección
     useEffect(() => {
         setSelectedIdx(null);
     }, [values.join(","), labels.join(","), xMode]);
@@ -290,23 +275,22 @@ function ProLineChart({
         const p = inner.pts[selectedIdx];
         if (!p) return null;
 
-        const text =
-            tooltipItems?.[selectedIdx] ??
-            `${labels[selectedIdx] ?? ""} · ${p.v.toFixed(0)}`;
+        const text = tooltipItems?.[selectedIdx] ?? `${labels[selectedIdx] ?? ""} · ${p.v.toFixed(0)}`;
 
-        // Tooltip box sizing simple (aprox)
         const maxChars = 34;
         const shown = text.length > maxChars ? text.slice(0, maxChars - 1) + "…" : text;
 
         const boxW = 180;
         const boxH = 34;
 
-        // clamp within plot
         const margin = 6;
-        const x0 = Math.max(inner.plotLeft + margin, Math.min(p.x - boxW / 2, inner.plotRight - boxW - margin));
+        const x0 = Math.max(
+            inner.plotLeft + margin,
+            Math.min(p.x - boxW / 2, inner.plotRight - boxW - margin)
+        );
         const y0 = Math.max(6, p.y - boxH - 10);
 
-        return { x0, y0, boxW, boxH, shown, p };
+        return { x0, y0, boxW, boxH, shown };
     }, [selectedIdx, inner.pts, inner.plotLeft, inner.plotRight, labels, tooltipItems]);
 
     return (
@@ -321,35 +305,19 @@ function ProLineChart({
                             </LinearGradient>
                         </Defs>
 
-                        {/* Grid + Y labels */}
                         <G>
                             {yTicks.map((t, idx) => (
                                 <G key={idx}>
-                                    <Line
-                                        x1={inner.plotLeft}
-                                        x2={inner.plotRight}
-                                        y1={t.y}
-                                        y2={t.y}
-                                        stroke={theme.grid}
-                                        strokeWidth={1}
-                                    />
-                                    <SvgText
-                                        x={inner.labelX}
-                                        y={t.y - 4}
-                                        fill={theme.muted}
-                                        fontSize={CHART_CFG.fontSize}
-                                        fontWeight="700"
-                                    >
+                                    <Line x1={inner.plotLeft} x2={inner.plotRight} y1={t.y} y2={t.y} stroke={theme.grid} strokeWidth={1} />
+                                    <SvgText x={inner.labelX} y={t.y - 4} fill={theme.muted} fontSize={CHART_CFG.fontSize} fontWeight="700">
                                         {t.val.toFixed(0)}
                                     </SvgText>
                                 </G>
                             ))}
                         </G>
 
-                        {/* Area */}
                         {areaPath ? <Path d={areaPath} fill="url(#lineArea)" /> : null}
 
-                        {/* Line */}
                         {path ? (
                             <Path
                                 d={path}
@@ -361,25 +329,15 @@ function ProLineChart({
                             />
                         ) : null}
 
-                        {/* Dots */}
                         {showDots
                             ? inner.pts.map((p, idx) => (
                                 <G key={idx}>
-                                    {/* dot visible */}
                                     <Circle cx={p.x} cy={p.y} r={dotRadius} fill={theme.accent} opacity={0.92} />
-                                    {/* touch target */}
-                                    <Circle
-                                        cx={p.x}
-                                        cy={p.y}
-                                        r={14}
-                                        fill="transparent"
-                                        onPress={() => setSelectedIdx(idx)}
-                                    />
+                                    <Circle cx={p.x} cy={p.y} r={14} fill="transparent" onPress={() => setSelectedIdx(idx)} />
                                 </G>
                             ))
                             : null}
 
-                        {/* Tooltip */}
                         {tooltip ? (
                             <G>
                                 <Rect
@@ -393,19 +351,12 @@ function ProLineChart({
                                     stroke="rgba(255,255,255,0.10)"
                                     strokeWidth={1}
                                 />
-                                <SvgText
-                                    x={tooltip.x0 + 10}
-                                    y={tooltip.y0 + 21}
-                                    fill="rgba(255,255,255,0.90)"
-                                    fontSize={11}
-                                    fontWeight="800"
-                                >
+                                <SvgText x={tooltip.x0 + 10} y={tooltip.y0 + 21} fill="rgba(255,255,255,0.90)" fontSize={11} fontWeight="800">
                                     {tooltip.shown}
                                 </SvgText>
                             </G>
                         ) : null}
 
-                        {/* X axis: labels OR dots */}
                         {xMode === "labels" ? (
                             <G>
                                 {labels.map((lab, idx) => {
@@ -434,13 +385,7 @@ function ProLineChart({
                                     return (
                                         <G key={idx}>
                                             <Circle cx={p.x} cy={y} r={3} fill="rgba(255,255,255,0.30)" />
-                                            <Circle
-                                                cx={p.x}
-                                                cy={y}
-                                                r={14}
-                                                fill="transparent"
-                                                onPress={() => setSelectedIdx(idx)}
-                                            />
+                                            <Circle cx={p.x} cy={y} r={14} fill="transparent" onPress={() => setSelectedIdx(idx)} />
                                         </G>
                                     );
                                 })}
@@ -532,21 +477,8 @@ function ProBarChart({
                         <G>
                             {yTicks.map((t, idx) => (
                                 <G key={idx}>
-                                    <Line
-                                        x1={inner.plotLeft}
-                                        x2={inner.plotRight}
-                                        y1={t.y}
-                                        y2={t.y}
-                                        stroke={theme.grid}
-                                        strokeWidth={1}
-                                    />
-                                    <SvgText
-                                        x={inner.labelX}
-                                        y={t.y - 4}
-                                        fill={theme.muted}
-                                        fontSize={CHART_CFG.fontSize}
-                                        fontWeight="700"
-                                    >
+                                    <Line x1={inner.plotLeft} x2={inner.plotRight} y1={t.y} y2={t.y} stroke={theme.grid} strokeWidth={1} />
+                                    <SvgText x={inner.labelX} y={t.y - 4} fill={theme.muted} fontSize={CHART_CFG.fontSize} fontWeight="700">
                                         {t.val.toFixed(0)}
                                     </SvgText>
                                 </G>
@@ -555,16 +487,7 @@ function ProBarChart({
 
                         <G>
                             {inner.bars.map((b, idx) => (
-                                <Rect
-                                    key={idx}
-                                    x={b.x}
-                                    y={b.y}
-                                    width={barWidth}
-                                    height={Math.max(0, b.h)}
-                                    rx={radius}
-                                    ry={radius}
-                                    fill="url(#barFill)"
-                                />
+                                <Rect key={idx} x={b.x} y={b.y} width={barWidth} height={Math.max(0, b.h)} rx={radius} ry={radius} fill="url(#barFill)" />
                             ))}
                         </G>
 
@@ -575,15 +498,7 @@ function ProBarChart({
                                 const x = inner.plotLeft + slot * idx + slot / 2;
                                 const y = height - 6;
                                 return (
-                                    <SvgText
-                                        key={lab + idx}
-                                        x={x}
-                                        y={y}
-                                        fill={theme.muted}
-                                        fontSize={CHART_CFG.fontSize}
-                                        fontWeight="800"
-                                        textAnchor="middle"
-                                    >
+                                    <SvgText key={lab + idx} x={x} y={y} fill={theme.muted} fontSize={CHART_CFG.fontSize} fontWeight="800" textAnchor="middle">
                                         {lab}
                                     </SvgText>
                                 );
@@ -600,6 +515,7 @@ function ProBarChart({
 // Screen
 // ------------------------
 export default function AdminAccountingScreen() {
+    const router = useRouter();
     const insets = useSafeAreaInsets();
     const { startKey, endKey, startDate } = useMemo(() => weekRangeKeysMonToSat(new Date()), []);
 
@@ -611,14 +527,8 @@ export default function AdminAccountingScreen() {
     // inversión semanal (presupuesto)
     const [investment, setInvestment] = useState<number>(0);
 
-    // modal presupuesto
-    const [budgetOpen, setBudgetOpen] = useState(false);
-    const [budgetDraft, setBudgetDraft] = useState<string>("0");
-    const [saving, setSaving] = useState(false);
-
-    // cache remoto para evitar pisar draft
-    const lastRemoteInvestmentRef = useRef<number>(0);
-    const draftDirtyRef = useRef<boolean>(false);
+    // ✅ allocations desde firestore (para usar después en pantalla individual)
+    const [allocations, setAllocations] = useState<WeeklyInvestmentAllocations>({});
 
     // ✅ HISTORIAL 12 semanas
     const HISTORY_WEEKS = 12;
@@ -626,7 +536,7 @@ export default function AdminAccountingScreen() {
     const [historyInvByWeek, setHistoryInvByWeek] = useState<Record<string, number>>({});
     const [historyErr, setHistoryErr] = useState<string | null>(null);
 
-    // ✅ colapsar/expandir TODA la lista de semanas
+    // ✅ colapsar/expandir lista de semanas
     const [historyListOpen, setHistoryListOpen] = useState(false);
     const toggleHistoryList = useCallback(() => setHistoryListOpen((v) => !v), []);
 
@@ -634,7 +544,7 @@ export default function AdminAccountingScreen() {
     useEffect(() => {
         (async () => {
             const u = await listUsers("user");
-            setUsers(u);
+            setUsers(u ?? []);
         })();
     }, []);
 
@@ -681,14 +591,14 @@ export default function AdminAccountingScreen() {
             startKey,
             (doc) => {
                 const amt = clamp2(safeNumber((doc as any)?.amount ?? 0));
-                lastRemoteInvestmentRef.current = amt;
+                const alloc = ((doc as any)?.allocations ?? {}) as WeeklyInvestmentAllocations;
+
                 setInvestment(amt);
-                if (!draftDirtyRef.current) setBudgetDraft(String(amt));
+                setAllocations(alloc && typeof alloc === "object" ? alloc : {});
             },
             () => {
-                lastRemoteInvestmentRef.current = 0;
                 setInvestment(0);
-                if (!draftDirtyRef.current) setBudgetDraft("0");
+                setAllocations({});
             }
         );
         return () => unsub();
@@ -802,7 +712,6 @@ export default function AdminAccountingScreen() {
         return (profit / investment) * 100;
     }, [profit, investment]);
 
-    // ✅ prom/día ahora es sobre 6 días (Lun–Sáb)
     const avgPerDay = useMemo(() => clamp2(profit / 6), [profit]);
 
     const topUserLabel = useMemo(() => {
@@ -890,7 +799,7 @@ export default function AdminAccountingScreen() {
             return {
                 startKey: w.startKey,
                 endKey: w.endKey,
-                label: monthDay(w.startKey), // se usa solo si quisieras labels
+                label: monthDay(w.startKey),
                 visited,
                 rejected,
                 gross,
@@ -902,60 +811,8 @@ export default function AdminAccountingScreen() {
     }, [historyWeeks, historyEventsByWeek, historyInvByWeek, userById]);
 
     const weeklyRealValues = useMemo(() => weeklyHistory.map((x) => x.real), [weeklyHistory]);
-
-    // ✅ tooltip por punto: rango + valor
-    const weeklyTooltipItems = useMemo(() => {
-        return weeklyHistory.map((w) => {
-            const sign = w.real >= 0 ? "" : "-";
-            return `${w.startKey} → ${w.endKey}`;
-        });
-    }, [weeklyHistory]);
-
-    // To com muita saudade de vc... <3
+    const weeklyTooltipItems = useMemo(() => weeklyHistory.map((w) => `${w.startKey} → ${w.endKey}`), [weeklyHistory]);
     const weeklyLabels = useMemo(() => weeklyHistory.map((_, i) => String(i + 1)), [weeklyHistory]);
-
-    const parseMoney = (s: string) => {
-        const t = (s ?? "").replace(",", ".").replace(/[^\d.]/g, "");
-        const parts = t.split(".");
-        const clean = parts.length <= 2 ? t : `${parts[0]}.${parts.slice(1).join("")}`;
-        const n = Number(clean);
-        return clamp2(Number.isFinite(n) ? n : 0);
-    };
-
-    const openBudget = () => {
-        draftDirtyRef.current = false;
-        setBudgetDraft(String(lastRemoteInvestmentRef.current || investment || 0));
-        setBudgetOpen(true);
-    };
-
-    const closeBudget = () => {
-        setBudgetOpen(false);
-        draftDirtyRef.current = false;
-    };
-
-    const onChangeBudgetDraft = (txt: string) => {
-        draftDirtyRef.current = true;
-        setBudgetDraft(txt);
-    };
-
-    const resetBudgetDraft = () => {
-        draftDirtyRef.current = false;
-        setBudgetDraft(String(lastRemoteInvestmentRef.current || 0));
-    };
-
-    const saveBudget = async () => {
-        const amt = parseMoney(budgetDraft);
-        setSaving(true);
-        try {
-            await upsertWeeklyInvestment(startKey, endKey, amt);
-            draftDirtyRef.current = false;
-            setBudgetOpen(false);
-        } catch (e: any) {
-            Alert.alert("Error", e?.message ?? "No se pudo guardar el presupuesto.");
-        } finally {
-            setSaving(false);
-        }
-    };
 
     const perfTone = useMemo(() => {
         if (profit > 0) return "pos";
@@ -1000,6 +857,22 @@ export default function AdminAccountingScreen() {
         [chartTheme]
     );
 
+    // ✅ abre pantalla editor semanal (reemplaza modal)
+    const openBudgetScreen = useCallback(() => {
+        router.push({
+            pathname: "/admin/weekly-budget" as any,
+            params: { weekStartKey: startKey, weekEndKey: endKey },
+        });
+    }, [router, startKey, endKey]);
+
+    // ✅ (después hacemos esta pantalla)
+    const goToUserAccounting = useCallback(() => {
+        router.push({
+            pathname: "/admin/accounting-user" as any,
+            params: { weekStartKey: startKey, weekEndKey: endKey },
+        });
+    }, [router, startKey, endKey]);
+
     return (
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
@@ -1019,7 +892,7 @@ export default function AdminAccountingScreen() {
 
                     <View style={styles.headerRight}>
                         <Pressable
-                            onPress={openBudget}
+                            onPress={openBudgetScreen}
                             style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
                             accessibilityLabel="Editar presupuesto semanal"
                         >
@@ -1046,7 +919,11 @@ export default function AdminAccountingScreen() {
                         </Text>
                     </View>
 
-                    <View style={styles.kpiCard}>
+                    <Pressable
+                        onPress={goToUserAccounting}
+                        style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
+                        accessibilityLabel="Ver contabilidad individual por usuario"
+                    >
                         <View style={styles.kpiTopRow}>
                             <Text style={styles.kpiLabel}>Ganancia real</Text>
                             <View
@@ -1075,8 +952,13 @@ export default function AdminAccountingScreen() {
                             R$ {money(profit)}
                         </Text>
                         <Text style={styles.kpiHint}>{investment <= 0 ? "ROI: — (sin inversión)" : `ROI: ${roi?.toFixed(1)}%`}</Text>
-                        <Text style={styles.kpiHint2}>Prom/día: R$ {money(avgPerDay)}</Text>
-                    </View>
+                        <View style={styles.kpiHintRow}>
+                            <Text style={styles.kpiHint2}>Prom/día: R$ {money(avgPerDay)}</Text>
+                            <View style={styles.tapHint}>
+                                <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.55)" />
+                            </View>
+                        </View>
+                    </Pressable>
                 </View>
 
                 {/* Charts PRO (diario semana actual) */}
@@ -1109,11 +991,9 @@ export default function AdminAccountingScreen() {
 
                 {/* ✅ HISTORIAL 12 SEMANAS */}
                 <View style={styles.card}>
-                    {/* Header + toggle list */}
                     <Pressable onPress={toggleHistoryList} style={({ pressed }) => [styles.historyHeader, pressed && styles.pressed]}>
                         <View style={{ flex: 1, gap: 2 }}>
                             <Text style={styles.cardTitle}>Historial</Text>
-
                             {historyErr ? <Text style={styles.errText}>Historial: {historyErr}</Text> : null}
                         </View>
 
@@ -1124,11 +1004,7 @@ export default function AdminAccountingScreen() {
                             </View>
 
                             <View style={styles.chevBox}>
-                                <Ionicons
-                                    name={historyListOpen ? "chevron-up" : "chevron-down"}
-                                    size={18}
-                                    color="rgba(255,255,255,0.72)"
-                                />
+                                <Ionicons name={historyListOpen ? "chevron-up" : "chevron-down"} size={18} color="rgba(255,255,255,0.72)" />
                             </View>
                         </View>
                     </Pressable>
@@ -1143,13 +1019,12 @@ export default function AdminAccountingScreen() {
                                 strokeWidth={CHART_CFG.lineStrokeWidth}
                                 dotRadius={CHART_CFG.dotRadius}
                                 showDots
-                                xMode="dots" // ✅ sin labels apilados
-                                tooltipItems={weeklyTooltipItems} // ✅ tooltip por rango
+                                xMode="dots"
+                                tooltipItems={weeklyTooltipItems}
                             />
                         </View>
                     </View>
 
-                    {/* ✅ lista de semanas oculta por defecto */}
                     {historyListOpen ? (
                         <View style={{ gap: 8 }}>
                             {weeklyHistory
@@ -1179,66 +1054,12 @@ export default function AdminAccountingScreen() {
                     ) : null}
                 </View>
 
-
-
+                {/* (debug opcional) */}
+                {/* <Text style={{ color: "#fff" }}>{JSON.stringify(allocations, null, 2)}</Text> */}
             </ScrollView>
-
-            {/* Budget modal */}
-            <Modal visible={budgetOpen} transparent animationType="fade" onRequestClose={closeBudget}>
-                <Pressable style={styles.backdrop} onPress={closeBudget} />
-
-                <View style={styles.sheet}>
-                    <View style={styles.sheetHeader}>
-                        <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={styles.sheetTitle}>Presupuesto semanal</Text>
-                            <Text style={styles.sheetSub} numberOfLines={1}>
-                                {startKey} → {endKey}
-                            </Text>
-                        </View>
-
-                        <Pressable onPress={closeBudget} style={({ pressed }) => [styles.sheetIconBtn, pressed && styles.pressed]} accessibilityLabel="Cerrar">
-                            <Ionicons name="close" size={18} color={COLORS.text} />
-                        </Pressable>
-                    </View>
-
-                    <View style={styles.inputRow}>
-                        <View style={styles.moneyPrefix}>
-                            <Text style={styles.moneyPrefixText}>R$</Text>
-                        </View>
-                        <TextInput
-                            value={budgetDraft}
-                            onChangeText={onChangeBudgetDraft}
-                            keyboardType="numeric"
-                            placeholder="0"
-                            placeholderTextColor={COLORS.muted}
-                            style={styles.input}
-                        />
-                    </View>
-
-                    <Text style={styles.sheetHint}>Puedes poner 0 si esta semana no invertiste nada. Solo afecta la “ganancia real”.</Text>
-
-                    <View style={styles.sheetActions}>
-                        <Pressable onPress={resetBudgetDraft} style={({ pressed }) => [styles.sheetBtn, pressed && styles.pressed]}>
-                            <Ionicons name="refresh-outline" size={18} color={COLORS.muted} />
-                            <Text style={styles.sheetBtnTextMuted}>Reset</Text>
-                        </Pressable>
-                        <Pressable
-                            onPress={saveBudget}
-                            disabled={saving}
-                            style={({ pressed }) => [styles.sheetBtn, styles.sheetBtnPrimary, saving && styles.btnDisabled, pressed && !saving && styles.btnPressed]}
-                        >
-                            <Ionicons name="save-outline" size={18} color={COLORS.text} />
-                            <Text style={styles.sheetBtnText}>{saving ? "Guardando..." : "Guardar"}</Text>
-                        </Pressable>
-                    </View>
-                </View>
-            </Modal>
         </SafeAreaView>
     );
 }
-
-const W100: DimensionValue = "100%";
-const W60: DimensionValue = "60%";
 
 const COLORS = {
     bg: "#0B1220",
@@ -1246,7 +1067,6 @@ const COLORS = {
     border: "#1F2937",
     text: "#F9FAFB",
     muted: "#9CA3AF",
-
     ok: "#22C55E",
     bad: "#F87171",
     warn: "#FBBF24",
@@ -1308,6 +1128,9 @@ const styles = StyleSheet.create({
     kpiHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.9 },
     kpiHint2: { color: COLORS.muted, fontSize: 11, fontWeight: "800", opacity: 0.85 },
 
+    kpiHintRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+    tapHint: { width: 18, height: 18, alignItems: "center", justifyContent: "center", opacity: 0.9 },
+
     perfPill: {
         flexDirection: "row",
         alignItems: "center",
@@ -1355,29 +1178,8 @@ const styles = StyleSheet.create({
     },
     svgWrap: { width: "100%" as any },
 
-    // ✅ header plegable del historial
-    historyHeader: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-    },
+    historyHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
     historyRight: { flexDirection: "row", alignItems: "center", gap: 10 },
-
-    summaryRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-    summaryPill: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 10,
-        height: 34,
-        borderRadius: 999,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-    },
-    summaryText: { color: "rgba(255,255,255,0.82)", fontWeight: "900", fontSize: 12 },
-
-    footer: { marginTop: 4, color: COLORS.muted, fontSize: 12, fontWeight: "800", textAlign: "center" },
 
     weekRow: {
         flexDirection: "row",
@@ -1419,81 +1221,4 @@ const styles = StyleSheet.create({
     },
 
     pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
-    btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
-    btnDisabled: { opacity: 0.55 },
-
-    backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
-    sheet: {
-        position: "absolute",
-        left: 16,
-        right: 16,
-        bottom: 16,
-        backgroundColor: COLORS.card,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        padding: 14,
-        gap: 10,
-    },
-    sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
-    sheetTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
-    sheetSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    sheetIconBtn: {
-        width: 40,
-        height: 40,
-        borderRadius: 14,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    sheetHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.9 },
-
-    sheetActions: { flexDirection: "row", gap: 10, marginTop: 2 },
-    sheetBtn: {
-        flex: 1,
-        height: 48,
-        borderRadius: 14,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        alignItems: "center",
-        justifyContent: "center",
-        flexDirection: "row",
-        gap: 10,
-    },
-    sheetBtnPrimary: {
-        backgroundColor: "rgba(255,255,255,0.07)",
-        borderColor: "rgba(255,255,255,0.12)",
-    },
-    sheetBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    sheetBtnTextMuted: { color: COLORS.muted, fontSize: 13, fontWeight: "900" },
-
-    inputRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
-        backgroundColor: "#0F172A",
-        borderRadius: 14,
-        overflow: "hidden",
-    },
-    moneyPrefix: {
-        paddingHorizontal: 12,
-        height: 48,
-        alignItems: "center",
-        justifyContent: "center",
-        borderRightWidth: 1,
-        borderRightColor: "rgba(255,255,255,0.08)",
-    },
-    moneyPrefixText: { color: COLORS.muted, fontWeight: "900" },
-    input: {
-        flex: 1,
-        height: 48,
-        paddingHorizontal: 12,
-        color: COLORS.text,
-        fontSize: 14,
-        fontWeight: "900",
-    },
 });
