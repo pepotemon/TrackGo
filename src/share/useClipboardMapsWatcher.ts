@@ -1,6 +1,6 @@
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
-import { AppState, Platform } from "react-native";
+import { AppState } from "react-native";
 
 function isLikelyMapsUrl(input: string) {
     const lower = (input ?? "").trim().toLowerCase();
@@ -14,8 +14,13 @@ function isLikelyMapsUrl(input: string) {
     );
 }
 
-export function useClipboardMapsWatcher(opts?: { enabled?: boolean }) {
+export function useClipboardMapsWatcher(opts?: {
+    enabled?: boolean;
+    /** si true, NO revisa al montar; solo cuando vuelve a foreground */
+    skipInitialCheck?: boolean;
+}) {
     const enabled = opts?.enabled ?? true;
+    const skipInitialCheck = opts?.skipInitialCheck ?? true;
 
     const [mapsUrl, setMapsUrl] = useState<string | null>(null);
     const lastRef = useRef<string | null>(null);
@@ -38,17 +43,20 @@ export function useClipboardMapsWatcher(opts?: { enabled?: boolean }) {
     useEffect(() => {
         if (!enabled) return;
 
-        // check al montar
-        checkClipboard();
+        // ✅ NO revisa al montar (evita alertas por links viejos)
+        if (!skipInitialCheck) {
+            checkClipboard();
+        }
 
-        // check al volver a foreground (cuando vienes de Google Maps)
         const sub = AppState.addEventListener("change", (s) => {
-            if (Platform.OS === "android" && s === "active") checkClipboard();
-            if (Platform.OS === "ios" && s === "active") checkClipboard();
+            if (s !== "active") return;
+            // iOS/Android igual
+            checkClipboard();
         });
 
         return () => sub.remove();
-    }, [enabled]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [enabled, skipInitialCheck]);
 
     const clear = () => setMapsUrl(null);
 

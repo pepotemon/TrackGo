@@ -22,9 +22,8 @@ import { auth, db } from "../config/firebase";
 import { getUserDoc } from "../data/repositories/usersRepo";
 import type { UserDoc } from "../types/models";
 
-// ✅ Expo Managed: NO hay Android intent receiver real.
-// Usaremos el clipboard watcher (tu hook nuevo) para detectar links copiados.
-import { useClipboardMapsWatcher } from "../share/useClipboardMapsWatcher";
+// ✅ Share intent real (Android nativo): TrackGoShareModule + DeviceEventEmitter
+import { useShareText } from "../share/receiveShareText";
 
 /**
  * ✅ Mostrar notificación incluso con app abierta
@@ -141,21 +140,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const lastSavedTokenRef = useRef<string | null>(null);
     const registeringRef = useRef(false);
 
-    // ✅ Clipboard watcher: detecta links de Google Maps copiados
-    const { mapsUrl, clear: clearMapsUrl } = useClipboardMapsWatcher({ enabled: true });
+    // ✅ SHARE INTENT: copiar automaticamente cuando te compartan un link
+    const { sharedMapsUrl, didCopy, clear: clearShare } = useShareText({
+        autoCopyToClipboard: true,
+        copyOnlyIfMaps: true,
+    });
 
-    // ✅ UX simple: cuando detecta un link, avisamos con toast (y ya queda listo para pegar)
-    // Nota: en este flujo el link YA está en el clipboard (porque el user lo copió),
-    // pero igual el toast confirma que TrackGo lo detectó.
+    // ✅ Toast solo cuando VIENE DE SHARE (ya no usamos clipboard watcher)
     useEffect(() => {
         if (Platform.OS !== "android") return;
-        if (!mapsUrl) return;
+        if (!sharedMapsUrl) return;
 
-        ToastAndroid.show("Link de Google Maps detectado ✅", ToastAndroid.SHORT);
+        if (didCopy) {
+            ToastAndroid.show("Link de Google Maps copiado ✅", ToastAndroid.SHORT);
+        } else {
+            ToastAndroid.show("No se pudo copiar el link ❌", ToastAndroid.SHORT);
+        }
 
-        // si no quieres que aparezca otra vez por el mismo link, limpiamos el estado del hook
-        clearMapsUrl();
-    }, [mapsUrl, clearMapsUrl]);
+        // limpia estado del hook para evitar repetición de UI
+        clearShare();
+    }, [sharedMapsUrl, didCopy, clearShare]);
 
     useEffect(() => {
         setLoading(true);
