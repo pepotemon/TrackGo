@@ -1,6 +1,6 @@
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DeviceEventEmitter, Platform } from "react-native";
+import { DeviceEventEmitter, NativeModules, Platform } from "react-native";
 
 function isLikelyMapsUrl(input: string) {
     const lower = (input ?? "").trim().toLowerCase();
@@ -9,7 +9,6 @@ function isLikelyMapsUrl(input: string) {
         lower.includes("google.com/maps") ||
         lower.includes("maps.app.goo.gl") ||
         lower.includes("goo.gl/maps") ||
-        // algunos shares vienen así:
         (lower.includes("google.com") && lower.includes("maps")) ||
         lower.includes("goo.gl")
     );
@@ -28,9 +27,7 @@ type SharePayload =
     | undefined;
 
 type Options = {
-    /** copia automáticamente al portapapeles cuando llegue un link */
     autoCopyToClipboard?: boolean;
-    /** si true, solo copia si parece Google Maps */
     copyOnlyIfMaps?: boolean;
 };
 
@@ -43,102 +40,99 @@ async function safeCopyToClipboard(text: string) {
     }
 }
 
+function normalizeSharePayload(payload: SharePayload): string {
+    let v = "";
+    if (typeof payload === "string") v = payload.trim();
+    if (!v && payload && typeof payload === "object") {
+        const anyP: any = payload;
+        const cand = anyP.mapsUrl ?? anyP.maps ?? anyP.url ?? anyP.text ?? "";
+        v = String(cand ?? "").trim();
+    }
+    return v;
+}
+
 /**
- * Android Share Receiver hook
- * - Escucha DeviceEventEmitter("trackgoShareText")
- * - Normaliza payloads (string | object)
- * - Prioriza mapsUrl/url/text
- * - Detecta Google Maps y (opcional) copia al portapapeles
+ * ✅ Android Share Receiver hook (robusto)
+ * - Warm start: DeviceEventEmitter("trackgoShareText")
+ * - Cold start: NativeModules.TrackGoShare.getInitialShare()
  */
 export function useShareText(options: Options = {}) {
-    const {
-        autoCopyToClipboard = true,
-        copyOnlyIfMaps = true,
-    } = options;
+    const { autoCopyToClipboard = true, copyOnlyIfMaps = true } = options;
 
     const [sharedRaw, setSharedRaw] = useState<string | null>(null);
     const [didCopy, setDidCopy] = useState(false);
 
-    // evita re-copiar el mismo link varias veces
     const lastCopiedRef = useRef<string | null>(null);
+
+    const handleValue = async (rawPayload: SharePayload) => {
+        const v = normalizeSharePayload(rawPayload);
+
+        if (!v) {
+            setSharedRaw(null);
+            setDidCopy(false);
+            return;
+        }
+
+        setSharedRaw(v);
+
+        if (!autoCopyToClipboard) return;
+
+        const isMaps = isLikelyMapsUrl(v);
+        if (copyOnlyIfMaps && !isMaps) return;
+
+        if (lastCopiedRef.current === v) {
+            setDidCopy(true);
+            return;
+        }
+
+        const ok = await safeCopyToClipboard(v);
+        if (ok) {
+            lastCopiedRef.current = v;
+            setDidCopy(true);
+        } else {
+            setDidCopy(false);
+        }
+    };
 
     useEffect(() => {
         if (Platform.OS !== "android") return;
 
-        const sub = DeviceEventEmitter.addListener(
-            "trackgoShareText",
-            async (payload: SharePayload) => {
-                try {
-                    let v = "";
-
-                    // Caso 1: viene string directo
-                    if (typeof payload === "string") {
-                        v = payload.trim();
+        // ✅ 1) Cold start: leer share inicial (si existe)
+        (async () => {
+            try {
+                const mod: any = (NativeModules as any).TrackGoShare;
+                if (mod?.getInitialShare) {
+                    const initial = await mod.getInitialShare(); // string | null
+                    if (initial) {
+                        await handleValue(initial);
+                        // opcional: limpiar para que no se repita
+                        if (mod.clearInitialShare) await mod.clearInitialShare();
                     }
-
-                    // Caso 2: viene objeto (text/url/mapsUrl...)
-                    if (!v && payload && typeof payload === "object") {
-                        const anyP: any = payload;
-                        const cand =
-                            anyP.mapsUrl ??
-                            anyP.maps ??
-                            anyP.url ??
-                            anyP.text ??
-                            "";
-                        v = String(cand ?? "").trim();
-                    }
-
-                    if (!v) {
-                        setSharedRaw(null);
-                        setDidCopy(false);
-                        return;
-                    }
-
-                    setSharedRaw(v);
-
-                    // ✅ copiar al portapapeles (si está habilitado)
-                    if (!autoCopyToClipboard) return;
-
-                    const isMaps = isLikelyMapsUrl(v);
-                    if (copyOnlyIfMaps && !isMaps) return;
-
-                    // idempotencia
-                    if (lastCopiedRef.current === v) {
-                        setDidCopy(true);
-                        return;
-                    }
-
-                    const ok = await safeCopyToClipboard(v);
-                    if (ok) {
-                        lastCopiedRef.current = v;
-                        setDidCopy(true);
-                    } else {
-                        setDidCopy(false);
-                    }
-                } catch {
-                    setSharedRaw(null);
-                    setDidCopy(false);
                 }
+            } catch {
+                // ignore
             }
-        );
+        })();
+
+        // ✅ 2) Warm start: escuchar evento en tiempo real
+        const sub = DeviceEventEmitter.addListener("trackgoShareText", async (payload: SharePayload) => {
+            try {
+                await handleValue(payload);
+            } catch {
+                setSharedRaw(null);
+                setDidCopy(false);
+            }
+        });
 
         return () => sub.remove();
     }, [autoCopyToClipboard, copyOnlyIfMaps]);
 
-    const sharedText = useMemo(() => {
-        return sharedRaw ? sharedRaw : null;
-    }, [sharedRaw]);
-
-    const sharedMapsUrl = useMemo(() => {
-        if (!sharedRaw) return null;
-        return isLikelyMapsUrl(sharedRaw) ? sharedRaw : null;
-    }, [sharedRaw]);
+    const sharedText = useMemo(() => (sharedRaw ? sharedRaw : null), [sharedRaw]);
+    const sharedMapsUrl = useMemo(() => (sharedRaw && isLikelyMapsUrl(sharedRaw) ? sharedRaw : null), [sharedRaw]);
 
     const clear = () => {
         setSharedRaw(null);
         setDidCopy(false);
-        // no borro lastCopiedRef a propósito; si quieres permitir copiar mismo link otra vez:
-        // lastCopiedRef.current = null;
     };
 
     return { sharedText, sharedMapsUrl, didCopy, clear };

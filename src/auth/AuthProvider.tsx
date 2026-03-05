@@ -16,11 +16,15 @@ import React, {
     useRef,
     useState,
 } from "react";
-import { Platform } from "react-native";
+import { Platform, ToastAndroid } from "react-native";
 
 import { auth, db } from "../config/firebase";
 import { getUserDoc } from "../data/repositories/usersRepo";
 import type { UserDoc } from "../types/models";
+
+// ✅ Expo Managed: NO hay Android intent receiver real.
+// Usaremos el clipboard watcher (tu hook nuevo) para detectar links copiados.
+import { useClipboardMapsWatcher } from "../share/useClipboardMapsWatcher";
 
 /**
  * ✅ Mostrar notificación incluso con app abierta
@@ -136,6 +140,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // evita re-registrar token en loop
     const lastSavedTokenRef = useRef<string | null>(null);
     const registeringRef = useRef(false);
+
+    // ✅ Clipboard watcher: detecta links de Google Maps copiados
+    const { mapsUrl, clear: clearMapsUrl } = useClipboardMapsWatcher({ enabled: true });
+
+    // ✅ UX simple: cuando detecta un link, avisamos con toast (y ya queda listo para pegar)
+    // Nota: en este flujo el link YA está en el clipboard (porque el user lo copió),
+    // pero igual el toast confirma que TrackGo lo detectó.
+    useEffect(() => {
+        if (Platform.OS !== "android") return;
+        if (!mapsUrl) return;
+
+        ToastAndroid.show("Link de Google Maps detectado ✅", ToastAndroid.SHORT);
+
+        // si no quieres que aparezca otra vez por el mismo link, limpiamos el estado del hook
+        clearMapsUrl();
+    }, [mapsUrl, clearMapsUrl]);
 
     useEffect(() => {
         setLoading(true);

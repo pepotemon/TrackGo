@@ -39,7 +39,7 @@ export default function RootLayout() {
 
       // Nota: ajusta pathname si tu ruta real es otra
       router.push({
-        pathname: "/admin/upload" as any,
+        pathname: "/admin/upload-clients" as any,
         params: { mapsUrl: clean },
       });
     };
