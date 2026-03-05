@@ -24,9 +24,12 @@ import {
     subscribeAdminClients,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
-import { dayKeyFromMs } from "../../data/repositories/dailyEventsRepo";
+import {
+    dayKeyFromMs,
+    subscribeDailyEventsByRange,
+} from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, ClientStatus, UserDoc } from "../../types/models";
+import type { ClientDoc, ClientStatus, DailyEventDoc, UserDoc } from "../../types/models";
 
 function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
@@ -36,9 +39,9 @@ function safeText(x?: string) {
 }
 
 type FilterKey = "all" | "pending" | "visited" | "rejected";
+type RejectReason = "clavo" | "localizacion" | "otro";
 
 function isUnassignedClient(c: ClientDoc) {
-    // ✅ trata "", undefined, null, "   " como SIN ASIGNAR
     const assigned = ((c.assignedTo ?? "") as any).toString().trim();
     return assigned.length === 0;
 }
@@ -48,7 +51,6 @@ function looksLikeMapsUrl(url: string) {
     return u.includes("maps") || u.includes("goo.gl") || u.includes("google.com");
 }
 
-/** ✅ elimina keys con undefined (Firestore no las acepta) */
 function cleanUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
     const out: any = {};
     for (const k of Object.keys(obj)) {
@@ -59,9 +61,90 @@ function cleanUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
 }
 
 function waLink(phoneDigits: string, text: string) {
-    // wa.me solo números
     const p = normalizePhone(phoneDigits);
     return `https://wa.me/${p}?text=${encodeURIComponent(text)}`;
+}
+
+/** ✅ dayKey local desde Date */
+function dayKeyFromDate(d: Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
+/** ✅ último evento por clientId (por createdAt) */
+function latestEventByClient(events: DailyEventDoc[]) {
+    const map = new Map<string, DailyEventDoc>();
+    for (const e of events) {
+        const cid = (e as any)?.clientId as string | undefined;
+        if (!cid) continue;
+
+        const type = (e as any)?.type;
+        if (type !== "visited" && type !== "rejected" && type !== "pending") continue;
+
+        const prev = map.get(cid);
+        const eMs = typeof (e as any)?.createdAt === "number" ? ((e as any).createdAt as number) : 0;
+        const pMs = prev && typeof (prev as any)?.createdAt === "number" ? ((prev as any).createdAt as number) : 0;
+
+        if (!prev || eMs >= pMs) map.set(cid, e);
+    }
+    return map;
+}
+
+/** ✅ motivo desde el evento (robusto) */
+function extractRejectReasonFromEvent(ev?: DailyEventDoc | null): RejectReason | undefined {
+    if (!ev) return undefined;
+    const anyEv: any = ev as any;
+
+    const raw =
+        (anyEv?.reason ??
+            anyEv?.rejectReason ??
+            anyEv?.rejectedReason ??
+            anyEv?.meta?.reason) as string | undefined;
+
+    if (!raw) return undefined;
+
+    const r = String(raw).toLowerCase().trim();
+    if (r === "clavo") return "clavo";
+    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
+        return "localizacion";
+    if (r === "otro" || r === "outro") return "otro";
+    return undefined;
+}
+
+/** ✅ motivo desde el CLIENT DOC (por si ya lo guardas ahí) */
+function extractRejectReasonFromClient(c: ClientDoc): RejectReason | undefined {
+    const anyC: any = c as any;
+
+    const raw =
+        (anyC?.rejectReason ??
+            anyC?.rejectedReason ??
+            anyC?.statusReason ??
+            anyC?.rejectedMeta?.reason ??
+            anyC?.statusMeta?.reason) as string | undefined;
+
+    if (!raw) return undefined;
+
+    const r = String(raw).toLowerCase().trim();
+    if (r === "clavo") return "clavo";
+    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
+        return "localizacion";
+    if (r === "otro" || r === "outro") return "otro";
+    return undefined;
+}
+
+function reasonLabel(r?: RejectReason) {
+    if (r === "clavo") return "Clavo";
+    if (r === "localizacion") return "Localización";
+    if (r === "otro") return "Otro";
+    return "—";
+}
+function reasonIcon(r?: RejectReason) {
+    if (r === "clavo") return "alert-circle-outline";
+    if (r === "localizacion") return "navigate-outline";
+    if (r === "otro") return "help-circle-outline";
+    return "information-circle-outline";
 }
 
 export default function AdminUserClientsScreen() {
@@ -78,6 +161,9 @@ export default function AdminUserClientsScreen() {
     const [q, setQ] = useState("");
     const [filter, setFilter] = useState<FilterKey>("pending");
     const [busyId, setBusyId] = useState<string | null>(null);
+
+    // ✅ eventos para motivos (últimos 180 días, no solo hoy)
+    const [events, setEvents] = useState<DailyEventDoc[]>([]);
 
     // ✅ Edit modal
     const [editOpen, setEditOpen] = useState(false);
@@ -97,6 +183,27 @@ export default function AdminUserClientsScreen() {
 
     useEffect(() => {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
+        return () => unsub();
+    }, []);
+
+    // ✅ Cargar eventos de un rango grande para capturar rechazos viejos
+    useEffect(() => {
+        const end = new Date();
+        end.setHours(0, 0, 0, 0);
+
+        const start = new Date(end);
+        start.setDate(start.getDate() - 180);
+
+        const startKey = dayKeyFromDate(start);
+        const endKey = dayKeyFromDate(end);
+
+        const unsub = subscribeDailyEventsByRange(
+            startKey,
+            endKey,
+            (list) => setEvents(list ?? []),
+            (err) => console.log("[AdminUserClients] events err:", err?.code, err?.message)
+        );
+
         return () => unsub();
     }, []);
 
@@ -131,6 +238,23 @@ export default function AdminUserClientsScreen() {
         if (isUnassignedView) return isUnassignedClient(c);
         return ((c.assignedTo ?? "") as any).toString() === userId;
     };
+
+    // ✅ último evento por clientId (dentro del rango)
+    const lastEventByClient = useMemo(() => latestEventByClient(events), [events]);
+
+    // ✅ motivo final por clientId: primero clientDoc, luego evento
+    const rejectReasonByClientId = useMemo(() => {
+        const m = new Map<string, RejectReason>();
+
+        // 1) eventos (fallback)
+        for (const [cid, ev] of lastEventByClient.entries()) {
+            if ((ev as any)?.type !== "rejected") continue;
+            const r = extractRejectReasonFromEvent(ev);
+            if (r) m.set(cid, r);
+        }
+
+        return m;
+    }, [lastEventByClient]);
 
     const totals = useMemo(() => {
         let pending = 0,
@@ -231,7 +355,6 @@ export default function AdminUserClientsScreen() {
         }
     };
 
-    // ✅ Reasignar: abrir picker
     const openAssignPicker = async (clientId: string) => {
         if (!users.length && !usersLoading) await reloadUsers();
         setPickerTargetClientId(clientId);
@@ -255,7 +378,6 @@ export default function AdminUserClientsScreen() {
         }
     };
 
-    // ✅ desasignar -> assignedTo: ""
     const clearAssign = async (clientId: string) => {
         try {
             setBusyId(clientId);
@@ -363,32 +485,28 @@ export default function AdminUserClientsScreen() {
         }
     };
 
-    const FilterPill = ({
-        k,
-        label,
-        value,
-    }: {
-        k: FilterKey;
-        label: string;
-        value: number;
-    }) => {
+    const FilterPill = ({ k, label, value }: { k: FilterKey; label: string; value: number }) => {
         const active = filter === k;
         return (
             <Pressable
                 onPress={() => setFilter(k)}
-                style={({ pressed }) => [
-                    styles.filterPill,
-                    active && styles.filterPillActive,
-                    pressed && styles.pressed,
-                ]}
+                style={({ pressed }) => [styles.filterPill, active && styles.filterPillActive, pressed && styles.pressed]}
             >
                 <Text style={[styles.filterText, active && styles.filterTextActive]}>{label}</Text>
                 <View style={[styles.filterBadge, active && styles.filterBadgeActive]}>
-                    <Text style={[styles.filterBadgeText, active && styles.filterBadgeTextActive]}>
-                        {value}
-                    </Text>
+                    <Text style={[styles.filterBadgeText, active && styles.filterBadgeTextActive]}>{value}</Text>
                 </View>
             </Pressable>
+        );
+    };
+
+    const RejectTag = ({ reason }: { reason?: RejectReason }) => {
+        if (!reason) return null;
+        return (
+            <View style={styles.rejectTag}>
+                <Ionicons name={reasonIcon(reason) as any} size={14} color={COLORS.rejected} />
+                <Text style={styles.rejectTagText}>{reasonLabel(reason)}</Text>
+            </View>
         );
     };
 
@@ -476,24 +594,31 @@ export default function AdminUserClientsScreen() {
                         return (u.name ?? "").trim() || (u.email ?? "").trim() || "Usuario";
                     })();
 
+                    // ✅ motivo: primero desde el cliente (si existe), si no desde events
+                    const fromClient = c.status === "rejected" ? extractRejectReasonFromClient(c) : undefined;
+                    const fromEvents = c.status === "rejected" ? rejectReasonByClientId.get(c.id) : undefined;
+                    const rejectReason = fromClient ?? fromEvents;
+
                     return (
                         <View key={c.id} style={styles.card}>
                             <View style={styles.cardTop}>
-                                <View style={{ flex: 1, gap: 2 }}>
+                                <View style={{ flex: 1, gap: 6 }}>
                                     <Text style={styles.phone} numberOfLines={1}>
                                         {c.phone}
                                     </Text>
 
-                                    {!!name ? (
-                                        <Text style={styles.meta} numberOfLines={1}>
-                                            {name}
-                                        </Text>
-                                    ) : null}
+                                    {!!name ? <Text style={styles.meta} numberOfLines={1}>{name}</Text> : null}
+                                    {!!biz ? <Text style={styles.meta} numberOfLines={1}>{biz}</Text> : null}
 
-                                    {!!biz ? (
-                                        <Text style={styles.meta} numberOfLines={1}>
-                                            {biz}
-                                        </Text>
+                                    {c.status === "rejected" ? (
+                                        rejectReason ? (
+                                            <RejectTag reason={rejectReason} />
+                                        ) : (
+                                            <View style={styles.rejectTagMuted}>
+                                                <Ionicons name="information-circle-outline" size={14} color={COLORS.muted} />
+                                                <Text style={styles.rejectTagTextMuted}>Rechazo: sin motivo guardado</Text>
+                                            </View>
+                                        )
                                     ) : null}
                                 </View>
 
@@ -521,31 +646,18 @@ export default function AdminUserClientsScreen() {
                             </View>
 
                             <View style={styles.actionsRow}>
-                                <Pressable
-                                    onPress={() => openMaps(c.mapsUrl)}
-                                    style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
-                                    accessibilityLabel="Abrir Maps"
-                                >
+                                <Pressable onPress={() => openMaps(c.mapsUrl)} style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
                                     <Ionicons name="map-outline" size={18} color={COLORS.text} />
                                 </Pressable>
 
-                                <Pressable
-                                    onPress={() => openWsp(c.phone)}
-                                    style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
-                                    accessibilityLabel="WhatsApp"
-                                >
+                                <Pressable onPress={() => openWsp(c.phone)} style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
                                     <Ionicons name="logo-whatsapp" size={18} color={COLORS.text} />
                                 </Pressable>
 
                                 <Pressable
                                     onPress={() => openAssignPicker(c.id)}
                                     disabled={isBusy}
-                                    style={({ pressed }) => [
-                                        styles.iconBtn,
-                                        pressed && styles.iconBtnPressed,
-                                        isBusy && styles.iconBtnDisabled,
-                                    ]}
-                                    accessibilityLabel="Reasignar"
+                                    style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
                                 >
                                     <Ionicons name="person-add-outline" size={18} color={COLORS.text} />
                                 </Pressable>
@@ -553,12 +665,7 @@ export default function AdminUserClientsScreen() {
                                 <Pressable
                                     onPress={() => startEdit(c)}
                                     disabled={isBusy}
-                                    style={({ pressed }) => [
-                                        styles.iconBtn,
-                                        pressed && styles.iconBtnPressed,
-                                        isBusy && styles.iconBtnDisabled,
-                                    ]}
-                                    accessibilityLabel="Editar"
+                                    style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
                                 >
                                     <Ionicons name="create-outline" size={18} color={COLORS.text} />
                                 </Pressable>
@@ -566,12 +673,7 @@ export default function AdminUserClientsScreen() {
                                 <Pressable
                                     onPress={() => clearAssign(c.id)}
                                     disabled={isBusy}
-                                    style={({ pressed }) => [
-                                        styles.iconBtn,
-                                        pressed && styles.iconBtnPressed,
-                                        isBusy && styles.iconBtnDisabled,
-                                    ]}
-                                    accessibilityLabel="Desasignar"
+                                    style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
                                 >
                                     <Ionicons name="remove-circle-outline" size={18} color={COLORS.text} />
                                 </Pressable>
@@ -579,13 +681,7 @@ export default function AdminUserClientsScreen() {
                                 <Pressable
                                     onPress={() => confirmDelete(c.id)}
                                     disabled={isBusy}
-                                    style={({ pressed }) => [
-                                        styles.iconBtn,
-                                        styles.iconBtnDanger,
-                                        pressed && styles.iconBtnPressed,
-                                        isBusy && styles.iconBtnDisabled,
-                                    ]}
-                                    accessibilityLabel="Eliminar"
+                                    style={({ pressed }) => [styles.iconBtn, styles.iconBtnDanger, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
                                 >
                                     <Ionicons name="trash-outline" size={18} color={COLORS.rejected} />
                                 </Pressable>
@@ -733,24 +829,18 @@ export default function AdminUserClientsScreen() {
                                     </View>
                                 </Pressable>
 
-                                {pickerUsers.map((u) => {
-                                    return (
-                                        <Pressable key={u.id} onPress={() => onPickUser(u)} style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}>
-                                            <View style={styles.userAvatar}>
-                                                <Ionicons name="person-outline" size={18} color={COLORS.text} />
-                                            </View>
+                                {pickerUsers.map((u) => (
+                                    <Pressable key={u.id} onPress={() => onPickUser(u)} style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}>
+                                        <View style={styles.userAvatar}>
+                                            <Ionicons name="person-outline" size={18} color={COLORS.text} />
+                                        </View>
 
-                                            <View style={{ flex: 1 }}>
-                                                <Text style={styles.userName} numberOfLines={1}>
-                                                    {u.name}
-                                                </Text>
-                                                <Text style={styles.userEmail} numberOfLines={1}>
-                                                    {u.email}
-                                                </Text>
-                                            </View>
-                                        </Pressable>
-                                    );
-                                })}
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.userName} numberOfLines={1}>{u.name}</Text>
+                                            <Text style={styles.userEmail} numberOfLines={1}>{u.email}</Text>
+                                        </View>
+                                    </Pressable>
+                                ))}
 
                                 {!pickerUsers.length ? (
                                     <View style={styles.emptySmall}>
@@ -918,30 +1008,44 @@ const styles = StyleSheet.create({
         maxWidth: 140,
     },
     pillText: { fontSize: 12, fontWeight: "900", textTransform: "lowercase" },
-    pillPending: {
-        backgroundColor: "rgba(251,191,36,0.12)",
-        borderColor: "rgba(251,191,36,0.35)",
-    },
+    pillPending: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.35)" },
     pillTextPending: { color: "#FDE68A" },
-    pillVisited: {
-        backgroundColor: "rgba(34,197,94,0.10)",
-        borderColor: "rgba(34,197,94,0.35)",
-    },
+    pillVisited: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.35)" },
     pillTextVisited: { color: "#86EFAC" },
-    pillRejected: {
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderColor: "rgba(248,113,113,0.35)",
-    },
+    pillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.35)" },
     pillTextRejected: { color: "#FCA5A5" },
 
-    infoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-    infoText: {
-        flex: 1,
-        color: COLORS.text,
-        opacity: 0.9,
-        fontSize: 12,
-        fontWeight: "700",
+    // ✅ tag de motivo
+    rejectTag: {
+        alignSelf: "flex-start",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 10,
+        height: 28,
+        borderRadius: 999,
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(248,113,113,0.30)",
     },
+    rejectTagText: { color: "#FCA5A5", fontSize: 12, fontWeight: "900" },
+
+    rejectTagMuted: {
+        alignSelf: "flex-start",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 10,
+        height: 28,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+    rejectTagTextMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
+
+    infoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    infoText: { flex: 1, color: COLORS.text, opacity: 0.9, fontSize: 12, fontWeight: "700" },
 
     assignedRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
     assignedText: { flex: 1, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
@@ -963,10 +1067,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
-    iconBtnDanger: {
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderColor: "rgba(248,113,113,0.30)",
-    },
+    iconBtnDanger: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.30)" },
     iconBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
     iconBtnDisabled: { opacity: 0.5 },
 
