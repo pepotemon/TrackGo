@@ -73,6 +73,44 @@ function dayKeyFromDate(d: Date) {
     return `${y}-${m}-${day}`;
 }
 
+function toMs(v: any): number {
+    if (!v) return 0;
+    if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+    if (v instanceof Date) return v.getTime();
+    if (typeof v?.toMillis === "function") return v.toMillis();
+    if (typeof v === "string") {
+        const parsed = Number(v);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
+}
+
+function formatStatusDateLabel(ms?: number) {
+    if (!ms || !Number.isFinite(ms)) return undefined;
+
+    const d = new Date(ms);
+    const now = new Date();
+
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+
+    const targetStart = new Date(d);
+    targetStart.setHours(0, 0, 0, 0);
+
+    if (targetStart.getTime() === todayStart.getTime()) return "Hoy";
+    if (targetStart.getTime() === yesterdayStart.getTime()) return "Ayer";
+
+    const day = String(d.getDate()).padStart(2, "0");
+    const months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+    const month = months[d.getMonth()];
+    const year = d.getFullYear();
+
+    return `${day} ${month} ${year}`;
+}
+
 /** ✅ último evento por clientId (por createdAt) */
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
@@ -84,11 +122,32 @@ function latestEventByClient(events: DailyEventDoc[]) {
         if (type !== "visited" && type !== "rejected" && type !== "pending") continue;
 
         const prev = map.get(cid);
-        const eMs = typeof (e as any)?.createdAt === "number" ? ((e as any).createdAt as number) : 0;
-        const pMs = prev && typeof (prev as any)?.createdAt === "number" ? ((prev as any).createdAt as number) : 0;
+        const eMs = toMs((e as any)?.createdAt);
+        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
 
         if (!prev || eMs >= pMs) map.set(cid, e);
     }
+    return map;
+}
+
+/** ✅ último evento por clientId y tipo */
+function latestEventByClientAndType(events: DailyEventDoc[]) {
+    const map = new Map<string, DailyEventDoc>();
+
+    for (const e of events) {
+        const cid = (e as any)?.clientId as string | undefined;
+        const type = (e as any)?.type as string | undefined;
+        if (!cid || !type) continue;
+        if (type !== "visited" && type !== "rejected" && type !== "pending") continue;
+
+        const key = `${cid}:${type}`;
+        const prev = map.get(key);
+        const eMs = toMs((e as any)?.createdAt);
+        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
+
+        if (!prev || eMs >= pMs) map.set(key, e);
+    }
+
     return map;
 }
 
@@ -162,7 +221,7 @@ export default function AdminUserClientsScreen() {
     const [filter, setFilter] = useState<FilterKey>("pending");
     const [busyId, setBusyId] = useState<string | null>(null);
 
-    // ✅ eventos para motivos (últimos 180 días, no solo hoy)
+    // ✅ eventos para motivos y fechas (últimos 180 días)
     const [events, setEvents] = useState<DailyEventDoc[]>([]);
 
     // ✅ Edit modal
@@ -186,7 +245,7 @@ export default function AdminUserClientsScreen() {
         return () => unsub();
     }, []);
 
-    // ✅ Cargar eventos de un rango grande para capturar rechazos viejos
+    // ✅ Cargar eventos de un rango grande para capturar rechazos/visitas viejas
     useEffect(() => {
         const end = new Date();
         end.setHours(0, 0, 0, 0);
@@ -239,14 +298,16 @@ export default function AdminUserClientsScreen() {
         return ((c.assignedTo ?? "") as any).toString() === userId;
     };
 
-    // ✅ último evento por clientId (dentro del rango)
+    // ✅ último evento por clientId (rango general)
     const lastEventByClient = useMemo(() => latestEventByClient(events), [events]);
+
+    // ✅ último evento por clientId + type
+    const lastEventByClientType = useMemo(() => latestEventByClientAndType(events), [events]);
 
     // ✅ motivo final por clientId: primero clientDoc, luego evento
     const rejectReasonByClientId = useMemo(() => {
         const m = new Map<string, RejectReason>();
 
-        // 1) eventos (fallback)
         for (const [cid, ev] of lastEventByClient.entries()) {
             if ((ev as any)?.type !== "rejected") continue;
             const r = extractRejectReasonFromEvent(ev);
@@ -255,6 +316,34 @@ export default function AdminUserClientsScreen() {
 
         return m;
     }, [lastEventByClient]);
+
+    // ✅ fecha visual por estado
+    const statusDateLabelByClientId = useMemo(() => {
+        const m = new Map<string, string>();
+
+        for (const c of clients) {
+            let ms = 0;
+
+            if (c.status === "visited") {
+                const ev = lastEventByClientType.get(`${c.id}:visited`);
+                ms = toMs((ev as any)?.createdAt) || toMs((c as any)?.updatedAt);
+            } else if (c.status === "rejected") {
+                const ev = lastEventByClientType.get(`${c.id}:rejected`);
+                ms = toMs((ev as any)?.createdAt) || toMs((c as any)?.updatedAt);
+            } else {
+                const ev = lastEventByClientType.get(`${c.id}:pending`);
+                ms =
+                    toMs((ev as any)?.createdAt) ||
+                    toMs((c as any)?.updatedAt) ||
+                    toMs((c as any)?.assignedAt);
+            }
+
+            const label = formatStatusDateLabel(ms);
+            if (label) m.set(c.id, label);
+        }
+
+        return m;
+    }, [clients, lastEventByClientType]);
 
     const totals = useMemo(() => {
         let pending = 0,
@@ -310,6 +399,18 @@ export default function AdminUserClientsScreen() {
         if (status === "visited") return [styles.pillText, styles.pillTextVisited];
         if (status === "rejected") return [styles.pillText, styles.pillTextRejected];
         return [styles.pillText, styles.pillTextPending];
+    };
+
+    const datePill = (status?: ClientStatus) => {
+        if (status === "visited") return [styles.datePill, styles.datePillVisited];
+        if (status === "rejected") return [styles.datePill, styles.datePillRejected];
+        return [styles.datePill, styles.datePillPending];
+    };
+
+    const datePillText = (status?: ClientStatus) => {
+        if (status === "visited") return [styles.datePillText, styles.datePillTextVisited];
+        if (status === "rejected") return [styles.datePillText, styles.datePillTextRejected];
+        return [styles.datePillText, styles.datePillTextPending];
     };
 
     const confirmDelete = (id: string) => {
@@ -594,10 +695,11 @@ export default function AdminUserClientsScreen() {
                         return (u.name ?? "").trim() || (u.email ?? "").trim() || "Usuario";
                     })();
 
-                    // ✅ motivo: primero desde el cliente (si existe), si no desde events
                     const fromClient = c.status === "rejected" ? extractRejectReasonFromClient(c) : undefined;
                     const fromEvents = c.status === "rejected" ? rejectReasonByClientId.get(c.id) : undefined;
                     const rejectReason = fromClient ?? fromEvents;
+
+                    const statusDateLabel = statusDateLabelByClientId.get(c.id);
 
                     return (
                         <View key={c.id} style={styles.card}>
@@ -610,6 +712,22 @@ export default function AdminUserClientsScreen() {
                                     {!!name ? <Text style={styles.meta} numberOfLines={1}>{name}</Text> : null}
                                     {!!biz ? <Text style={styles.meta} numberOfLines={1}>{biz}</Text> : null}
 
+                                    <View style={styles.topBadgesRow}>
+                                        <View style={pill(c.status)}>
+                                            <Text style={pillText(c.status)} numberOfLines={1}>
+                                                {c.status}
+                                            </Text>
+                                        </View>
+
+                                        {statusDateLabel ? (
+                                            <View style={datePill(c.status)}>
+                                                <Text style={datePillText(c.status)} numberOfLines={1}>
+                                                    {statusDateLabel}
+                                                </Text>
+                                            </View>
+                                        ) : null}
+                                    </View>
+
                                     {c.status === "rejected" ? (
                                         rejectReason ? (
                                             <RejectTag reason={rejectReason} />
@@ -620,12 +738,6 @@ export default function AdminUserClientsScreen() {
                                             </View>
                                         )
                                     ) : null}
-                                </View>
-
-                                <View style={pill(c.status)}>
-                                    <Text style={pillText(c.status)} numberOfLines={1}>
-                                        {c.status}
-                                    </Text>
                                 </View>
                             </View>
 
@@ -707,8 +819,8 @@ export default function AdminUserClientsScreen() {
             </ScrollView>
 
             {/* =========================
-          EDIT MODAL
-         ========================= */}
+              EDIT MODAL
+             ========================= */}
             <Modal visible={editOpen} transparent animationType="fade" onRequestClose={cancelEdit}>
                 <View style={styles.modalOverlay}>
                     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
@@ -779,8 +891,8 @@ export default function AdminUserClientsScreen() {
             </Modal>
 
             {/* =========================
-          USER PICKER MODAL (Reasignar)
-         ========================= */}
+              USER PICKER MODAL (Reasignar)
+             ========================= */}
             <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={() => setUserPickerOpen(false)}>
                 <View style={styles.modalOverlay}>
                     <View style={styles.pickerWrap}>
@@ -998,6 +1110,14 @@ const styles = StyleSheet.create({
     phone: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
     meta: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
+    topBadgesRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 8,
+        marginTop: 2,
+    },
+
     pill: {
         paddingHorizontal: 10,
         height: 28,
@@ -1015,7 +1135,40 @@ const styles = StyleSheet.create({
     pillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.35)" },
     pillTextRejected: { color: "#FCA5A5" },
 
-    // ✅ tag de motivo
+    datePill: {
+        paddingHorizontal: 10,
+        height: 28,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+    },
+    datePillText: {
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    datePillPending: {
+        backgroundColor: "rgba(251,191,36,0.08)",
+        borderColor: "rgba(251,191,36,0.22)",
+    },
+    datePillTextPending: {
+        color: "#FDE68A",
+    },
+    datePillVisited: {
+        backgroundColor: "rgba(34,197,94,0.08)",
+        borderColor: "rgba(34,197,94,0.22)",
+    },
+    datePillTextVisited: {
+        color: "#86EFAC",
+    },
+    datePillRejected: {
+        backgroundColor: "rgba(248,113,113,0.08)",
+        borderColor: "rgba(248,113,113,0.22)",
+    },
+    datePillTextRejected: {
+        color: "#FCA5A5",
+    },
+
     rejectTag: {
         alignSelf: "flex-start",
         flexDirection: "row",

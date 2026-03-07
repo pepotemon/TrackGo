@@ -97,6 +97,7 @@ function reasonLabel(r?: RejectReason) {
     if (r === "otro") return "Otro";
     return "—";
 }
+
 function reasonIcon(r?: RejectReason) {
     if (r === "clavo") return "alert-circle-outline";
     if (r === "localizacion") return "navigate-outline";
@@ -111,11 +112,11 @@ type Row = {
 
     ratePerVisit: number;
 
-    assignedToday: number; // ✅ SOLO asignados HOY (assignedDayKey === todayKey)
-    pending: number; // ✅ estado actual
+    assignedToday: number;
+    pending: number;
 
-    visitedToday: number; // ✅ desde dailyEvents (hoy) filtrado
-    rejectedToday: number; // ✅ desde dailyEvents (hoy) filtrado
+    visitedToday: number;
+    rejectedToday: number;
 
     amountToday: number;
 };
@@ -137,29 +138,28 @@ export default function AdminDailyReportScreen() {
     const [usersLoading, setUsersLoading] = useState(false);
 
     const [todayEvents, setTodayEvents] = useState<DailyEventDoc[]>([]);
-    const [rangeEvents, setRangeEvents] = useState<DailyEventDoc[]>([]); // ✅ para motivos
+    const [rangeEvents, setRangeEvents] = useState<DailyEventDoc[]>([]);
     const [q, setQ] = useState("");
 
-    // ✅ MODAL LISTA
     const [listOpen, setListOpen] = useState(false);
     const [listMode, setListMode] = useState<ListMode>("visited");
     const [listQ, setListQ] = useState("");
 
-    // ✅ MODAL REASIGNAR
     const [assignOpen, setAssignOpen] = useState(false);
     const [assignClientId, setAssignClientId] = useState<string | null>(null);
     const [assignSearch, setAssignSearch] = useState("");
     const [busyClientId, setBusyClientId] = useState<string | null>(null);
 
+    // ✅ modal dinero / ganancias
+    const [moneyOpen, setMoneyOpen] = useState(false);
+
     const tk = useMemo(() => todayKey(), []);
 
-    // clients realtime
     useEffect(() => {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
         return () => unsub();
     }, []);
 
-    // events realtime HOY (para contadores/listas)
     useEffect(() => {
         const unsub = subscribeDailyEventsByRange(
             tk,
@@ -170,7 +170,6 @@ export default function AdminDailyReportScreen() {
         return () => unsub();
     }, [tk]);
 
-    // events realtime RANGO (para etiquetas de motivos)
     useEffect(() => {
         const end = new Date();
         end.setHours(0, 0, 0, 0);
@@ -210,26 +209,20 @@ export default function AdminDailyReportScreen() {
         return m;
     }, [users]);
 
-    // --------------------------
-    // ✅ DATA base
-    // --------------------------
     const clientsById = useMemo(() => {
         const m = new Map<string, ClientDoc>();
         for (const c of clients) m.set(c.id, c);
         return m;
     }, [clients]);
 
-    // ✅ hoy: último evento por cliente
     const lastEventTodayByClient = useMemo(() => {
         return latestEventByClient(todayEvents);
     }, [todayEvents]);
 
-    // ✅ rango: último evento por cliente (motivos)
     const lastEventRangeByClient = useMemo(() => {
         return latestEventByClient(rangeEvents);
     }, [rangeEvents]);
 
-    // ✅ motivo del rechazo por clientId (desde rango)
     const rejectedReasonByClientId = useMemo(() => {
         const m = new Map<string, RejectReason>();
 
@@ -250,31 +243,22 @@ export default function AdminDailyReportScreen() {
         return m;
     }, [lastEventRangeByClient]);
 
-    // ✅ FIX HOME-STYLE:
-    // Solo contamos un evento si:
-    // 1) cliente existe
-    // 2) estado actual del cliente coincide con e.type
     const shouldCountEvent = useCallback(
         (e: DailyEventDoc) => {
             const cid = (e as any)?.clientId as string | undefined;
             if (!cid) return false;
 
             const c = clientsById.get(cid);
-            if (!c) return false; // eliminado
+            if (!c) return false;
 
-            // ojo: c.status debe ser "visited" | "rejected" | "pending"
             return (c as any).status === (e as any).type;
         },
         [clientsById]
     );
 
-    // --------------------------
-    // ✅ Rows + Totales
-    // --------------------------
     const rows: Row[] = useMemo(() => {
         const byUser: Record<string, Row> = {};
 
-        // base: users
         for (const u of users) {
             const rate = getRatePerVisit(u);
             byUser[u.id] = {
@@ -282,20 +266,14 @@ export default function AdminDailyReportScreen() {
                 name: u.name,
                 email: u.email,
                 ratePerVisit: rate,
-
                 assignedToday: 0,
                 pending: 0,
-
                 visitedToday: 0,
                 rejectedToday: 0,
-
                 amountToday: 0,
             };
         }
 
-        // 1) assignedToday + pending desde CLIENTS
-        // - assignedToday: SOLO si assignedDayKey === hoy
-        // - pending: estado actual
         for (const c of clients) {
             const uid = c.assignedTo;
             if (!uid) continue;
@@ -306,26 +284,21 @@ export default function AdminDailyReportScreen() {
                     name: "(sin perfil)",
                     email: "",
                     ratePerVisit: 0,
-
                     assignedToday: 0,
                     pending: 0,
-
                     visitedToday: 0,
                     rejectedToday: 0,
-
                     amountToday: 0,
                 };
             }
 
             const row = byUser[uid];
-
             const assignedDayKey = String((c as any).assignedDayKey ?? "");
-            if (assignedDayKey === tk) row.assignedToday += 1;
 
+            if (assignedDayKey === tk) row.assignedToday += 1;
             if ((c as any).status === "pending") row.pending += 1;
         }
 
-        // 2) visitedToday / rejectedToday desde DAILY EVENTS (hoy) ✅ filtrado HOME-STYLE
         for (const ev of lastEventTodayByClient.values()) {
             if (!shouldCountEvent(ev)) continue;
 
@@ -338,13 +311,10 @@ export default function AdminDailyReportScreen() {
                     name: "(sin perfil)",
                     email: "",
                     ratePerVisit: 0,
-
                     assignedToday: 0,
                     pending: 0,
-
                     visitedToday: 0,
                     rejectedToday: 0,
-
                     amountToday: 0,
                 };
             }
@@ -353,14 +323,12 @@ export default function AdminDailyReportScreen() {
             if ((ev as any)?.type === "rejected") byUser[uid].rejectedToday += 1;
         }
 
-        // 3) amount
         for (const r of Object.values(byUser)) {
             r.amountToday = r.visitedToday * (r.ratePerVisit ?? 0);
         }
 
         const all = Object.values(byUser);
 
-        // filter
         const qt2 = q.trim().toLowerCase();
         const filtered = !qt2
             ? all
@@ -369,7 +337,6 @@ export default function AdminDailyReportScreen() {
                 return hay.includes(qt2);
             });
 
-        // sort
         return filtered.sort(
             (a, b) => b.visitedToday + b.rejectedToday - (a.visitedToday + a.rejectedToday)
         );
@@ -397,6 +364,12 @@ export default function AdminDailyReportScreen() {
 
     const doneToday = totals.visitedToday + totals.rejectedToday;
 
+    const earningRows = useMemo(() => {
+        return rows
+            .filter((r) => r.visitedToday > 0 || r.amountToday > 0)
+            .sort((a, b) => b.amountToday - a.amountToday);
+    }, [rows]);
+
     const copy = async (text: string) => {
         await Clipboard.setStringAsync(text);
     };
@@ -423,13 +396,11 @@ export default function AdminDailyReportScreen() {
                 ]}
                 accessibilityLabel={label}
             >
-                <Ionicons name={icon} size={18} color={COLORS.text} />
+                <Ionicons name={icon} size={16} color={COLORS.text} />
             </Pressable>
         );
     };
 
-    // ✅ FIX: que TODOS (incl. Asignados) sean el MISMO componente (Pressable)
-    // y no usar style callback en <View> (eso rompía la simetría del "Asignados")
     const StatIconPressable = ({
         icon,
         color,
@@ -454,17 +425,17 @@ export default function AdminDailyReportScreen() {
                 style={({ pressed }) => [
                     styles.statIconWrap,
                     pressed && clickable ? styles.statIconWrapPressed : null,
-                    disabled ? { opacity: 0.55 } : null,
+                    disabled ? { opacity: 0.5 } : null,
                 ]}
                 accessibilityLabel={`${label}: ${value}`}
             >
                 <View
                     style={[
                         styles.statIcon,
-                        { borderColor: color + "55", backgroundColor: color + "12" },
+                        { borderColor: color + "44", backgroundColor: color + "10" },
                     ]}
                 >
-                    <Ionicons name={icon} size={16} color={color} />
+                    <Ionicons name={icon} size={14} color={color} />
                 </View>
                 <Text style={styles.statValue}>{value}</Text>
             </Pressable>
@@ -480,9 +451,6 @@ export default function AdminDailyReportScreen() {
         );
     };
 
-    // --------------------------
-    // ✅ DATA para modales
-    // --------------------------
     const visitedIdsByUser = useMemo(() => {
         const m = new Map<string, Set<string>>();
         for (const ev of lastEventTodayByClient.values()) {
@@ -499,7 +467,6 @@ export default function AdminDailyReportScreen() {
         return m;
     }, [lastEventTodayByClient, shouldCountEvent]);
 
-    // ✅ RECHAZADOS: agrupar por assignedTo ACTUAL
     const rejectedByAssignedTo = useMemo(() => {
         const m = new Map<string, ClientDoc[]>();
         for (const ev of lastEventTodayByClient.values()) {
@@ -621,7 +588,6 @@ export default function AdminDailyReportScreen() {
         setAssignSearch("");
     };
 
-    // ✅ reasignar: update optimista (assignedTo + pending)
     const doAssign = async (toUserId: string) => {
         const cid = assignClientId;
         if (!cid) return;
@@ -670,7 +636,7 @@ export default function AdminDailyReportScreen() {
         if (!reason) return null;
         return (
             <View style={styles.rejectTag}>
-                <Ionicons name={reasonIcon(reason) as any} size={14} color={COLORS.rejectedSoft} />
+                <Ionicons name={reasonIcon(reason) as any} size={12} color={COLORS.rejectedSoft} />
                 <Text style={styles.rejectTagText}>{reasonLabel(reason)}</Text>
             </View>
         );
@@ -691,16 +657,32 @@ export default function AdminDailyReportScreen() {
                     <Text style={styles.modalClientPhone} numberOfLines={1}>
                         {phone || "—"}
                     </Text>
-                    {name ? <Text style={styles.modalClientMeta} numberOfLines={1}>{name}</Text> : null}
-                    {business ? <Text style={styles.modalClientMeta} numberOfLines={1}>{business}</Text> : null}
+
+                    {name ? (
+                        <Text style={styles.modalClientMeta} numberOfLines={1}>
+                            {name}
+                        </Text>
+                    ) : null}
+
+                    {business ? (
+                        <Text style={styles.modalClientMeta} numberOfLines={1}>
+                            {business}
+                        </Text>
+                    ) : null}
 
                     {listMode === "rejected" ? (
                         rejectReason ? (
                             <RejectTag reason={rejectReason} />
                         ) : (
                             <View style={styles.rejectTagMuted}>
-                                <Ionicons name="information-circle-outline" size={14} color={COLORS.muted} />
-                                <Text style={styles.rejectTagTextMuted}>Rechazo: sin motivo guardado</Text>
+                                <Ionicons
+                                    name="information-circle-outline"
+                                    size={12}
+                                    color={COLORS.muted}
+                                />
+                                <Text style={styles.rejectTagTextMuted}>
+                                    Rechazo: sin motivo guardado
+                                </Text>
                             </View>
                         )
                     ) : null}
@@ -721,7 +703,7 @@ export default function AdminDailyReportScreen() {
                         ]}
                         accessibilityLabel="Reasignar"
                     >
-                        <Ionicons name="swap-horizontal-outline" size={18} color={COLORS.text} />
+                        <Ionicons name="swap-horizontal-outline" size={16} color={COLORS.text} />
                     </Pressable>
                 ) : (
                     <View style={styles.modalReassignPlaceholder} />
@@ -734,22 +716,26 @@ export default function AdminDailyReportScreen() {
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
-            {/* Compact header */}
-            <View style={[styles.header, { paddingTop: 0 }]}>
+            <View style={[styles.header, { paddingTop: 2 }]}>
                 <View style={{ flex: 1 }}>
                     <Text style={styles.hTitle}>Hoy</Text>
                     <Text style={styles.hSub}>
                         <Text style={styles.hStrong}>{doneToday}</Text>
-                        <Text style={styles.hMuted}> / </Text>
-                        <Text style={styles.hMuted}>{totals.assignedToday}</Text>
-                        <Text style={styles.hMuted}> completados</Text>
+                        <Text style={styles.hMuted}> / {totals.assignedToday} completados</Text>
                     </Text>
                 </View>
 
-                <View style={styles.moneyChip}>
-                    <Ionicons name="cash-outline" size={14} color={COLORS.money} />
+                <Pressable
+                    onPress={() => setMoneyOpen(true)}
+                    style={({ pressed }) => [
+                        styles.moneyChip,
+                        pressed && styles.moneyChipPressed,
+                    ]}
+                    accessibilityLabel="Ver visitados e ingresos"
+                >
+                    <Ionicons name="cash-outline" size={12} color={COLORS.money} />
                     <Text style={styles.moneyChipText}>R$ {money(totals.amountToday)}</Text>
-                </View>
+                </Pressable>
 
                 <IconBtn
                     icon={usersLoading ? "sync" : "refresh-outline"}
@@ -759,7 +745,6 @@ export default function AdminDailyReportScreen() {
                 />
             </View>
 
-            {/* Icons-only summary row */}
             <View style={styles.statsRow}>
                 <StatIconPressable
                     icon="checkmark-circle-outline"
@@ -793,21 +778,24 @@ export default function AdminDailyReportScreen() {
                 />
             </View>
 
-            {/* Search */}
             <View style={styles.searchWrap}>
-                <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                <Ionicons name="search-outline" size={16} color={COLORS.muted} />
                 <TextInput
                     value={q}
                     onChangeText={setQ}
-                    placeholder="Buscar (nombre / email)…"
+                    placeholder="Buscar nombre o email…"
                     placeholderTextColor={COLORS.muted}
                     style={styles.searchInput}
                     autoCorrect={false}
                     autoCapitalize="none"
                 />
                 {!!q ? (
-                    <Pressable onPress={() => setQ("")} style={styles.clearBtn} accessibilityLabel="Limpiar búsqueda">
-                        <Ionicons name="close" size={18} color={COLORS.text} />
+                    <Pressable
+                        onPress={() => setQ("")}
+                        style={styles.clearBtn}
+                        accessibilityLabel="Limpiar búsqueda"
+                    >
+                        <Ionicons name="close" size={16} color={COLORS.text} />
                     </Pressable>
                 ) : null}
             </View>
@@ -815,19 +803,24 @@ export default function AdminDailyReportScreen() {
             <FlatList
                 data={rows}
                 keyExtractor={(r) => r.userId}
-                contentContainerStyle={styles.listContent}
+                contentContainerStyle={[
+                    styles.listContent,
+                    { paddingBottom: Math.max(26, insets.bottom + 14) },
+                ]}
+                showsVerticalScrollIndicator={false}
                 renderItem={({ item }) => {
                     const done = item.visitedToday + item.rejectedToday;
-                    const total = item.assignedToday; // ✅ SOLO asignados HOY
+                    const total = item.assignedToday;
                     const pct = total <= 0 ? 0 : Math.round((Math.min(done, total) / total) * 100);
 
                     return (
                         <View style={styles.card}>
                             <View style={styles.cardTop}>
-                                <View style={{ flex: 1, gap: 2 }}>
+                                <View style={{ flex: 1, gap: 1 }}>
                                     <Text style={styles.userName} numberOfLines={1}>
                                         {item.name}
                                     </Text>
+
                                     {!!item.email ? (
                                         <Text style={styles.userEmail} numberOfLines={1}>
                                             {item.email}
@@ -839,14 +832,20 @@ export default function AdminDailyReportScreen() {
                                     )}
                                 </View>
 
-                                <View style={{ alignItems: "flex-end", gap: 8 }}>
+                                <View style={{ alignItems: "flex-end", gap: 6 }}>
                                     <View style={styles.pctPill}>
-                                        <Ionicons name="stats-chart-outline" size={14} color={COLORS.primarySoft} />
+                                        <Ionicons
+                                            name="stats-chart-outline"
+                                            size={12}
+                                            color={COLORS.primarySoft}
+                                        />
                                         <Text style={styles.pctText}>{pct}%</Text>
                                     </View>
 
                                     <View style={styles.amountPill}>
-                                        <Text style={styles.amountText}>R$ {money(item.amountToday)}</Text>
+                                        <Text style={styles.amountText}>
+                                            R$ {money(item.amountToday)}
+                                        </Text>
                                     </View>
                                 </View>
                             </View>
@@ -855,29 +854,49 @@ export default function AdminDailyReportScreen() {
 
                             <View style={styles.metricsRow}>
                                 <View style={[styles.miniStat, styles.miniOk]}>
-                                    <Ionicons name="checkmark" size={14} color={COLORS.visitedSoft} />
-                                    <Text style={[styles.miniText, { color: COLORS.visitedSoft }]}>{item.visitedToday}</Text>
+                                    <Ionicons
+                                        name="checkmark"
+                                        size={12}
+                                        color={COLORS.visitedSoft}
+                                    />
+                                    <Text style={[styles.miniText, { color: COLORS.visitedSoft }]}>
+                                        {item.visitedToday}
+                                    </Text>
                                 </View>
 
                                 <View style={[styles.miniStat, styles.miniBad]}>
-                                    <Ionicons name="close" size={14} color={COLORS.rejectedSoft} />
-                                    <Text style={[styles.miniText, { color: COLORS.rejectedSoft }]}>{item.rejectedToday}</Text>
+                                    <Ionicons
+                                        name="close"
+                                        size={12}
+                                        color={COLORS.rejectedSoft}
+                                    />
+                                    <Text style={[styles.miniText, { color: COLORS.rejectedSoft }]}>
+                                        {item.rejectedToday}
+                                    </Text>
                                 </View>
 
                                 <View style={[styles.miniStat, styles.miniWarn]}>
-                                    <Ionicons name="time" size={14} color={COLORS.pendingSoft} />
-                                    <Text style={[styles.miniText, { color: COLORS.pendingSoft }]}>{item.pending}</Text>
+                                    <Ionicons
+                                        name="time"
+                                        size={12}
+                                        color={COLORS.pendingSoft}
+                                    />
+                                    <Text style={[styles.miniText, { color: COLORS.pendingSoft }]}>
+                                        {item.pending}
+                                    </Text>
                                 </View>
 
                                 <View style={[styles.miniStat, styles.miniNeutral]}>
-                                    <Ionicons name="people" size={14} color={COLORS.text} />
-                                    <Text style={[styles.miniText, { color: COLORS.text }]}>{item.assignedToday}</Text>
+                                    <Ionicons name="people" size={12} color={COLORS.text} />
+                                    <Text style={[styles.miniText, { color: COLORS.text }]}>
+                                        {item.assignedToday}
+                                    </Text>
                                 </View>
                             </View>
 
                             <View style={styles.actionsRow}>
                                 <View style={styles.rateChip}>
-                                    <Ionicons name="cash-outline" size={14} color={COLORS.muted} />
+                                    <Ionicons name="cash-outline" size={12} color={COLORS.muted} />
                                     <Text style={styles.rateText}>R$ {money(item.ratePerVisit)}</Text>
                                     <Text style={styles.rateTextMuted}>/visita</Text>
                                 </View>
@@ -894,17 +913,18 @@ export default function AdminDailyReportScreen() {
                 }}
                 ListEmptyComponent={
                     <View style={styles.empty}>
-                        <Ionicons name="analytics-outline" size={24} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>{q.trim() ? "Sin resultados." : "Sin datos aún."}</Text>
+                        <Ionicons name="analytics-outline" size={20} color={COLORS.muted} />
+                        <Text style={styles.emptyText}>
+                            {q.trim() ? "Sin resultados." : "Sin datos aún."}
+                        </Text>
                     </View>
                 }
             />
 
-            {/* ✅ MODAL LISTA AGRUPADA POR USUARIO */}
             <Modal visible={listOpen} transparent animationType="fade" onRequestClose={closeList}>
                 <Pressable style={styles.modalBackdrop} onPress={closeList} />
 
-                <View style={[styles.modalCard, { paddingBottom: Math.max(14, insets.bottom + 12) }]}>
+                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
                     <View style={styles.modalHeader}>
                         <View style={{ flex: 1, gap: 2 }}>
                             <Text style={styles.modalTitle}>
@@ -916,17 +936,25 @@ export default function AdminDailyReportScreen() {
                             </Text>
                             <Text style={styles.modalSub}>
                                 {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0)} cliente
-                                {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0) === 1 ? "" : "s"}
+                                {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0) === 1
+                                    ? ""
+                                    : "s"}
                             </Text>
                         </View>
 
-                        <Pressable onPress={closeList} style={({ pressed }) => [styles.modalClose, pressed && styles.modalClosePressed]}>
-                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        <Pressable
+                            onPress={closeList}
+                            style={({ pressed }) => [
+                                styles.modalClose,
+                                pressed && styles.modalClosePressed,
+                            ]}
+                        >
+                            <Ionicons name="close" size={16} color={COLORS.text} />
                         </Pressable>
                     </View>
 
                     <View style={styles.modalSearch}>
-                        <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                        <Ionicons name="search-outline" size={16} color={COLORS.muted} />
                         <TextInput
                             value={listQ}
                             onChangeText={setListQ}
@@ -936,7 +964,7 @@ export default function AdminDailyReportScreen() {
                         />
                         {!!listQ ? (
                             <Pressable onPress={() => setListQ("")} style={styles.modalSearchClear}>
-                                <Ionicons name="close" size={18} color={COLORS.text} />
+                                <Ionicons name="close" size={16} color={COLORS.text} />
                             </Pressable>
                         ) : null}
                     </View>
@@ -944,11 +972,12 @@ export default function AdminDailyReportScreen() {
                     <FlatList
                         data={modalSections}
                         keyExtractor={(s) => s.userId}
-                        contentContainerStyle={{ paddingTop: 6, paddingBottom: 10, gap: 10 }}
+                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                        showsVerticalScrollIndicator={false}
                         renderItem={({ item: section }) => (
                             <View style={styles.modalSectionCard}>
                                 <View style={styles.modalSectionHeader}>
-                                    <View style={{ flex: 1, gap: 2 }}>
+                                    <View style={{ flex: 1, gap: 1 }}>
                                         <Text style={styles.modalSectionTitle} numberOfLines={1}>
                                             {section.title}
                                         </Text>
@@ -963,7 +992,7 @@ export default function AdminDailyReportScreen() {
                                     </View>
                                 </View>
 
-                                <View style={{ gap: 10, marginTop: 10 }}>
+                                <View style={{ gap: 8, marginTop: 8 }}>
                                     {section.data.map((c) => (
                                         <ClientRowModal
                                             key={c.id}
@@ -976,34 +1005,37 @@ export default function AdminDailyReportScreen() {
                         )}
                         ListEmptyComponent={
                             <View style={styles.modalEmpty}>
-                                <Ionicons name="people-outline" size={22} color={COLORS.muted} />
+                                <Ionicons name="people-outline" size={20} color={COLORS.muted} />
                                 <Text style={styles.modalEmptyText}>No hay clientes aquí.</Text>
                             </View>
                         }
                     />
-
-
                 </View>
             </Modal>
 
-            {/* ✅ MODAL: selector de usuario para reasignar */}
             <Modal visible={assignOpen} transparent animationType="fade" onRequestClose={closeAssign}>
                 <Pressable style={styles.modalBackdrop} onPress={closeAssign} />
 
-                <View style={[styles.modalCard, { paddingBottom: Math.max(14, insets.bottom + 12) }]}>
+                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
                     <View style={styles.modalHeader}>
                         <View style={{ flex: 1, gap: 2 }}>
                             <Text style={styles.modalTitle}>Reasignar a usuario</Text>
                             <Text style={styles.modalSub}>Selecciona un cobrador</Text>
                         </View>
 
-                        <Pressable onPress={closeAssign} style={({ pressed }) => [styles.modalClose, pressed && styles.modalClosePressed]}>
-                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        <Pressable
+                            onPress={closeAssign}
+                            style={({ pressed }) => [
+                                styles.modalClose,
+                                pressed && styles.modalClosePressed,
+                            ]}
+                        >
+                            <Ionicons name="close" size={16} color={COLORS.text} />
                         </Pressable>
                     </View>
 
                     <View style={styles.modalSearch}>
-                        <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                        <Ionicons name="search-outline" size={16} color={COLORS.muted} />
                         <TextInput
                             value={assignSearch}
                             onChangeText={setAssignSearch}
@@ -1015,7 +1047,7 @@ export default function AdminDailyReportScreen() {
                         />
                         {!!assignSearch ? (
                             <Pressable onPress={() => setAssignSearch("")} style={styles.modalSearchClear}>
-                                <Ionicons name="close" size={18} color={COLORS.text} />
+                                <Ionicons name="close" size={16} color={COLORS.text} />
                             </Pressable>
                         ) : null}
                     </View>
@@ -1023,13 +1055,20 @@ export default function AdminDailyReportScreen() {
                     <FlatList
                         data={filteredUsersForAssign}
                         keyExtractor={(u) => u.id}
-                        contentContainerStyle={{ paddingTop: 6, paddingBottom: 10, gap: 10 }}
+                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                        showsVerticalScrollIndicator={false}
                         renderItem={({ item }) => (
-                            <Pressable onPress={() => doAssign(item.id)} style={({ pressed }) => [styles.userPickRow, pressed && styles.userPickRowPressed]}>
+                            <Pressable
+                                onPress={() => doAssign(item.id)}
+                                style={({ pressed }) => [
+                                    styles.userPickRow,
+                                    pressed && styles.userPickRowPressed,
+                                ]}
+                            >
                                 <View style={styles.userPickAvatar}>
-                                    <Ionicons name="person-outline" size={16} color={COLORS.text} />
+                                    <Ionicons name="person-outline" size={14} color={COLORS.text} />
                                 </View>
-                                <View style={{ flex: 1, gap: 2 }}>
+                                <View style={{ flex: 1, gap: 1 }}>
                                     <Text style={styles.userPickName} numberOfLines={1}>
                                         {item.name}
                                     </Text>
@@ -1037,20 +1076,82 @@ export default function AdminDailyReportScreen() {
                                         {item.email || "—"}
                                     </Text>
                                 </View>
-                                <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
+                                <Ionicons name="chevron-forward" size={14} color={COLORS.muted} />
                             </Pressable>
                         )}
                         ListEmptyComponent={
                             <View style={styles.modalEmpty}>
-                                <Ionicons name="person-outline" size={22} color={COLORS.muted} />
+                                <Ionicons name="person-outline" size={20} color={COLORS.muted} />
                                 <Text style={styles.modalEmptyText}>No hay usuarios.</Text>
                             </View>
                         }
                     />
 
                     <Text style={styles.modalHint}>
-                        * Esto cambia el campo assignedTo del cliente (y lo marca pending en UI para que salga de rechazados).
+                        * Esto cambia el assignedTo del cliente y lo deja pending en UI.
                     </Text>
+                </View>
+            </Modal>
+
+            {/* ✅ MODAL DINERO / GANANCIAS */}
+            <Modal visible={moneyOpen} transparent animationType="fade" onRequestClose={() => setMoneyOpen(false)}>
+                <Pressable style={styles.modalBackdrop} onPress={() => setMoneyOpen(false)} />
+
+                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                    <View style={styles.modalHeader}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={styles.modalTitle}>Visitados e ingresos</Text>
+                            <Text style={styles.modalSub}>
+                                {totals.visitedToday} visitado{totals.visitedToday === 1 ? "" : "s"} · R$ {money(totals.amountToday)}
+                            </Text>
+                        </View>
+
+                        <Pressable
+                            onPress={() => setMoneyOpen(false)}
+                            style={({ pressed }) => [
+                                styles.modalClose,
+                                pressed && styles.modalClosePressed,
+                            ]}
+                        >
+                            <Ionicons name="close" size={16} color={COLORS.text} />
+                        </Pressable>
+                    </View>
+
+                    <FlatList
+                        data={earningRows}
+                        keyExtractor={(r) => `money-${r.userId}`}
+                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                        showsVerticalScrollIndicator={false}
+                        renderItem={({ item }) => (
+                            <View style={styles.moneyRowCard}>
+                                <View style={{ flex: 1, gap: 1 }}>
+                                    <Text style={styles.moneyRowName} numberOfLines={1}>
+                                        {item.name}
+                                    </Text>
+                                    <Text style={styles.moneyRowMeta} numberOfLines={1}>
+                                        {item.visitedToday} visitado{item.visitedToday === 1 ? "" : "s"} · R$ {money(item.ratePerVisit)}/visita
+                                    </Text>
+                                </View>
+
+                                <View style={styles.moneyRowRight}>
+                                    <View style={styles.moneyVisitsPill}>
+                                        <Ionicons name="checkmark" size={11} color={COLORS.visitedSoft} />
+                                        <Text style={styles.moneyVisitsText}>{item.visitedToday}</Text>
+                                    </View>
+
+                                    <View style={styles.moneyAmountPill}>
+                                        <Text style={styles.moneyAmountText}>R$ {money(item.amountToday)}</Text>
+                                    </View>
+                                </View>
+                            </View>
+                        )}
+                        ListEmptyComponent={
+                            <View style={styles.modalEmpty}>
+                                <Ionicons name="cash-outline" size={20} color={COLORS.muted} />
+                                <Text style={styles.modalEmptyText}>Aún no hay ingresos hoy.</Text>
+                            </View>
+                        }
+                    />
                 </View>
             </Modal>
         </SafeAreaView>
@@ -1060,10 +1161,10 @@ export default function AdminDailyReportScreen() {
 const COLORS = {
     bg: "#0B1220",
     card: "#0F172A",
-    border: "rgba(255,255,255,0.08)",
-    text: "#F9FAFB",
-    muted: "#9CA3AF",
-    muted2: "#C7CEDA",
+    border: "rgba(255,255,255,0.07)",
+    text: "#F8FAFC",
+    muted: "#94A3B8",
+    muted2: "#CBD5E1",
 
     visited: "#22C55E",
     rejected: "#F87171",
@@ -1079,337 +1180,619 @@ const COLORS = {
 };
 
 const styles = StyleSheet.create({
-    safe: { flex: 1, backgroundColor: COLORS.bg },
+    safe: {
+        flex: 1,
+        backgroundColor: COLORS.bg,
+    },
 
     header: {
-        paddingHorizontal: 16,
+        paddingHorizontal: 14,
         paddingBottom: 8,
+        paddingTop: 2,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
+        gap: 8,
     },
-    hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.4 },
-    hSub: { marginTop: 2, fontSize: 12, fontWeight: "800" },
-    hStrong: { color: COLORS.text, fontWeight: "900" },
-    hMuted: { color: COLORS.muted, fontWeight: "900" },
+    hTitle: {
+        color: COLORS.text,
+        fontSize: 19,
+        fontWeight: "900",
+        letterSpacing: 0.2,
+    },
+    hSub: {
+        marginTop: 1,
+        fontSize: 11,
+        fontWeight: "800",
+    },
+    hStrong: {
+        color: COLORS.text,
+        fontWeight: "900",
+    },
+    hMuted: {
+        color: COLORS.muted,
+        fontWeight: "800",
+    },
 
     moneyChip: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 10,
-        height: 34,
+        gap: 6,
+        paddingHorizontal: 9,
+        height: 30,
         borderRadius: 999,
-        backgroundColor: "rgba(167,243,208,0.10)",
+        backgroundColor: "rgba(167,243,208,0.08)",
         borderWidth: 1,
-        borderColor: "rgba(167,243,208,0.22)",
+        borderColor: "rgba(167,243,208,0.18)",
     },
-    moneyChipText: { color: COLORS.money, fontWeight: "900", fontSize: 12 },
+    moneyChipPressed: {
+        transform: [{ scale: 0.98 }],
+        opacity: 0.96,
+    },
+    moneyChipText: {
+        color: COLORS.money,
+        fontWeight: "900",
+        fontSize: 11,
+    },
 
-    statsRow: { paddingHorizontal: 16, paddingBottom: 8, flexDirection: "row", gap: 10 },
+    iconBtn: {
+        width: 36,
+        height: 36,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    iconBtnPressed: {
+        transform: [{ scale: 0.97 }],
+        opacity: 0.96,
+    },
+    iconBtnDisabled: {
+        opacity: 0.5,
+    },
+
+    statsRow: {
+        paddingHorizontal: 14,
+        paddingBottom: 8,
+        flexDirection: "row",
+        gap: 8,
+    },
     statIconWrap: {
         flex: 1,
+        height: 38,
+        borderRadius: 13,
+        backgroundColor: "rgba(255,255,255,0.035)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        gap: 8, // ⬅ mejor simetría
-        height: 44,
-        borderRadius: 16,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
+        gap: 6,
     },
-    statIconWrapPressed: { transform: [{ scale: 0.99 }], opacity: 0.95 },
+    statIconWrapPressed: {
+        transform: [{ scale: 0.985 }],
+        opacity: 0.96,
+    },
     statIcon: {
-        width: 32, // ⬅ mismo ancho visual para todos
-        height: 32,
-        borderRadius: 12,
+        width: 24,
+        height: 24,
+        borderRadius: 8,
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
     },
-    statValue: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
+    statValue: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 12,
+    },
 
     searchWrap: {
-        marginHorizontal: 16,
-        marginBottom: 10,
+        marginHorizontal: 14,
+        marginBottom: 8,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
-        backgroundColor: "rgba(255,255,255,0.04)",
+        gap: 8,
+        backgroundColor: "rgba(255,255,255,0.035)",
         borderWidth: 1,
         borderColor: COLORS.border,
-        borderRadius: 16,
-        paddingHorizontal: 12,
-        height: 46,
+        borderRadius: 14,
+        paddingHorizontal: 11,
+        height: 40,
     },
-    searchInput: { flex: 1, color: COLORS.text, fontSize: 14, fontWeight: "700" },
+    searchInput: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "700",
+        paddingVertical: 0,
+    },
     clearBtn: {
-        width: 34,
-        height: 34,
-        borderRadius: 12,
+        width: 28,
+        height: 28,
+        borderRadius: 10,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
+        backgroundColor: "rgba(255,255,255,0.05)",
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.08)",
     },
 
-    listContent: { paddingHorizontal: 16, paddingBottom: 40, gap: 12 },
+    listContent: {
+        paddingHorizontal: 14,
+        gap: 10,
+    },
 
     card: {
         backgroundColor: COLORS.card,
         borderWidth: 1,
         borderColor: COLORS.border,
-        borderRadius: 18,
-        padding: 14,
+        borderRadius: 16,
+        padding: 12,
+        gap: 9,
+    },
+    cardTop: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
         gap: 10,
     },
-    cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-    userName: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
-    userEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    userEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
+
+    userName: {
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "900",
+    },
+    userEmail: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+    },
+    userEmailMuted: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+        opacity: 0.7,
+    },
 
     pctPill: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
-        minWidth: 64,
-        height: 30,
-        paddingHorizontal: 10,
+        gap: 5,
+        minWidth: 58,
+        height: 26,
+        paddingHorizontal: 8,
         borderRadius: 999,
-        backgroundColor: "rgba(124,58,237,0.16)",
+        backgroundColor: "rgba(124,58,237,0.14)",
         borderWidth: 1,
-        borderColor: "rgba(124,58,237,0.32)",
+        borderColor: "rgba(124,58,237,0.26)",
         justifyContent: "center",
     },
-    pctText: { color: COLORS.primarySoft, fontWeight: "900", fontSize: 12 },
+    pctText: {
+        color: COLORS.primarySoft,
+        fontWeight: "900",
+        fontSize: 11,
+    },
 
     amountPill: {
-        height: 30,
-        paddingHorizontal: 10,
+        height: 26,
+        paddingHorizontal: 8,
         borderRadius: 999,
-        backgroundColor: "rgba(34,197,94,0.10)",
+        backgroundColor: "rgba(34,197,94,0.08)",
         borderWidth: 1,
-        borderColor: "rgba(34,197,94,0.22)",
+        borderColor: "rgba(34,197,94,0.18)",
         alignItems: "center",
         justifyContent: "center",
     },
-    amountText: { color: COLORS.visitedSoft, fontWeight: "900", fontSize: 12 },
+    amountText: {
+        color: COLORS.visitedSoft,
+        fontWeight: "900",
+        fontSize: 11,
+    },
 
     progressTrack: {
-        height: 10,
+        height: 7,
         borderRadius: 999,
-        backgroundColor: "rgba(255,255,255,0.05)",
+        backgroundColor: "rgba(255,255,255,0.045)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.07)",
+        borderColor: "rgba(255,255,255,0.06)",
         overflow: "hidden",
     },
-    progressFill: { height: "100%", backgroundColor: "rgba(34,197,94,0.55)" },
+    progressFill: {
+        height: "100%",
+        backgroundColor: "rgba(34,197,94,0.52)",
+    },
 
-    metricsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
-    miniStat: { flexDirection: "row", alignItems: "center", gap: 6, height: 30, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1 },
-    miniText: { fontSize: 12, fontWeight: "900" },
+    metricsRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 6,
+    },
+    miniStat: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 5,
+        height: 26,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        borderWidth: 1,
+    },
+    miniText: {
+        fontSize: 11,
+        fontWeight: "900",
+    },
 
-    miniOk: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" },
-    miniBad: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.22)" },
-    miniWarn: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.22)" },
-    miniNeutral: { backgroundColor: "rgba(255,255,255,0.05)", borderColor: "rgba(255,255,255,0.08)" },
+    miniOk: {
+        backgroundColor: "rgba(34,197,94,0.08)",
+        borderColor: "rgba(34,197,94,0.18)",
+    },
+    miniBad: {
+        backgroundColor: "rgba(248,113,113,0.08)",
+        borderColor: "rgba(248,113,113,0.18)",
+    },
+    miniWarn: {
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderColor: "rgba(251,191,36,0.18)",
+    },
+    miniNeutral: {
+        backgroundColor: "rgba(255,255,255,0.045)",
+        borderColor: "rgba(255,255,255,0.08)",
+    },
 
-    actionsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 2 },
+    actionsRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        marginTop: 1,
+    },
     rateChip: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
-        height: 34,
-        paddingHorizontal: 10,
-        borderRadius: 14,
-        backgroundColor: "rgba(255,255,255,0.04)",
+        gap: 5,
+        height: 30,
+        paddingHorizontal: 9,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.035)",
         borderWidth: 1,
         borderColor: COLORS.border,
     },
-    rateText: { color: COLORS.text, opacity: 0.92, fontSize: 12, fontWeight: "900" },
-    rateTextMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
+    rateText: {
+        color: COLORS.text,
+        opacity: 0.94,
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    rateTextMuted: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "800",
+    },
 
-    iconBtn: {
-        width: 44,
-        height: 44,
-        borderRadius: 16,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
+    empty: {
+        marginTop: 34,
         alignItems: "center",
-        justifyContent: "center",
+        gap: 8,
     },
-    iconBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
-    iconBtnDisabled: { opacity: 0.5 },
+    emptyText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
+    },
 
-    empty: { marginTop: 40, alignItems: "center", gap: 10 },
-    emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900" },
-
-    // -----------------
-    // MODALS
-    // -----------------
-    modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
+    modalBackdrop: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0,0,0,0.56)",
+    },
     modalCard: {
         position: "absolute",
-        left: 16,
-        right: 16,
-        bottom: 16,
+        left: 14,
+        right: 14,
+        bottom: 14,
         backgroundColor: COLORS.card,
-        borderRadius: 18,
+        borderRadius: 16,
         borderWidth: 1,
         borderColor: COLORS.border,
-        padding: 14,
-        gap: 12,
+        padding: 12,
+        gap: 10,
         maxHeight: "82%",
     },
-    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
-    modalTitle: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
-    modalSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    modalHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+    },
+    modalTitle: {
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "900",
+    },
+    modalSub: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+    },
 
     modalClose: {
-        width: 40,
-        height: 40,
-        borderRadius: 14,
+        width: 34,
+        height: 34,
+        borderRadius: 12,
         backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
+        borderColor: "rgba(255,255,255,0.09)",
         alignItems: "center",
         justifyContent: "center",
     },
-    modalClosePressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
+    modalClosePressed: {
+        transform: [{ scale: 0.97 }],
+        opacity: 0.96,
+    },
 
     modalSearch: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
-        backgroundColor: "rgba(255,255,255,0.04)",
+        gap: 8,
+        backgroundColor: "rgba(255,255,255,0.035)",
         borderWidth: 1,
         borderColor: COLORS.border,
-        borderRadius: 16,
-        paddingHorizontal: 12,
-        height: 46,
+        borderRadius: 14,
+        paddingHorizontal: 11,
+        height: 40,
     },
-    modalSearchInput: { flex: 1, color: COLORS.text, fontSize: 14, fontWeight: "700" },
+    modalSearchInput: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "700",
+        paddingVertical: 0,
+    },
     modalSearchClear: {
-        width: 34,
-        height: 34,
-        borderRadius: 12,
+        width: 28,
+        height: 28,
+        borderRadius: 10,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
+        backgroundColor: "rgba(255,255,255,0.05)",
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.08)",
     },
 
-    modalEmpty: { marginTop: 16, alignItems: "center", gap: 10, paddingVertical: 10 },
-    modalEmptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900" },
-    modalHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.9 },
+    modalEmpty: {
+        marginTop: 14,
+        alignItems: "center",
+        gap: 8,
+        paddingVertical: 8,
+    },
+    modalEmptyText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
+    },
+    modalHint: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+        opacity: 0.9,
+    },
 
     modalSectionCard: {
-        borderRadius: 18,
+        borderRadius: 15,
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        backgroundColor: "rgba(255,255,255,0.03)",
-        padding: 12,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
+        padding: 10,
     },
-    modalSectionHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
-    modalSectionTitle: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
-    modalSectionSub: { color: COLORS.muted, fontWeight: "800", fontSize: 12 },
+    modalSectionHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    modalSectionTitle: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+    modalSectionSub: {
+        color: COLORS.muted,
+        fontWeight: "700",
+        fontSize: 11,
+    },
     modalCountPill: {
-        minWidth: 36,
-        height: 28,
+        minWidth: 30,
+        height: 24,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
+        backgroundColor: "rgba(255,255,255,0.05)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
-        paddingHorizontal: 10,
+        borderColor: "rgba(255,255,255,0.09)",
+        paddingHorizontal: 8,
     },
-    modalCountText: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
+    modalCountText: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 11,
+    },
 
     modalClientCard: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
-        padding: 12,
-        borderRadius: 16,
+        gap: 10,
+        padding: 10,
+        borderRadius: 14,
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        backgroundColor: "rgba(255,255,255,0.03)",
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
     },
-    modalClientPhone: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
-    modalClientMeta: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    modalClientAssigned: { color: COLORS.muted, fontSize: 12, fontWeight: "800", marginTop: 2 },
-    modalClientAssignedStrong: { color: COLORS.text, fontWeight: "900" },
+    modalClientPhone: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    modalClientMeta: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+    },
+    modalClientAssigned: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+        marginTop: 2,
+    },
+    modalClientAssignedStrong: {
+        color: COLORS.text,
+        fontWeight: "900",
+    },
 
-    // tags
     rejectTag: {
         alignSelf: "flex-start",
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 10,
-        height: 28,
+        gap: 6,
+        paddingHorizontal: 8,
+        height: 24,
         borderRadius: 999,
-        backgroundColor: "rgba(248,113,113,0.10)",
+        backgroundColor: "rgba(248,113,113,0.08)",
         borderWidth: 1,
-        borderColor: "rgba(248,113,113,0.30)",
-        marginTop: 6,
+        borderColor: "rgba(248,113,113,0.22)",
+        marginTop: 5,
     },
-    rejectTagText: { color: COLORS.rejectedSoft, fontSize: 12, fontWeight: "900" },
+    rejectTagText: {
+        color: COLORS.rejectedSoft,
+        fontSize: 11,
+        fontWeight: "900",
+    },
 
     rejectTagMuted: {
         alignSelf: "flex-start",
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 10,
-        height: 28,
+        gap: 6,
+        paddingHorizontal: 8,
+        height: 24,
         borderRadius: 999,
-        backgroundColor: "rgba(255,255,255,0.05)",
+        backgroundColor: "rgba(255,255,255,0.045)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
-        marginTop: 6,
+        borderColor: "rgba(255,255,255,0.09)",
+        marginTop: 5,
     },
-    rejectTagTextMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
+    rejectTagTextMuted: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "800",
+    },
 
     modalReassignBtn: {
-        width: 44,
-        height: 44,
-        borderRadius: 16,
+        width: 36,
+        height: 36,
+        borderRadius: 12,
         backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
+        borderColor: "rgba(255,255,255,0.09)",
         alignItems: "center",
         justifyContent: "center",
     },
-    modalReassignBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
-    modalReassignPlaceholder: { width: 44, height: 44 },
+    modalReassignBtnPressed: {
+        transform: [{ scale: 0.97 }],
+        opacity: 0.96,
+    },
+    modalReassignPlaceholder: {
+        width: 36,
+        height: 36,
+    },
 
     userPickRow: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
-        padding: 12,
-        borderRadius: 16,
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        backgroundColor: "rgba(255,255,255,0.03)",
-    },
-    userPickRowPressed: { transform: [{ scale: 0.99 }], opacity: 0.95 },
-    userPickAvatar: {
-        width: 38,
-        height: 38,
+        gap: 10,
+        padding: 10,
         borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
+    },
+    userPickRowPressed: {
+        transform: [{ scale: 0.99 }],
+        opacity: 0.95,
+    },
+    userPickAvatar: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
+        backgroundColor: "rgba(255,255,255,0.05)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
+        borderColor: "rgba(255,255,255,0.09)",
     },
-    userPickName: { color: COLORS.text, fontWeight: "900" },
-    userPickEmail: { color: COLORS.muted, fontWeight: "800", fontSize: 12 },
+    userPickName: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+    userPickEmail: {
+        color: COLORS.muted,
+        fontWeight: "700",
+        fontSize: 11,
+    },
+
+    // ✅ modal dinero
+    moneyRowCard: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        padding: 10,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
+    },
+    moneyRowName: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    moneyRowMeta: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+    },
+    moneyRowRight: {
+        alignItems: "flex-end",
+        gap: 6,
+    },
+    moneyVisitsPill: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        height: 22,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        backgroundColor: "rgba(34,197,94,0.08)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.18)",
+    },
+    moneyVisitsText: {
+        color: COLORS.visitedSoft,
+        fontWeight: "900",
+        fontSize: 10,
+    },
+    moneyAmountPill: {
+        height: 24,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        backgroundColor: "rgba(167,243,208,0.08)",
+        borderWidth: 1,
+        borderColor: "rgba(167,243,208,0.18)",
+        justifyContent: "center",
+        alignItems: "center",
+    },
+    moneyAmountText: {
+        color: COLORS.money,
+        fontWeight: "900",
+        fontSize: 10,
+    },
 });

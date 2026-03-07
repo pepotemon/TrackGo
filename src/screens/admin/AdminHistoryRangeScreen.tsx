@@ -1,60 +1,66 @@
 import { Ionicons } from "@expo/vector-icons";
-import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
-import React, { useEffect, useMemo, useState } from "react";
+import * as Clipboard from "expo-clipboard";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
     FlatList,
     Modal,
-    Platform,
     Pressable,
     StatusBar,
     StyleSheet,
     Text,
+    TextInput,
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
+import { assignClient, subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
-import { subscribeEarningsByRange, type EarningsSummary } from "../../data/repositories/earningsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-
 import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
 
 // ----------------------
-// Date helpers
+// DayKey helpers
 // ----------------------
-function formatDayKeyFromDate(dt: Date) {
-    const y = dt.getFullYear();
-    const m = String(dt.getMonth() + 1).padStart(2, "0");
-    const d = String(dt.getDate()).padStart(2, "0");
-    return `${y}-${m}-${d}`;
+function dayKeyFromDate(d: Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
 }
 
-function parseDayKeyToDate(dayKey: string) {
-    const t = dayKey.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return new Date();
-    const [yy, mm, dd] = t.split("-").map((x) => parseInt(x, 10));
-    return new Date(yy, (mm || 1) - 1, dd || 1);
+function startOfWeekMonday(base = new Date()) {
+    const d = new Date(base);
+    d.setHours(0, 0, 0, 0);
+    const day = d.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    return d;
 }
 
-function isValidDayKey(s: string) {
-    const t = s.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return false;
-    const [yy, mm, dd] = t.split("-").map((x) => parseInt(x, 10));
-    if (mm < 1 || mm > 12) return false;
-    if (dd < 1 || dd > 31) return false;
-    return true;
+function endOfWeekSunday(base = new Date()) {
+    const start = startOfWeekMonday(base);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    end.setHours(0, 0, 0, 0);
+    return end;
 }
 
-function weekdayEsFromDayKey(dayKey: string) {
-    const [y, m, d] = dayKey.split("-").map((x) => parseInt(x, 10));
-    const dt = new Date(y, (m || 1) - 1, d || 1);
-    const names = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
-    return names[dt.getDay()] ?? dayKey;
+function isDayKeyWithinRange(dayKey?: string, start?: string, end?: string) {
+    if (!dayKey || !start || !end) return false;
+    return dayKey >= start && dayKey <= end;
 }
 
 function safeText(x?: string) {
     return (x ?? "").toLowerCase();
+}
+
+function safeNumber(n: any, fallback = 0) {
+    return typeof n === "number" && isFinite(n) ? n : fallback;
+}
+
+function getRatePerVisit(u: UserDoc) {
+    const anyU: any = u as any;
+    return safeNumber(anyU.ratePerVisit ?? anyU.visitFee, 0);
 }
 
 function money(n: number) {
@@ -62,813 +68,1147 @@ function money(n: number) {
     return v.toFixed(2);
 }
 
-/**
- * ✅ Semana local: Lunes 00:00 → Domingo 23:59 (dayKeys inclusivo)
- */
-function weekRangeFromDate(date: Date) {
-    const base = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    const day = base.getDay(); // 0 dom, 1 lun...
-    const diffToMonday = (day + 6) % 7; // lunes=0 ... domingo=6
-    const monday = new Date(base);
-    monday.setDate(base.getDate() - diffToMonday);
-
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-
-    return { startKey: formatDayKeyFromDate(monday), endKey: formatDayKeyFromDate(sunday) };
+function toMs(v: any): number {
+    if (!v) return 0;
+    if (typeof v === "number") return isFinite(v) ? v : 0;
+    if (v instanceof Date) return v.getTime();
+    if (typeof v?.toMillis === "function") return v.toMillis();
+    if (typeof v === "string") {
+        const n = Number(v);
+        return isFinite(n) ? n : 0;
+    }
+    return 0;
 }
 
-// ----------------------
-// Types
-// ----------------------
-type UserRow = {
+// ✅ dedupe: último evento por cliente (por createdAt)
+function latestEventByClient(events: DailyEventDoc[]) {
+    const map = new Map<string, DailyEventDoc>();
+    for (const e of events) {
+        const cid = (e as any)?.clientId as string | undefined;
+        const type = (e as any)?.type as string | undefined;
+        if (!cid) continue;
+        if (type !== "visited" && type !== "rejected" && type !== "pending") continue;
+
+        const prev = map.get(cid);
+        const eMs = toMs((e as any)?.createdAt);
+        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
+
+        if (!prev || eMs >= pMs) map.set(cid, e);
+    }
+    return map;
+}
+
+type RejectReason = "clavo" | "localizacion" | "otro";
+
+function normalizeReason(raw?: string): RejectReason | undefined {
+    if (!raw) return undefined;
+    const r = String(raw).toLowerCase().trim();
+    if (r === "clavo") return "clavo";
+    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização") {
+        return "localizacion";
+    }
+    if (r === "otro" || r === "outro") return "otro";
+    return undefined;
+}
+
+function reasonLabel(r?: RejectReason) {
+    if (r === "clavo") return "Clavo";
+    if (r === "localizacion") return "Localización";
+    if (r === "otro") return "Otro";
+    return "—";
+}
+
+function reasonIcon(r?: RejectReason) {
+    if (r === "clavo") return "alert-circle-outline";
+    if (r === "localizacion") return "navigate-outline";
+    if (r === "otro") return "help-circle-outline";
+    return "information-circle-outline";
+}
+
+type Row = {
     userId: string;
     name: string;
     email?: string;
-    assigned: number; // ✅ por rango (assignedDayKey en rango)
-    visited: number; // ✅ por rango (eventos en rango)
-    rejected: number; // ✅ por rango (eventos en rango)
-    pendingNow: number; // ✅ SIN rango (pendientes actuales)
+
+    ratePerVisit: number;
+
+    assignedWeek: number;
+    pendingWeek: number;
+
+    visitedWeek: number;
+    rejectedWeek: number;
+
+    amountWeek: number;
 };
 
-type DayGroup = {
-    dayKey: string;
-    label: string;
-    users: UserRow[];
-    totals: { assigned: number; visited: number; rejected: number };
-};
+type ListMode = "visited" | "pending" | "rejected";
 
-type EarningsRowView = {
+type GroupSection = {
     userId: string;
-    name: string;
-    email?: string;
-    visited: number;
-    amount: number;
+    title: string;
+    subtitle?: string;
+    data: ClientDoc[];
 };
 
-export default function AdminWeeklyCloseScreen() {
+export default function AdminWeeklyReportScreen() {
     const insets = useSafeAreaInsets();
 
-    const [users, setUsers] = useState<UserDoc[]>([]);
-    const [events, setEvents] = useState<DailyEventDoc[]>([]);
     const [clients, setClients] = useState<ClientDoc[]>([]);
+    const [users, setUsers] = useState<UserDoc[]>([]);
+    const [usersLoading, setUsersLoading] = useState(false);
 
-    const initialWeek = useMemo(() => weekRangeFromDate(new Date()), []);
-    const [startKey, setStartKey] = useState(initialWeek.startKey);
-    const [endKey, setEndKey] = useState(initialWeek.endKey);
+    const [weekEvents, setWeekEvents] = useState<DailyEventDoc[]>([]);
+    const [rangeEvents, setRangeEvents] = useState<DailyEventDoc[]>([]);
+    const [q, setQ] = useState("");
 
-    // ✅ filtro de usuarios (selector)
-    const [selectedUserId, setSelectedUserId] = useState<string>("ALL");
-    const [userPickerOpen, setUserPickerOpen] = useState(false);
-    const [qUser, setQUser] = useState("");
+    const [listOpen, setListOpen] = useState(false);
+    const [listMode, setListMode] = useState<ListMode>("visited");
+    const [listQ, setListQ] = useState("");
 
-    // ✅ monetización real semanal
-    const [earnings, setEarnings] = useState<EarningsSummary>({
-        rows: [],
-        totalVisited: 0,
-        totalAmount: 0,
-    });
+    const [assignOpen, setAssignOpen] = useState(false);
+    const [assignClientId, setAssignClientId] = useState<string | null>(null);
+    const [assignSearch, setAssignSearch] = useState("");
+    const [busyClientId, setBusyClientId] = useState<string | null>(null);
 
-    // UI
-    const [expandedDay, setExpandedDay] = useState<string | null>(null);
+    // ✅ modal ganancias
+    const [earningsOpen, setEarningsOpen] = useState(false);
 
-    // Picker fecha
-    const [pickerOpen, setPickerOpen] = useState(false);
-    const [pickerTarget, setPickerTarget] = useState<"start" | "end">("start");
-    const [pickerDate, setPickerDate] = useState<Date>(new Date());
-
-    // ✅ modal recaudado
-    const [moneyModalOpen, setMoneyModalOpen] = useState(false);
-
-    // ✅ HOY (para no “mostrar futuro”)
-    const todayKey = useMemo(() => formatDayKeyFromDate(new Date()), []);
-
-    /**
-     * ✅ End efectivo = min(endKey, todayKey)
-     */
-    const endKeyEffective = useMemo(() => {
-        const s = startKey.trim();
-        const e = endKey.trim();
-        if (!isValidDayKey(s) || !isValidDayKey(e)) return e || todayKey;
-
-        const clamped = e > todayKey ? todayKey : e;
-        return clamped < s ? s : clamped;
-    }, [startKey, endKey, todayKey]);
-
-    const openPicker = (target: "start" | "end") => {
-        setPickerTarget(target);
-        const base = target === "start" ? startKey : endKey;
-        setPickerDate(parseDayKeyToDate(base));
-        setPickerOpen(true);
-    };
-
-    const closePicker = () => setPickerOpen(false);
-
-    const onPickerChange = (ev: DateTimePickerEvent, date?: Date) => {
-        if (Platform.OS === "android") {
-            if (ev.type === "dismissed") {
-                setPickerOpen(false);
-                return;
-            }
-            const d = date ?? pickerDate;
-            setPickerOpen(false);
-
-            const dk = formatDayKeyFromDate(d);
-
-            if (pickerTarget === "start") {
-                setStartKey(dk);
-                if (dk > endKey) setEndKey(dk);
-            } else {
-                if (dk < startKey) setEndKey(startKey);
-                else setEndKey(dk);
-            }
-            return;
-        }
-
-        if (date) setPickerDate(date);
-    };
-
-    const confirmPickerIOS = () => {
-        const dk = formatDayKeyFromDate(pickerDate);
-
-        if (pickerTarget === "start") {
-            setStartKey(dk);
-            if (dk > endKey) setEndKey(dk);
-        } else {
-            if (dk < startKey) setEndKey(startKey);
-            else setEndKey(dk);
-        }
-        setPickerOpen(false);
-    };
-
-    // ----------------------
-    // Data subscriptions
-    // ----------------------
-    useEffect(() => {
-        (async () => {
-            const u = await listUsers("user");
-            setUsers(u);
-        })();
-    }, []);
+    const weekStartKey = useMemo(() => dayKeyFromDate(startOfWeekMonday(new Date())), []);
+    const weekEndKey = useMemo(() => dayKeyFromDate(endOfWeekSunday(new Date())), []);
 
     useEffect(() => {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
         return () => unsub();
     }, []);
 
-    // ✅ eventos por rango (hasta endKeyEffective para evitar futuro)
     useEffect(() => {
-        const s = startKey.trim();
-        const e = endKeyEffective.trim();
-        if (!isValidDayKey(s) || !isValidDayKey(e)) return;
-
-        const unsub = subscribeDailyEventsByRange(s, e, (list) => setEvents(list ?? []));
+        const unsub = subscribeDailyEventsByRange(
+            weekStartKey,
+            weekEndKey,
+            (list) => setWeekEvents(list ?? []),
+            (err) => console.log("[AdminWeeklyReport] week events err:", err?.code, err?.message)
+        );
         return () => unsub();
-    }, [startKey, endKeyEffective]);
+    }, [weekStartKey, weekEndKey]);
 
     useEffect(() => {
-        const s = startKey.trim();
-        const e = endKeyEffective.trim();
-        if (!isValidDayKey(s) || !isValidDayKey(e)) return;
-        if (!users.length) return;
+        const end = new Date();
+        end.setHours(0, 0, 0, 0);
 
-        const unsub = subscribeEarningsByRange(s, e, users, setEarnings);
+        const start = new Date(end);
+        start.setDate(start.getDate() - 180);
+
+        const startKey = dayKeyFromDate(start);
+        const endKey = dayKeyFromDate(end);
+
+        const unsub = subscribeDailyEventsByRange(
+            startKey,
+            endKey,
+            (list) => setRangeEvents(list ?? []),
+            (err) => console.log("[AdminWeeklyReport] range events err:", err?.code, err?.message)
+        );
         return () => unsub();
-    }, [startKey, endKeyEffective, users]);
+    }, []);
 
-    const userInfoById = useMemo(() => {
-        const m = new Map<string, { name: string; email?: string }>();
-        for (const u of users) m.set(u.id, { name: u.name, email: u.email });
+    const reloadUsers = async () => {
+        setUsersLoading(true);
+        try {
+            const u = await listUsers("user");
+            setUsers(u);
+        } finally {
+            setUsersLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        reloadUsers();
+    }, []);
+
+    const usersById = useMemo(() => {
+        const m = new Map<string, UserDoc>();
+        for (const u of users) m.set(u.id, u);
         return m;
     }, [users]);
 
-    const usersFiltered = useMemo(() => {
-        const qt = qUser.trim().toLowerCase();
-        const base = users.slice().sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
-        if (!qt) return base;
-        return base.filter((u) => {
-            const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.id)}`;
-            return hay.includes(qt);
-        });
-    }, [users, qUser]);
-
-    const selectedUserLabel = useMemo(() => {
-        if (selectedUserId === "ALL") return "Todos";
-        const u = users.find((x) => x.id === selectedUserId);
-        return u?.name?.trim() ? u.name : "Usuario";
-    }, [selectedUserId, users]);
-
-    /**
-     * ✅ Mapas de clientes actuales (CLAVE para arreglar:
-     * - no contar eliminados
-     * - no contar eventos de clientes reasignados a otro usuario)
-     */
-    const clientAssignedToById = useMemo(() => {
-        const m = new Map<string, string>();
-        for (const c of clients) {
-            if (!c?.id) continue;
-            if (typeof c.assignedTo === "string" && c.assignedTo) m.set(c.id, c.assignedTo);
-        }
+    const clientsById = useMemo(() => {
+        const m = new Map<string, ClientDoc>();
+        for (const c of clients) m.set(c.id, c);
         return m;
     }, [clients]);
 
-    /**
-     * ✅ Pendientes SIN rango (estado actual)
-     */
-    const pendingNowByUser = useMemo(() => {
-        const m: Record<string, number> = {};
-        for (const c of clients) {
-            if (!c?.id) continue;
-            const uid = c.assignedTo;
-            if (!uid) continue;
-            if (c.status !== "pending") continue;
-            if (selectedUserId !== "ALL" && uid !== selectedUserId) continue;
+    const lastEventWeekByClient = useMemo(() => {
+        return latestEventByClient(weekEvents);
+    }, [weekEvents]);
 
-            m[uid] = (m[uid] ?? 0) + 1;
+    const lastEventRangeByClient = useMemo(() => {
+        return latestEventByClient(rangeEvents);
+    }, [rangeEvents]);
+
+    const rejectedReasonByClientId = useMemo(() => {
+        const m = new Map<string, RejectReason>();
+
+        for (const [cid, ev] of lastEventRangeByClient.entries()) {
+            const anyEv: any = ev as any;
+            if (anyEv?.type !== "rejected") continue;
+
+            const raw =
+                (anyEv?.reason ??
+                    anyEv?.rejectReason ??
+                    anyEv?.rejectedReason ??
+                    anyEv?.meta?.reason) as string | undefined;
+
+            const norm = normalizeReason(raw);
+            if (norm) m.set(cid, norm);
         }
+
         return m;
-    }, [clients, selectedUserId]);
+    }, [lastEventRangeByClient]);
 
-    const pendingNowTotal = useMemo(() => {
-        return Object.values(pendingNowByUser).reduce((a, b) => a + b, 0);
-    }, [pendingNowByUser]);
-
-    // último evento del día por cliente
-    const lastEventByDayClient = useMemo(() => {
-        const map = new Map<string, DailyEventDoc>();
-
-        for (const e of events) {
-            if (e.type !== "visited" && e.type !== "rejected" && e.type !== "pending") continue;
-            if (!e.clientId || !e.dayKey) continue;
-
-            // ✅ no contar eventos de clientes que ya no existen en snapshot admin
-            const assignedNow = clientAssignedToById.get(e.clientId);
-            if (!assignedNow) continue;
-
-            const key = `${e.dayKey}|${e.clientId}`;
-            const prev = map.get(key);
-
-            if (!prev || (e.createdAt ?? 0) > (prev.createdAt ?? 0)) map.set(key, e);
-        }
-        return map;
-    }, [events, clientAssignedToById]);
-
-    // ----------------------
-    // Build day groups (operativo)
-    // ----------------------
-    const dayGroups: DayGroup[] = useMemo(() => {
-        const s = startKey.trim();
-        const e = endKeyEffective.trim();
-        if (!isValidDayKey(s) || !isValidDayKey(e)) return [];
-
-        const userFilter = selectedUserId === "ALL" ? null : selectedUserId;
-
-        const byDay: Record<string, Record<string, { assigned: number; visited: number; rejected: number }>> = {};
-
-        // 1) asignados por día (assignedDayKey) — por rango + SOLO asignación actual
+    const assignedThisWeekIds = useMemo(() => {
+        const s = new Set<string>();
         for (const c of clients) {
-            const uid = c.assignedTo;
-            const dk = (c as any).assignedDayKey as string | undefined;
-            if (!uid || !dk || !c?.id) continue;
-
-            if (dk < s || dk > e) continue;
-            if (userFilter && uid !== userFilter) continue;
-
-            if (!byDay[dk]) byDay[dk] = {};
-            if (!byDay[dk][uid]) byDay[dk][uid] = { assigned: 0, visited: 0, rejected: 0 };
-            byDay[dk][uid].assigned += 1;
+            const assignedDayKey = String((c as any).assignedDayKey ?? "");
+            if (isDayKeyWithinRange(assignedDayKey, weekStartKey, weekEndKey)) {
+                s.add(c.id);
+            }
         }
+        return s;
+    }, [clients, weekStartKey, weekEndKey]);
 
-        // 2) visited/rejected por día — por rango + SOLO si el cliente sigue asignado actualmente a ese usuario
-        for (const ev of lastEventByDayClient.values()) {
-            const dk = ev.dayKey;
-            if (!dk) continue;
-            if (dk < s || dk > e) continue;
+    const shouldCountWeekEvent = useCallback(
+        (e: DailyEventDoc) => {
+            const cid = (e as any)?.clientId as string | undefined;
+            if (!cid) return false;
 
-            const cid = ev.clientId;
-            const uidEvent = ev.userId;
-            if (!cid || !uidEvent) continue;
+            const c = clientsById.get(cid);
+            if (!c) return false;
 
-            const assignedNow = clientAssignedToById.get(cid);
-            if (!assignedNow) continue; // eliminado
-            if (assignedNow !== uidEvent) continue; // reasignado => no contar al usuario viejo
-            if (userFilter && uidEvent !== userFilter) continue;
+            if (!assignedThisWeekIds.has(cid)) return false;
 
-            if (!byDay[dk]) byDay[dk] = {};
-            if (!byDay[dk][uidEvent]) byDay[dk][uidEvent] = { assigned: 0, visited: 0, rejected: 0 };
-
-            if (ev.type === "visited") byDay[dk][uidEvent].visited += 1;
-            if (ev.type === "rejected") byDay[dk][uidEvent].rejected += 1;
-        }
-
-        const dayKeys = Object.keys(byDay).sort((a, b) => (a < b ? 1 : -1));
-
-        return dayKeys.map((dk) => {
-            const perUser = byDay[dk];
-
-            const userRows: UserRow[] = Object.entries(perUser).map(([uid, c]) => {
-                const info = userInfoById.get(uid);
-
-                return {
-                    userId: uid,
-                    name: info?.name ?? "(sin perfil)",
-                    email: info?.email,
-                    assigned: c.assigned,
-                    visited: c.visited,
-                    rejected: c.rejected,
-                    pendingNow: pendingNowByUser[uid] ?? 0, // ✅ SIN rango
-                };
-            });
-
-            userRows.sort((a, b) => b.visited + b.rejected - (a.visited + a.rejected));
-
-            const totals = userRows.reduce(
-                (acc, r) => {
-                    acc.assigned += r.assigned;
-                    acc.visited += r.visited;
-                    acc.rejected += r.rejected;
-                    return acc;
-                },
-                { assigned: 0, visited: 0, rejected: 0 }
-            );
-
-            return {
-                dayKey: dk,
-                label: `${weekdayEsFromDayKey(dk)} · ${dk}`,
-                users: userRows,
-                totals,
-            };
-        });
-    }, [
-        clients,
-        lastEventByDayClient,
-        selectedUserId,
-        startKey,
-        endKeyEffective,
-        userInfoById,
-        pendingNowByUser,
-        clientAssignedToById,
-    ]);
-
-    const rangeTotals = useMemo(() => {
-        return dayGroups.reduce(
-            (acc, g) => {
-                acc.assigned += g.totals.assigned;
-                acc.visited += g.totals.visited;
-                acc.rejected += g.totals.rejected;
-                return acc;
-            },
-            { assigned: 0, visited: 0, rejected: 0 }
-        );
-    }, [dayGroups]);
-
-    // ----------------------
-    // Modal data: resumen por usuario (solo visitados + valor)
-    // ----------------------
-    const earningsRowsForModal: EarningsRowView[] = useMemo(() => {
-        const rowsAny = (earnings?.rows ?? []) as any[];
-
-        const base = rowsAny
-            .map((r) => {
-                const userId = String(r?.userId ?? r?.uid ?? r?.id ?? "");
-                if (!userId) return null;
-
-                const visited = Number(r?.visited ?? r?.visitedCount ?? r?.totalVisited ?? 0) || 0;
-                const amount = Number(r?.amount ?? r?.totalAmount ?? r?.value ?? 0) || 0;
-
-                const info = userInfoById.get(userId);
-                return {
-                    userId,
-                    name: info?.name ?? "(sin perfil)",
-                    email: info?.email,
-                    visited,
-                    amount,
-                } as EarningsRowView;
-            })
-            .filter(Boolean) as EarningsRowView[];
-
-        const filtered =
-            selectedUserId === "ALL" ? base : base.filter((x) => x.userId === selectedUserId);
-
-        return filtered
-            .filter((x) => x.visited > 0 || x.amount > 0)
-            .sort((a, b) => b.amount - a.amount);
-    }, [earnings?.rows, userInfoById, selectedUserId]);
-
-    const earningsTotalsForModal = useMemo(() => {
-        return earningsRowsForModal.reduce(
-            (acc, r) => {
-                acc.visited += r.visited;
-                acc.amount += r.amount;
-                return acc;
-            },
-            { visited: 0, amount: 0 }
-        );
-    }, [earningsRowsForModal]);
-
-    // ----------------------
-    // UI atoms
-    // ----------------------
-    const IconBtn = ({ icon, onPress, label }: { icon: any; onPress: () => void; label: string }) => (
-        <Pressable
-            onPress={onPress}
-            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-            accessibilityLabel={label}
-        >
-            <Ionicons name={icon} size={18} color={COLORS.text} />
-        </Pressable>
+            return (c as any).status === (e as any).type;
+        },
+        [clientsById, assignedThisWeekIds]
     );
 
-    const StatIcon = ({
+    const rows: Row[] = useMemo(() => {
+        const byUser: Record<string, Row> = {};
+
+        for (const u of users) {
+            const rate = getRatePerVisit(u);
+            byUser[u.id] = {
+                userId: u.id,
+                name: u.name,
+                email: u.email,
+                ratePerVisit: rate,
+                assignedWeek: 0,
+                pendingWeek: 0,
+                visitedWeek: 0,
+                rejectedWeek: 0,
+                amountWeek: 0,
+            };
+        }
+
+        for (const c of clients) {
+            const uid = c.assignedTo;
+            if (!uid) continue;
+
+            if (!byUser[uid]) {
+                byUser[uid] = {
+                    userId: uid,
+                    name: "(sin perfil)",
+                    email: "",
+                    ratePerVisit: 0,
+                    assignedWeek: 0,
+                    pendingWeek: 0,
+                    visitedWeek: 0,
+                    rejectedWeek: 0,
+                    amountWeek: 0,
+                };
+            }
+
+            const row = byUser[uid];
+            const assignedDayKey = String((c as any).assignedDayKey ?? "");
+            const assignedThisWeek = isDayKeyWithinRange(assignedDayKey, weekStartKey, weekEndKey);
+
+            if (assignedThisWeek) {
+                row.assignedWeek += 1;
+                if ((c as any).status === "pending") row.pendingWeek += 1;
+            }
+        }
+
+        for (const ev of lastEventWeekByClient.values()) {
+            if (!shouldCountWeekEvent(ev)) continue;
+
+            const uid = (ev as any)?.userId as string | undefined;
+            if (!uid) continue;
+
+            if (!byUser[uid]) {
+                byUser[uid] = {
+                    userId: uid,
+                    name: "(sin perfil)",
+                    email: "",
+                    ratePerVisit: 0,
+                    assignedWeek: 0,
+                    pendingWeek: 0,
+                    visitedWeek: 0,
+                    rejectedWeek: 0,
+                    amountWeek: 0,
+                };
+            }
+
+            if ((ev as any)?.type === "visited") byUser[uid].visitedWeek += 1;
+            if ((ev as any)?.type === "rejected") byUser[uid].rejectedWeek += 1;
+        }
+
+        for (const r of Object.values(byUser)) {
+            r.amountWeek = r.visitedWeek * (r.ratePerVisit ?? 0);
+        }
+
+        const all = Object.values(byUser);
+
+        const qt2 = q.trim().toLowerCase();
+        const filtered = !qt2
+            ? all
+            : all.filter((r) => {
+                const hay = `${safeText(r.name)} ${safeText(r.email)}`;
+                return hay.includes(qt2);
+            });
+
+        return filtered.sort(
+            (a, b) => b.visitedWeek + b.rejectedWeek - (a.visitedWeek + a.rejectedWeek)
+        );
+    }, [
+        clients,
+        users,
+        lastEventWeekByClient,
+        q,
+        shouldCountWeekEvent,
+        weekStartKey,
+        weekEndKey,
+    ]);
+
+    const totals = useMemo(() => {
+        return rows.reduce(
+            (acc, r) => {
+                acc.assignedWeek += r.assignedWeek;
+                acc.pendingWeek += r.pendingWeek;
+                acc.visitedWeek += r.visitedWeek;
+                acc.rejectedWeek += r.rejectedWeek;
+                acc.amountWeek += r.amountWeek;
+                return acc;
+            },
+            {
+                assignedWeek: 0,
+                pendingWeek: 0,
+                visitedWeek: 0,
+                rejectedWeek: 0,
+                amountWeek: 0,
+            }
+        );
+    }, [rows]);
+
+    const doneWeek = totals.visitedWeek + totals.rejectedWeek;
+
+    const copy = async (text: string) => {
+        await Clipboard.setStringAsync(text);
+    };
+
+    const IconBtn = ({
+        icon,
+        onPress,
+        disabled,
+        label,
+    }: {
+        icon: any;
+        onPress: () => void;
+        disabled?: boolean;
+        label: string;
+    }) => {
+        return (
+            <Pressable
+                onPress={onPress}
+                disabled={disabled}
+                style={({ pressed }) => [
+                    styles.iconBtn,
+                    pressed && !disabled && styles.iconBtnPressed,
+                    disabled && styles.iconBtnDisabled,
+                ]}
+                accessibilityLabel={label}
+            >
+                <Ionicons name={icon} size={16} color={COLORS.text} />
+            </Pressable>
+        );
+    };
+
+    const StatIconPressable = ({
         icon,
         color,
         value,
         label,
+        onPress,
+        disabled,
     }: {
         icon: any;
         color: string;
         value: number;
         label: string;
-    }) => (
-        <View style={styles.statIconWrap} accessibilityLabel={`${label}: ${value}`}>
-            <View style={[styles.statIcon, { borderColor: color + "55", backgroundColor: color + "12" }]}>
-                <Ionicons name={icon} size={16} color={color} />
+        onPress?: () => void;
+        disabled?: boolean;
+    }) => {
+        const clickable = !!onPress && !disabled;
+
+        return (
+            <Pressable
+                onPress={onPress}
+                disabled={!onPress || disabled}
+                style={({ pressed }) => [
+                    styles.statIconWrap,
+                    pressed && clickable ? styles.statIconWrapPressed : null,
+                    disabled ? { opacity: 0.5 } : null,
+                ]}
+                accessibilityLabel={`${label}: ${value}`}
+            >
+                <View
+                    style={[
+                        styles.statIcon,
+                        { borderColor: color + "44", backgroundColor: color + "10" },
+                    ]}
+                >
+                    <Ionicons name={icon} size={14} color={color} />
+                </View>
+                <Text style={styles.statValue}>{value}</Text>
+            </Pressable>
+        );
+    };
+
+    const ProgressBar = ({ done, total }: { done: number; total: number }) => {
+        const pct = total <= 0 ? 0 : Math.max(0, Math.min(1, done / total));
+        return (
+            <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${pct * 100}%` }]} />
             </View>
-            <Text style={styles.statValue}>{value}</Text>
-        </View>
-    );
-
-    const MiniPill = ({ icon, color, text }: { icon: any; color: string; text: string }) => (
-        <View style={[styles.miniPill, { borderColor: color + "33", backgroundColor: color + "12" }]}>
-            <Ionicons name={icon} size={14} color={color} />
-            <Text style={[styles.miniPillText, { color }]} numberOfLines={1}>
-                {text}
-            </Text>
-        </View>
-    );
-
-    const toggleDay = (dk: string) => setExpandedDay((prev) => (prev === dk ? null : dk));
-
-    const setThisWeek = () => {
-        const wk = weekRangeFromDate(new Date());
-        setStartKey(wk.startKey);
-        setEndKey(wk.endKey);
-        setExpandedDay(null);
+        );
     };
 
-    const validRange = isValidDayKey(startKey) && isValidDayKey(endKey);
+    const visitedIdsByUser = useMemo(() => {
+        const m = new Map<string, Set<string>>();
+        for (const ev of lastEventWeekByClient.values()) {
+            if ((ev as any)?.type !== "visited") continue;
+            if (!shouldCountWeekEvent(ev)) continue;
 
-    const closeUserPicker = () => {
-        setUserPickerOpen(false);
-        setQUser("");
+            const uid = (ev as any)?.userId as string | undefined;
+            const cid = (ev as any)?.clientId as string | undefined;
+            if (!uid || !cid) continue;
+
+            if (!m.has(uid)) m.set(uid, new Set<string>());
+            m.get(uid)!.add(cid);
+        }
+        return m;
+    }, [lastEventWeekByClient, shouldCountWeekEvent]);
+
+    const rejectedByAssignedTo = useMemo(() => {
+        const m = new Map<string, ClientDoc[]>();
+        for (const ev of lastEventWeekByClient.values()) {
+            if ((ev as any)?.type !== "rejected") continue;
+            if (!shouldCountWeekEvent(ev)) continue;
+
+            const cid = (ev as any)?.clientId as string | undefined;
+            if (!cid) continue;
+
+            const c = clientsById.get(cid);
+            if (!c) continue;
+
+            const uid = c.assignedTo;
+            if (!uid) continue;
+
+            if (!m.has(uid)) m.set(uid, []);
+            m.get(uid)!.push(c);
+        }
+        return m;
+    }, [lastEventWeekByClient, clientsById, shouldCountWeekEvent]);
+
+    const pendingByUser = useMemo(() => {
+        const m = new Map<string, ClientDoc[]>();
+
+        for (const c of clients) {
+            if ((c as any).status !== "pending") continue;
+
+            const assignedDayKey = String((c as any).assignedDayKey ?? "");
+            if (!isDayKeyWithinRange(assignedDayKey, weekStartKey, weekEndKey)) continue;
+
+            const uid = c.assignedTo;
+            if (!uid) continue;
+
+            if (!m.has(uid)) m.set(uid, []);
+            m.get(uid)!.push(c);
+        }
+
+        return m;
+    }, [clients, weekStartKey, weekEndKey]);
+
+    const filterClientByListQ = (c: ClientDoc) => {
+        const qt2 = listQ.trim().toLowerCase();
+        if (!qt2) return true;
+
+        const name = safeText((c as any).name);
+        const business = safeText((c as any).business);
+        const hay =
+            safeText(c.phone) +
+            " " +
+            safeText(c.address) +
+            " " +
+            safeText(c.mapsUrl) +
+            " " +
+            name +
+            " " +
+            business;
+
+        return hay.includes(qt2);
     };
 
-    const applyUser = (uid: string) => {
-        setSelectedUserId(uid);
-        setExpandedDay(null);
-        closeUserPicker();
+    const buildSections = (mode: ListMode): GroupSection[] => {
+        const out: GroupSection[] = [];
+
+        for (const r of rows) {
+            const uid = r.userId;
+            let list: ClientDoc[] = [];
+
+            if (mode === "visited") {
+                const ids = visitedIdsByUser.get(uid);
+                if (ids && ids.size) {
+                    for (const id of ids) {
+                        const c = clientsById.get(id);
+                        if (c) list.push(c);
+                    }
+                }
+            } else if (mode === "rejected") {
+                list = (rejectedByAssignedTo.get(uid) ?? []).slice();
+            } else if (mode === "pending") {
+                list = (pendingByUser.get(uid) ?? []).slice();
+            }
+
+            list = list.filter(filterClientByListQ);
+            if (list.length === 0) continue;
+
+            out.push({
+                userId: uid,
+                title: r.name,
+                subtitle: r.email ? r.email : undefined,
+                data: list,
+            });
+        }
+
+        return out;
     };
 
-    const openMoneyModal = () => setMoneyModalOpen(true);
-    const closeMoneyModal = () => setMoneyModalOpen(false);
+    const modalSections = useMemo(() => buildSections(listMode), [
+        listMode,
+        rows,
+        visitedIdsByUser,
+        rejectedByAssignedTo,
+        pendingByUser,
+        clientsById,
+        listQ,
+    ]);
 
-    return (
-        <SafeAreaView style={styles.safe}>
-            <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
+    const openList = (mode: ListMode) => {
+        setListMode(mode);
+        setListQ("");
+        setListOpen(true);
+    };
 
-            {/* Compact header */}
-            <View style={[styles.header, { paddingTop: 0 }]}>
-                <View style={{ flex: 1 }}>
-                    <Text style={styles.title}>Cierre semanal</Text>
-                    <Text style={styles.subtitle} numberOfLines={1}>
-                        Rango <Text style={styles.strong}>{startKey}</Text> → <Text style={styles.strong}>{endKey}</Text>
-                        <Text style={styles.dot}> · </Text>
-                        Contando hasta <Text style={styles.strong}>{endKeyEffective}</Text>
+    const closeList = () => {
+        setListOpen(false);
+        setListQ("");
+    };
+
+    const openAssignForClient = (clientId: string) => {
+        setAssignClientId(clientId);
+        setAssignSearch("");
+        setAssignOpen(true);
+    };
+
+    const closeAssign = () => {
+        setAssignOpen(false);
+        setAssignClientId(null);
+        setAssignSearch("");
+    };
+
+    const doAssign = async (toUserId: string) => {
+        const cid = assignClientId;
+        if (!cid) return;
+
+        try {
+            setBusyClientId(cid);
+
+            setClients((prev) =>
+                prev.map((c) => {
+                    if (c.id !== cid) return c;
+                    return {
+                        ...(c as any),
+                        assignedTo: toUserId,
+                        status: "pending",
+                    } as ClientDoc;
+                })
+            );
+
+            await assignClient(cid, toUserId as any);
+
+            closeAssign();
+            if (listOpen) {
+                setListOpen(false);
+                setTimeout(() => {
+                    setListOpen(true);
+                }, 0);
+            }
+        } catch (e: any) {
+            console.log("[assignClient] error:", e?.message ?? e);
+        } finally {
+            setBusyClientId(null);
+        }
+    };
+
+    const filteredUsersForAssign = useMemo(() => {
+        const qt2 = assignSearch.trim().toLowerCase();
+        const base = users.slice().sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
+        if (!qt2) return base;
+        return base.filter((u) => {
+            const hay = `${safeText(u.name)} ${safeText(u.email)}`;
+            return hay.includes(qt2);
+        });
+    }, [users, assignSearch]);
+
+    const findAssignedName = (uid?: string) => {
+        if (!uid) return "—";
+        const u = usersById.get(uid);
+        return (u?.name ?? "").trim() || (u?.email ?? "").trim() || uid;
+    };
+
+    const RejectTag = ({ reason }: { reason?: RejectReason }) => {
+        if (!reason) return null;
+        return (
+            <View style={styles.rejectTag}>
+                <Ionicons name={reasonIcon(reason) as any} size={12} color={COLORS.rejectedSoft} />
+                <Text style={styles.rejectTagText}>{reasonLabel(reason)}</Text>
+            </View>
+        );
+    };
+
+    const ClientRowModal = ({
+        c,
+        allowReassign,
+    }: {
+        c: ClientDoc;
+        allowReassign: boolean;
+    }) => {
+        const name = ((c as any).name ?? "").trim();
+        const business = ((c as any).business ?? "").trim();
+        const phone = (c.phone ?? "").trim();
+        const assignedLabel = findAssignedName(c.assignedTo);
+        const busy = busyClientId === c.id;
+        const rejectReason = rejectedReasonByClientId.get(c.id);
+
+        return (
+            <View style={styles.modalClientCard}>
+                <View style={{ flex: 1, gap: 2 }}>
+                    <Text style={styles.modalClientPhone} numberOfLines={1}>
+                        {phone || "—"}
+                    </Text>
+
+                    {name ? (
+                        <Text style={styles.modalClientMeta} numberOfLines={1}>
+                            {name}
+                        </Text>
+                    ) : null}
+
+                    {business ? (
+                        <Text style={styles.modalClientMeta} numberOfLines={1}>
+                            {business}
+                        </Text>
+                    ) : null}
+
+                    {listMode === "rejected" ? (
+                        rejectReason ? (
+                            <RejectTag reason={rejectReason} />
+                        ) : (
+                            <View style={styles.rejectTagMuted}>
+                                <Ionicons
+                                    name="information-circle-outline"
+                                    size={12}
+                                    color={COLORS.muted}
+                                />
+                                <Text style={styles.rejectTagTextMuted}>
+                                    Rechazo: sin motivo guardado
+                                </Text>
+                            </View>
+                        )
+                    ) : null}
+
+                    <Text style={styles.modalClientAssigned} numberOfLines={1}>
+                        Asignado: <Text style={styles.modalClientAssignedStrong}>{assignedLabel}</Text>
                     </Text>
                 </View>
 
-                {/* ✅ ahora es botón */}
+                {allowReassign ? (
+                    <Pressable
+                        onPress={() => openAssignForClient(c.id)}
+                        disabled={busy}
+                        style={({ pressed }) => [
+                            styles.modalReassignBtn,
+                            pressed && !busy ? styles.modalReassignBtnPressed : null,
+                            busy ? { opacity: 0.6 } : null,
+                        ]}
+                        accessibilityLabel="Reasignar"
+                    >
+                        <Ionicons name="swap-horizontal-outline" size={16} color={COLORS.text} />
+                    </Pressable>
+                ) : (
+                    <View style={styles.modalReassignPlaceholder} />
+                )}
+            </View>
+        );
+    };
+
+    return (
+        <SafeAreaView style={styles.safe}>
+            <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
+
+            <View style={[styles.header, { paddingTop: 2 }]}>
+                <View style={{ flex: 1 }}>
+                    <Text style={styles.hTitle}>Semana</Text>
+                    <Text style={styles.hSub}>
+                        <Text style={styles.hStrong}>{doneWeek}</Text>
+                        <Text style={styles.hMuted}> / {totals.assignedWeek} completados</Text>
+                    </Text>
+                </View>
+
                 <Pressable
-                    onPress={openMoneyModal}
-                    style={({ pressed }) => [styles.moneyChip, pressed && styles.pressed]}
-                    accessibilityLabel="Ver resumen recaudado"
+                    onPress={() => setEarningsOpen(true)}
+                    style={({ pressed }) => [
+                        styles.moneyChip,
+                        pressed && styles.moneyChipPressed,
+                    ]}
+                    accessibilityLabel="Ver ganancias de la semana"
                 >
-                    <Ionicons name="cash-outline" size={14} color={COLORS.money} />
-                    <Text style={styles.moneyChipText}>R$ {money(earnings.totalAmount)}</Text>
-                    <Ionicons name="chevron-down" size={14} color={COLORS.muted} />
+                    <Ionicons name="cash-outline" size={12} color={COLORS.money} />
+                    <Text style={styles.moneyChipText}>R$ {money(totals.amountWeek)}</Text>
                 </Pressable>
 
-                <IconBtn icon="refresh-outline" onPress={setThisWeek} label="Esta semana" />
+                <IconBtn
+                    icon={usersLoading ? "sync" : "refresh-outline"}
+                    label="Refrescar usuarios"
+                    onPress={reloadUsers}
+                    disabled={usersLoading}
+                />
             </View>
 
-            {/* Icons-only row
-          ✅ assigned/visited/rejected = por rango
-          ✅ pending = SIN rango (pendientes actuales)
-      */}
             <View style={styles.statsRow}>
-                <StatIcon icon="people-outline" color={COLORS.muted2} value={rangeTotals.assigned} label="Asignados (rango)" />
-                <StatIcon icon="checkmark-circle-outline" color={COLORS.ok} value={rangeTotals.visited} label="Visitados (rango)" />
-                <StatIcon icon="close-circle-outline" color={COLORS.bad} value={rangeTotals.rejected} label="Rechazados (rango)" />
-                <StatIcon icon="time-outline" color={COLORS.warn} value={pendingNowTotal} label="Pendientes (ahora)" />
+                <StatIconPressable
+                    icon="checkmark-circle-outline"
+                    color={COLORS.visited}
+                    value={totals.visitedWeek}
+                    label="Visitados"
+                    onPress={() => openList("visited")}
+                    disabled={totals.visitedWeek <= 0}
+                />
+                <StatIconPressable
+                    icon="close-circle-outline"
+                    color={COLORS.rejected}
+                    value={totals.rejectedWeek}
+                    label="Rechazados"
+                    onPress={() => openList("rejected")}
+                    disabled={totals.rejectedWeek <= 0}
+                />
+                <StatIconPressable
+                    icon="time-outline"
+                    color={COLORS.pending}
+                    value={totals.pendingWeek}
+                    label="Pendientes"
+                    onPress={() => openList("pending")}
+                    disabled={totals.pendingWeek <= 0}
+                />
+                <StatIconPressable
+                    icon="people-outline"
+                    color={COLORS.muted2}
+                    value={totals.assignedWeek}
+                    label="Asignados (semana)"
+                />
             </View>
 
-            {/* Controls */}
-            <View style={styles.card}>
-                <View style={styles.controlsRow}>
+            <View style={styles.searchWrap}>
+                <Ionicons name="search-outline" size={16} color={COLORS.muted} />
+                <TextInput
+                    value={q}
+                    onChangeText={setQ}
+                    placeholder="Buscar nombre o email…"
+                    placeholderTextColor={COLORS.muted}
+                    style={styles.searchInput}
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                />
+                {!!q ? (
                     <Pressable
-                        onPress={() => openPicker("start")}
-                        style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
-                        accessibilityLabel="Seleccionar inicio"
+                        onPress={() => setQ("")}
+                        style={styles.clearBtn}
+                        accessibilityLabel="Limpiar búsqueda"
                     >
-                        <Ionicons name="calendar-outline" size={16} color={COLORS.muted} />
-                        <Text style={styles.controlText} numberOfLines={1}>
-                            {startKey}
-                        </Text>
+                        <Ionicons name="close" size={16} color={COLORS.text} />
                     </Pressable>
-
-                    <Text style={styles.arrow}>→</Text>
-
-                    <Pressable
-                        onPress={() => openPicker("end")}
-                        style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
-                        accessibilityLabel="Seleccionar fin"
-                    >
-                        <Ionicons name="calendar-outline" size={16} color={COLORS.muted} />
-                        <Text style={styles.controlText} numberOfLines={1}>
-                            {endKey}
-                        </Text>
-                    </Pressable>
-
-                    <Pressable
-                        onPress={() => setUserPickerOpen(true)}
-                        style={({ pressed }) => [styles.userBtn, pressed && styles.pressed]}
-                        accessibilityLabel="Filtrar por usuario"
-                    >
-                        <Ionicons name="person-outline" size={16} color={COLORS.text} />
-                        <Text style={styles.userBtnText} numberOfLines={1}>
-                            {selectedUserLabel}
-                        </Text>
-                        <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
-                    </Pressable>
-                </View>
-
-                {!validRange ? <Text style={styles.warn}>Rango inválido. Usa YYYY-MM-DD.</Text> : null}
+                ) : null}
             </View>
 
-            {/* List */}
             <FlatList
-                data={dayGroups}
-                keyExtractor={(g) => g.dayKey}
-                contentContainerStyle={styles.list}
+                data={rows}
+                keyExtractor={(r) => r.userId}
+                contentContainerStyle={[
+                    styles.listContent,
+                    { paddingBottom: Math.max(26, insets.bottom + 14) },
+                ]}
+                showsVerticalScrollIndicator={false}
                 renderItem={({ item }) => {
-                    const isExpanded = expandedDay === item.dayKey;
+                    const done = item.visitedWeek + item.rejectedWeek;
+                    const total = item.assignedWeek;
+                    const pct = total <= 0 ? 0 : Math.round((Math.min(done, total) / total) * 100);
 
                     return (
-                        <View style={styles.dayCard}>
-                            <Pressable onPress={() => toggleDay(item.dayKey)} style={({ pressed }) => [styles.dayTop, pressed && styles.pressed]}>
-                                <View style={{ flex: 1, gap: 8 }}>
-                                    <Text style={styles.dayTitle} numberOfLines={1}>
-                                        {item.label}
-                                    </Text>
-
-                                    {/* ✅ Día = SOLO métricas por rango (no ponemos pendientes aquí para no duplicar por día) */}
-                                    <View style={styles.pillsRow}>
-                                        <MiniPill icon="people-outline" color={COLORS.muted2} text={`${item.totals.assigned}`} />
-                                        <MiniPill icon="checkmark" color={COLORS.okSoft} text={`${item.totals.visited}`} />
-                                        <MiniPill icon="close" color={COLORS.badSoft} text={`${item.totals.rejected}`} />
-                                    </View>
-                                </View>
-
-                                <Ionicons name={isExpanded ? "chevron-up" : "chevron-down"} size={18} color={COLORS.muted} />
-                            </Pressable>
-
-                            {isExpanded ? (
-                                <View style={{ paddingTop: 12, gap: 10 }}>
-                                    {item.users.map((u) => (
-                                        <View key={u.userId} style={styles.userRow}>
-                                            <View style={{ flex: 1, gap: 2 }}>
-                                                <Text style={styles.userName} numberOfLines={1}>
-                                                    {u.name}
-                                                </Text>
-                                                {!!u.email ? (
-                                                    <Text style={styles.userEmail} numberOfLines={1}>
-                                                        {u.email}
-                                                    </Text>
-                                                ) : (
-                                                    <Text style={styles.userEmailMuted} numberOfLines={1}>
-                                                        (sin email)
-                                                    </Text>
-                                                )}
-                                            </View>
-
-                                            {/* ✅ números sin texto, con color por estado */}
-                                            <View style={styles.userNumsWrap}>
-                                                <Text style={styles.userNumsLine} numberOfLines={1}>
-                                                    <Text style={[styles.userNum, { color: COLORS.muted2 }]}>{u.assigned}</Text>
-                                                    <Text style={styles.sep}> · </Text>
-                                                    <Text style={[styles.userNum, { color: COLORS.okSoft }]}>{u.visited}</Text>
-                                                    <Text style={styles.sep}> · </Text>
-                                                    <Text style={[styles.userNum, { color: COLORS.badSoft }]}>{u.rejected}</Text>
-                                                    <Text style={styles.sep}> · </Text>
-                                                    <Text style={[styles.userNum, { color: COLORS.warnSoft }]}>{u.pendingNow}</Text>
-                                                </Text>
-                                            </View>
-                                        </View>
-                                    ))}
-                                </View>
-                            ) : null}
-                        </View>
-                    );
-                }}
-                ListEmptyComponent={
-                    <View style={styles.empty}>
-                        <Ionicons name="time-outline" size={22} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>
-                            {validRange ? "No hay datos en este rango (hasta hoy)." : "Corrige el rango para ver resultados."}
-                        </Text>
-                    </View>
-                }
-            />
-
-            {/* Picker Android */}
-            {pickerOpen && Platform.OS === "android" ? (
-                <DateTimePicker
-                    value={pickerDate}
-                    mode="date"
-                    display="calendar"
-                    onChange={onPickerChange}
-                    maximumDate={new Date(2100, 11, 31)}
-                    minimumDate={new Date(2000, 0, 1)}
-                />
-            ) : null}
-
-            {/* Picker iOS */}
-            <Modal visible={pickerOpen && Platform.OS === "ios"} transparent animationType="fade" onRequestClose={closePicker}>
-                <Pressable style={styles.modalBackdrop} onPress={closePicker} />
-                <View style={styles.modalSheet}>
-                    <View style={styles.modalHeader}>
-                        <Text style={styles.modalTitle}>{pickerTarget === "start" ? "Inicio" : "Fin"}</Text>
-
-                        <Pressable onPress={closePicker} style={({ pressed }) => [styles.modalIcon, pressed && styles.pressed]}>
-                            <Ionicons name="close" size={18} color={COLORS.text} />
-                        </Pressable>
-                    </View>
-
-                    <DateTimePicker value={pickerDate} mode="date" display="spinner" onChange={onPickerChange} />
-
-                    <View style={styles.modalActions}>
-                        <Pressable onPress={closePicker} style={({ pressed }) => [styles.modalBtn, pressed && styles.pressed]}>
-                            <Text style={styles.modalBtnTextMuted}>Cancelar</Text>
-                        </Pressable>
-                        <Pressable
-                            onPress={confirmPickerIOS}
-                            style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, pressed && styles.pressed]}
-                        >
-                            <Text style={styles.modalBtnText}>OK</Text>
-                        </Pressable>
-                    </View>
-                </View>
-            </Modal>
-
-            {/* ✅ Money summary modal */}
-            <Modal visible={moneyModalOpen} transparent animationType="fade" onRequestClose={closeMoneyModal}>
-                <Pressable style={styles.modalBackdrop} onPress={closeMoneyModal} />
-
-                <View style={styles.modalSheet}>
-                    <View style={styles.modalHeader}>
-                        <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={styles.modalTitle}>Resumen · Visitados</Text>
-                            <Text style={styles.modalSubtitle} numberOfLines={1}>
-                                {selectedUserId === "ALL" ? "Todos" : selectedUserLabel} · {startKey} → {endKeyEffective}
-                            </Text>
-                        </View>
-
-                        <Pressable onPress={closeMoneyModal} style={({ pressed }) => [styles.modalIcon, pressed && styles.pressed]}>
-                            <Ionicons name="close" size={18} color={COLORS.text} />
-                        </Pressable>
-                    </View>
-
-                    <View style={styles.summaryTotals}>
-                        <View style={styles.summaryPill}>
-                            <Ionicons name="checkmark-circle-outline" size={16} color={COLORS.okSoft} />
-                            <Text style={styles.summaryPillText}>{earningsTotalsForModal.visited}</Text>
-                        </View>
-
-                        <View style={styles.summaryPillMoney}>
-                            <Ionicons name="cash-outline" size={16} color={COLORS.money} />
-                            <Text style={styles.summaryPillMoneyText}>R$ {money(earningsTotalsForModal.amount)}</Text>
-                        </View>
-                    </View>
-
-                    <FlatList
-                        data={earningsRowsForModal}
-                        keyExtractor={(r) => r.userId}
-                        style={{ maxHeight: 340 }}
-                        contentContainerStyle={{ gap: 10, paddingTop: 8 }}
-                        ListEmptyComponent={
-                            <View style={{ paddingVertical: 10, alignItems: "center" }}>
-                                <Text style={styles.emptyText}>Sin visitados en este rango.</Text>
-                            </View>
-                        }
-                        renderItem={({ item }) => (
-                            <View style={styles.summaryRow}>
-                                <View style={{ flex: 1, gap: 2 }}>
-                                    <Text style={styles.summaryName} numberOfLines={1}>
+                        <View style={styles.card}>
+                            <View style={styles.cardTop}>
+                                <View style={{ flex: 1, gap: 1 }}>
+                                    <Text style={styles.userName} numberOfLines={1}>
                                         {item.name}
                                     </Text>
+
                                     {!!item.email ? (
-                                        <Text style={styles.summaryEmail} numberOfLines={1}>
+                                        <Text style={styles.userEmail} numberOfLines={1}>
                                             {item.email}
                                         </Text>
                                     ) : (
-                                        <Text style={styles.summaryEmailMuted} numberOfLines={1}>
+                                        <Text style={styles.userEmailMuted} numberOfLines={1}>
                                             (sin email)
                                         </Text>
                                     )}
                                 </View>
 
-                                <View style={styles.summaryRight}>
-                                    <View style={styles.summaryVisitedChip}>
-                                        <Ionicons name="checkmark" size={14} color={COLORS.okSoft} />
-                                        <Text style={styles.summaryVisitedText}>{item.visited}</Text>
+                                <View style={{ alignItems: "flex-end", gap: 6 }}>
+                                    <View style={styles.pctPill}>
+                                        <Ionicons
+                                            name="stats-chart-outline"
+                                            size={12}
+                                            color={COLORS.primarySoft}
+                                        />
+                                        <Text style={styles.pctText}>{pct}%</Text>
                                     </View>
 
-                                    <View style={styles.summaryMoneyChip}>
-                                        <Text style={styles.summaryMoneyText}>R$ {money(item.amount)}</Text>
+                                    <View style={styles.amountPill}>
+                                        <Text style={styles.amountText}>R$ {money(item.amountWeek)}</Text>
                                     </View>
                                 </View>
                             </View>
-                        )}
-                    />
 
-                    <View style={styles.modalActions}>
-                        <Pressable onPress={closeMoneyModal} style={({ pressed }) => [styles.modalBtn, pressed && styles.pressed]}>
-                            <Text style={styles.modalBtnText}>Cerrar</Text>
+                            <ProgressBar done={done} total={Math.max(1, total)} />
+
+                            <View style={styles.metricsRow}>
+                                <View style={[styles.miniStat, styles.miniOk]}>
+                                    <Ionicons
+                                        name="checkmark"
+                                        size={12}
+                                        color={COLORS.visitedSoft}
+                                    />
+                                    <Text style={[styles.miniText, { color: COLORS.visitedSoft }]}>
+                                        {item.visitedWeek}
+                                    </Text>
+                                </View>
+
+                                <View style={[styles.miniStat, styles.miniBad]}>
+                                    <Ionicons
+                                        name="close"
+                                        size={12}
+                                        color={COLORS.rejectedSoft}
+                                    />
+                                    <Text style={[styles.miniText, { color: COLORS.rejectedSoft }]}>
+                                        {item.rejectedWeek}
+                                    </Text>
+                                </View>
+
+                                <View style={[styles.miniStat, styles.miniWarn]}>
+                                    <Ionicons
+                                        name="time"
+                                        size={12}
+                                        color={COLORS.pendingSoft}
+                                    />
+                                    <Text style={[styles.miniText, { color: COLORS.pendingSoft }]}>
+                                        {item.pendingWeek}
+                                    </Text>
+                                </View>
+
+                                <View style={[styles.miniStat, styles.miniNeutral]}>
+                                    <Ionicons name="people" size={12} color={COLORS.text} />
+                                    <Text style={[styles.miniText, { color: COLORS.text }]}>
+                                        {item.assignedWeek}
+                                    </Text>
+                                </View>
+                            </View>
+
+                            <View style={styles.actionsRow}>
+                                <View style={styles.rateChip}>
+                                    <Ionicons name="cash-outline" size={12} color={COLORS.muted} />
+                                    <Text style={styles.rateText}>R$ {money(item.ratePerVisit)}</Text>
+                                    <Text style={styles.rateTextMuted}>/visita</Text>
+                                </View>
+
+                                <IconBtn
+                                    icon="mail-outline"
+                                    label="Copiar email"
+                                    disabled={!item.email}
+                                    onPress={() => copy(item.email ?? "")}
+                                />
+                            </View>
+                        </View>
+                    );
+                }}
+                ListEmptyComponent={
+                    <View style={styles.empty}>
+                        <Ionicons name="analytics-outline" size={20} color={COLORS.muted} />
+                        <Text style={styles.emptyText}>
+                            {q.trim() ? "Sin resultados." : "Sin datos aún."}
+                        </Text>
+                    </View>
+                }
+            />
+
+            {/* ✅ MODAL LISTA */}
+            <Modal visible={listOpen} transparent animationType="fade" onRequestClose={closeList}>
+                <Pressable style={styles.modalBackdrop} onPress={closeList} />
+
+                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                    <View style={styles.modalHeader}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={styles.modalTitle}>
+                                {listMode === "visited"
+                                    ? "Visitados (semana)"
+                                    : listMode === "pending"
+                                        ? "Pendientes (semana)"
+                                        : "Rechazados (semana)"}
+                            </Text>
+                            <Text style={styles.modalSub}>
+                                {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0)} cliente
+                                {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0) === 1
+                                    ? ""
+                                    : "s"}
+                            </Text>
+                        </View>
+
+                        <Pressable
+                            onPress={closeList}
+                            style={({ pressed }) => [
+                                styles.modalClose,
+                                pressed && styles.modalClosePressed,
+                            ]}
+                        >
+                            <Ionicons name="close" size={16} color={COLORS.text} />
                         </Pressable>
                     </View>
+
+                    <View style={styles.modalSearch}>
+                        <Ionicons name="search-outline" size={16} color={COLORS.muted} />
+                        <TextInput
+                            value={listQ}
+                            onChangeText={setListQ}
+                            placeholder="Buscar cliente, negocio, teléfono…"
+                            placeholderTextColor={COLORS.muted}
+                            style={styles.modalSearchInput}
+                        />
+                        {!!listQ ? (
+                            <Pressable onPress={() => setListQ("")} style={styles.modalSearchClear}>
+                                <Ionicons name="close" size={16} color={COLORS.text} />
+                            </Pressable>
+                        ) : null}
+                    </View>
+
+                    <FlatList
+                        data={modalSections}
+                        keyExtractor={(s) => s.userId}
+                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                        showsVerticalScrollIndicator={false}
+                        renderItem={({ item: section }) => (
+                            <View style={styles.modalSectionCard}>
+                                <View style={styles.modalSectionHeader}>
+                                    <View style={{ flex: 1, gap: 1 }}>
+                                        <Text style={styles.modalSectionTitle} numberOfLines={1}>
+                                            {section.title}
+                                        </Text>
+                                        {section.subtitle ? (
+                                            <Text style={styles.modalSectionSub} numberOfLines={1}>
+                                                {section.subtitle}
+                                            </Text>
+                                        ) : null}
+                                    </View>
+                                    <View style={styles.modalCountPill}>
+                                        <Text style={styles.modalCountText}>{section.data.length}</Text>
+                                    </View>
+                                </View>
+
+                                <View style={{ gap: 8, marginTop: 8 }}>
+                                    {section.data.map((c) => (
+                                        <ClientRowModal
+                                            key={c.id}
+                                            c={c}
+                                            allowReassign={listMode === "pending" || listMode === "rejected"}
+                                        />
+                                    ))}
+                                </View>
+                            </View>
+                        )}
+                        ListEmptyComponent={
+                            <View style={styles.modalEmpty}>
+                                <Ionicons name="people-outline" size={20} color={COLORS.muted} />
+                                <Text style={styles.modalEmptyText}>No hay clientes aquí.</Text>
+                            </View>
+                        }
+                    />
                 </View>
             </Modal>
 
-            {/* User selector modal */}
-            <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={closeUserPicker}>
-                <Pressable style={styles.modalBackdrop} onPress={closeUserPicker} />
+            {/* ✅ MODAL REASIGNAR */}
+            <Modal visible={assignOpen} transparent animationType="fade" onRequestClose={closeAssign}>
+                <Pressable style={styles.modalBackdrop} onPress={closeAssign} />
 
-                <View style={styles.userSheet}>
-                    <View style={styles.userSheetHeader}>
-                        <Text style={styles.modalTitle}>Usuario</Text>
+                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                    <View style={styles.modalHeader}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={styles.modalTitle}>Reasignar a usuario</Text>
+                            <Text style={styles.modalSub}>Selecciona un cobrador</Text>
+                        </View>
 
-                        <Pressable onPress={closeUserPicker} style={({ pressed }) => [styles.modalIcon, pressed && styles.pressed]}>
-                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        <Pressable
+                            onPress={closeAssign}
+                            style={({ pressed }) => [
+                                styles.modalClose,
+                                pressed && styles.modalClosePressed,
+                            ]}
+                        >
+                            <Ionicons name="close" size={16} color={COLORS.text} />
                         </Pressable>
                     </View>
 
-                    <View style={styles.searchMini}>
+                    <View style={styles.modalSearch}>
                         <Ionicons name="search-outline" size={16} color={COLORS.muted} />
-                        <Text style={styles.searchHint}>
-                            Tip: toca “Todos” o el usuario. (Si quieres búsqueda real aquí con TextInput, te lo dejo igual que en otras pantallas.)
-                        </Text>
-                    </View>
-
-                    <View style={styles.userList}>
-                        <Pressable onPress={() => applyUser("ALL")} style={({ pressed }) => [styles.userPickRow, pressed && styles.pressed]}>
-                            <View style={styles.userPickLeft}>
-                                <Ionicons name="people-outline" size={16} color={COLORS.text} />
-                                <Text style={styles.userPickName}>Todos</Text>
-                            </View>
-                            {selectedUserId === "ALL" ? <Ionicons name="checkmark" size={18} color={COLORS.ok} /> : null}
-                        </Pressable>
-
-                        <FlatList
-                            data={usersFiltered}
-                            keyExtractor={(u) => u.id}
-                            style={{ maxHeight: 360 }}
-                            renderItem={({ item }) => {
-                                const active = selectedUserId === item.id;
-                                return (
-                                    <Pressable onPress={() => applyUser(item.id)} style={({ pressed }) => [styles.userPickRow, pressed && styles.pressed]}>
-                                        <View style={styles.userPickLeft}>
-                                            <Ionicons name="person-outline" size={16} color={COLORS.muted2} />
-                                            <View style={{ flex: 1 }}>
-                                                <Text style={styles.userPickName} numberOfLines={1}>
-                                                    {item.name}
-                                                </Text>
-                                                {!!item.email ? (
-                                                    <Text style={styles.userPickEmail} numberOfLines={1}>
-                                                        {item.email}
-                                                    </Text>
-                                                ) : (
-                                                    <Text style={styles.userPickEmailMuted} numberOfLines={1}>
-                                                        (sin email)
-                                                    </Text>
-                                                )}
-                                            </View>
-                                        </View>
-                                        {active ? <Ionicons name="checkmark" size={18} color={COLORS.ok} /> : null}
-                                    </Pressable>
-                                );
-                            }}
+                        <TextInput
+                            value={assignSearch}
+                            onChangeText={setAssignSearch}
+                            placeholder="Buscar usuario (nombre / email)…"
+                            placeholderTextColor={COLORS.muted}
+                            style={styles.modalSearchInput}
+                            autoCapitalize="none"
+                            autoCorrect={false}
                         />
+                        {!!assignSearch ? (
+                            <Pressable onPress={() => setAssignSearch("")} style={styles.modalSearchClear}>
+                                <Ionicons name="close" size={16} color={COLORS.text} />
+                            </Pressable>
+                        ) : null}
                     </View>
+
+                    <FlatList
+                        data={filteredUsersForAssign}
+                        keyExtractor={(u) => u.id}
+                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                        showsVerticalScrollIndicator={false}
+                        renderItem={({ item }) => (
+                            <Pressable
+                                onPress={() => doAssign(item.id)}
+                                style={({ pressed }) => [
+                                    styles.userPickRow,
+                                    pressed && styles.userPickRowPressed,
+                                ]}
+                            >
+                                <View style={styles.userPickAvatar}>
+                                    <Ionicons name="person-outline" size={14} color={COLORS.text} />
+                                </View>
+                                <View style={{ flex: 1, gap: 1 }}>
+                                    <Text style={styles.userPickName} numberOfLines={1}>
+                                        {item.name}
+                                    </Text>
+                                    <Text style={styles.userPickEmail} numberOfLines={1}>
+                                        {item.email || "—"}
+                                    </Text>
+                                </View>
+                                <Ionicons name="chevron-forward" size={14} color={COLORS.muted} />
+                            </Pressable>
+                        )}
+                        ListEmptyComponent={
+                            <View style={styles.modalEmpty}>
+                                <Ionicons name="person-outline" size={20} color={COLORS.muted} />
+                                <Text style={styles.modalEmptyText}>No hay usuarios.</Text>
+                            </View>
+                        }
+                    />
+
+                    <Text style={styles.modalHint}>
+                        * Esto cambia el assignedTo del cliente y lo deja pending en UI.
+                    </Text>
+                </View>
+            </Modal>
+
+            {/* ✅ MODAL GANANCIAS */}
+            <Modal
+                visible={earningsOpen}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setEarningsOpen(false)}
+            >
+                <Pressable style={styles.modalBackdrop} onPress={() => setEarningsOpen(false)} />
+
+                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                    <View style={styles.modalHeader}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={styles.modalTitle}>Ganancias de la semana</Text>
+                            <Text style={styles.modalSub}>
+                                Total: R$ {money(totals.amountWeek)}
+                            </Text>
+                        </View>
+
+                        <Pressable
+                            onPress={() => setEarningsOpen(false)}
+                            style={({ pressed }) => [
+                                styles.modalClose,
+                                pressed && styles.modalClosePressed,
+                            ]}
+                        >
+                            <Ionicons name="close" size={16} color={COLORS.text} />
+                        </Pressable>
+                    </View>
+
+                    <FlatList
+                        data={rows.filter((r) => r.amountWeek > 0 || r.visitedWeek > 0)}
+                        keyExtractor={(r) => `earn-${r.userId}`}
+                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                        showsVerticalScrollIndicator={false}
+                        renderItem={({ item }) => (
+                            <View style={styles.earningRow}>
+                                <View style={{ flex: 1, gap: 1 }}>
+                                    <Text style={styles.earningName} numberOfLines={1}>
+                                        {item.name}
+                                    </Text>
+                                    <Text style={styles.earningMeta} numberOfLines={1}>
+                                        {item.visitedWeek} visita{item.visitedWeek === 1 ? "" : "s"} · R$ {money(item.ratePerVisit)}/visita
+                                    </Text>
+                                </View>
+
+                                <View style={styles.earningAmountPill}>
+                                    <Text style={styles.earningAmountText}>
+                                        R$ {money(item.amountWeek)}
+                                    </Text>
+                                </View>
+                            </View>
+                        )}
+                        ListEmptyComponent={
+                            <View style={styles.modalEmpty}>
+                                <Ionicons name="cash-outline" size={20} color={COLORS.muted} />
+                                <Text style={styles.modalEmptyText}>No hay ganancias aún.</Text>
+                            </View>
+                        }
+                    />
                 </View>
             </Modal>
         </SafeAreaView>
@@ -878,18 +1218,18 @@ export default function AdminWeeklyCloseScreen() {
 const COLORS = {
     bg: "#0B1220",
     card: "#0F172A",
-    border: "rgba(255,255,255,0.08)",
-    text: "#F9FAFB",
-    muted: "#9CA3AF",
-    muted2: "#C7CEDA",
+    border: "rgba(255,255,255,0.07)",
+    text: "#F8FAFC",
+    muted: "#94A3B8",
+    muted2: "#CBD5E1",
 
-    ok: "#22C55E",
-    bad: "#F87171",
-    warn: "#FBBF24",
+    visited: "#22C55E",
+    rejected: "#F87171",
+    pending: "#FBBF24",
 
-    okSoft: "#86EFAC",
-    badSoft: "#FCA5A5",
-    warnSoft: "#FDE68A",
+    visitedSoft: "#86EFAC",
+    rejectedSoft: "#FCA5A5",
+    pendingSoft: "#FDE68A",
 
     primary: "#7C3AED",
     primarySoft: "#C4B5FD",
@@ -897,325 +1237,599 @@ const COLORS = {
 };
 
 const styles = StyleSheet.create({
-    safe: { flex: 1, backgroundColor: COLORS.bg },
+    safe: {
+        flex: 1,
+        backgroundColor: COLORS.bg,
+    },
 
-    // header
     header: {
-        paddingHorizontal: 16,
+        paddingHorizontal: 14,
         paddingBottom: 8,
+        paddingTop: 2,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
+        gap: 8,
     },
-    title: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.3 },
-    subtitle: { marginTop: 2, fontSize: 12, fontWeight: "900", color: COLORS.muted },
-    strong: { color: COLORS.text, fontWeight: "900" },
-    dot: { color: COLORS.muted, fontWeight: "900" },
+    hTitle: {
+        color: COLORS.text,
+        fontSize: 19,
+        fontWeight: "900",
+        letterSpacing: 0.2,
+    },
+    hSub: {
+        marginTop: 1,
+        fontSize: 11,
+        fontWeight: "800",
+    },
+    hStrong: {
+        color: COLORS.text,
+        fontWeight: "900",
+    },
+    hMuted: {
+        color: COLORS.muted,
+        fontWeight: "800",
+    },
 
     moneyChip: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 10,
-        height: 34,
+        gap: 6,
+        paddingHorizontal: 9,
+        height: 30,
         borderRadius: 999,
-        backgroundColor: "rgba(167,243,208,0.10)",
+        backgroundColor: "rgba(167,243,208,0.08)",
         borderWidth: 1,
-        borderColor: "rgba(167,243,208,0.22)",
+        borderColor: "rgba(167,243,208,0.18)",
     },
-    moneyChipText: { color: COLORS.money, fontWeight: "900", fontSize: 12 },
+    moneyChipPressed: {
+        transform: [{ scale: 0.98 }],
+        opacity: 0.96,
+    },
+    moneyChipText: {
+        color: COLORS.money,
+        fontWeight: "900",
+        fontSize: 11,
+    },
 
     iconBtn: {
-        width: 44,
-        height: 44,
-        borderRadius: 16,
+        width: 36,
+        height: 36,
+        borderRadius: 12,
         backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
     },
+    iconBtnPressed: {
+        transform: [{ scale: 0.97 }],
+        opacity: 0.96,
+    },
+    iconBtnDisabled: {
+        opacity: 0.5,
+    },
 
-    // icons row
     statsRow: {
-        paddingHorizontal: 16,
+        paddingHorizontal: 14,
         paddingBottom: 8,
         flexDirection: "row",
-        gap: 10,
+        gap: 8,
     },
     statIconWrap: {
         flex: 1,
+        height: 38,
+        borderRadius: 13,
+        backgroundColor: "rgba(255,255,255,0.035)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        gap: 10,
-        height: 44,
-        borderRadius: 16,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
+        gap: 6,
+    },
+    statIconWrapPressed: {
+        transform: [{ scale: 0.985 }],
+        opacity: 0.96,
     },
     statIcon: {
-        width: 30,
-        height: 30,
-        borderRadius: 12,
+        width: 24,
+        height: 24,
+        borderRadius: 8,
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
     },
-    statValue: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
+    statValue: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 12,
+    },
 
-    // controls
-    card: {
-        marginHorizontal: 16,
-        backgroundColor: "rgba(255,255,255,0.03)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        borderRadius: 18,
-        padding: 12,
-        marginBottom: 12,
-    },
-    controlsRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-    },
-    controlBtn: {
-        flex: 1,
-        height: 44,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-    },
-    controlText: { flex: 1, color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    arrow: { color: COLORS.muted, fontWeight: "900" },
-
-    userBtn: {
-        height: 44,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
+    searchWrap: {
+        marginHorizontal: 14,
+        marginBottom: 8,
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
-        maxWidth: 160,
+        backgroundColor: "rgba(255,255,255,0.035)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        borderRadius: 14,
+        paddingHorizontal: 11,
+        height: 40,
     },
-    userBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900", maxWidth: 92 },
+    searchInput: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "700",
+        paddingVertical: 0,
+    },
+    clearBtn: {
+        width: 28,
+        height: 28,
+        borderRadius: 10,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+    },
 
-    warn: { marginTop: 10, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    listContent: {
+        paddingHorizontal: 14,
+        gap: 10,
+    },
 
-    // list
-    list: { paddingHorizontal: 16, paddingBottom: 40, gap: 12 },
-
-    dayCard: {
+    card: {
         backgroundColor: COLORS.card,
         borderWidth: 1,
         borderColor: COLORS.border,
-        borderRadius: 18,
-        padding: 14,
+        borderRadius: 16,
+        padding: 12,
+        gap: 9,
     },
-    dayTop: { flexDirection: "row", alignItems: "center", gap: 10 },
-    dayTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
+    cardTop: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 10,
+    },
 
-    pillsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-    miniPill: {
+    userName: {
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "900",
+    },
+    userEmail: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+    },
+    userEmailMuted: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+        opacity: 0.7,
+    },
+
+    pctPill: {
         flexDirection: "row",
         alignItems: "center",
+        gap: 5,
+        minWidth: 58,
+        height: 26,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        backgroundColor: "rgba(124,58,237,0.14)",
+        borderWidth: 1,
+        borderColor: "rgba(124,58,237,0.26)",
+        justifyContent: "center",
+    },
+    pctText: {
+        color: COLORS.primarySoft,
+        fontWeight: "900",
+        fontSize: 11,
+    },
+
+    amountPill: {
+        height: 26,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        backgroundColor: "rgba(34,197,94,0.08)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.18)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    amountText: {
+        color: COLORS.visitedSoft,
+        fontWeight: "900",
+        fontSize: 11,
+    },
+
+    progressTrack: {
+        height: 7,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.045)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.06)",
+        overflow: "hidden",
+    },
+    progressFill: {
+        height: "100%",
+        backgroundColor: "rgba(34,197,94,0.52)",
+    },
+
+    metricsRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
         gap: 6,
-        height: 30,
-        paddingHorizontal: 10,
+    },
+    miniStat: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 5,
+        height: 26,
+        paddingHorizontal: 8,
         borderRadius: 999,
         borderWidth: 1,
     },
-    miniPillText: { fontSize: 12, fontWeight: "900" },
+    miniText: {
+        fontSize: 11,
+        fontWeight: "900",
+    },
 
-    userRow: {
+    miniOk: {
+        backgroundColor: "rgba(34,197,94,0.08)",
+        borderColor: "rgba(34,197,94,0.18)",
+    },
+    miniBad: {
+        backgroundColor: "rgba(248,113,113,0.08)",
+        borderColor: "rgba(248,113,113,0.18)",
+    },
+    miniWarn: {
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderColor: "rgba(251,191,36,0.18)",
+    },
+    miniNeutral: {
+        backgroundColor: "rgba(255,255,255,0.045)",
+        borderColor: "rgba(255,255,255,0.08)",
+    },
+
+    actionsRow: {
         flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        paddingVertical: 10,
-        paddingHorizontal: 12,
-        borderRadius: 14,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-    },
-    userName: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    userEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    userEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
-
-    userNumsWrap: { alignItems: "flex-end" },
-    userNumsLine: { fontSize: 12, fontWeight: "900" },
-    userNum: { fontSize: 12, fontWeight: "900" },
-    sep: { color: COLORS.muted, fontWeight: "900" },
-
-    pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
-
-    empty: { marginTop: 30, alignItems: "center", gap: 10, paddingHorizontal: 16 },
-    emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900", textAlign: "center" },
-
-    // modal base
-    modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
-    modalSheet: {
-        position: "absolute",
-        left: 16,
-        right: 16,
-        bottom: 16,
-        backgroundColor: COLORS.card,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        padding: 14,
-    },
-    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 },
-    modalTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
-    modalSubtitle: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    modalIcon: {
-        width: 40,
-        height: 40,
-        borderRadius: 14,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    modalActions: { flexDirection: "row", gap: 10, marginTop: 12 },
-    modalBtn: {
-        flex: 1,
-        height: 46,
-        borderRadius: 14,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    modalBtnPrimary: { backgroundColor: "rgba(255,255,255,0.08)", borderColor: "rgba(255,255,255,0.12)" },
-    modalBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    modalBtnTextMuted: { color: COLORS.muted, fontSize: 13, fontWeight: "900" },
-
-    // money modal extras
-    summaryTotals: {
-        flexDirection: "row",
-        gap: 10,
         alignItems: "center",
         justifyContent: "space-between",
-    },
-    summaryPill: {
-        flexDirection: "row",
-        alignItems: "center",
         gap: 8,
-        paddingHorizontal: 12,
-        height: 36,
-        borderRadius: 999,
-        backgroundColor: "rgba(34,197,94,0.10)",
-        borderWidth: 1,
-        borderColor: "rgba(34,197,94,0.22)",
+        marginTop: 1,
     },
-    summaryPillText: { color: COLORS.okSoft, fontWeight: "900" },
-    summaryPillMoney: {
+    rateChip: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 12,
-        height: 36,
-        borderRadius: 999,
-        backgroundColor: "rgba(167,243,208,0.10)",
-        borderWidth: 1,
-        borderColor: "rgba(167,243,208,0.22)",
-    },
-    summaryPillMoneyText: { color: COLORS.money, fontWeight: "900" },
-
-    summaryRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        paddingVertical: 10,
-        paddingHorizontal: 12,
-        borderRadius: 14,
-        backgroundColor: "rgba(255,255,255,0.04)",
+        gap: 5,
+        height: 30,
+        paddingHorizontal: 9,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.035)",
         borderWidth: 1,
         borderColor: COLORS.border,
     },
-    summaryName: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    summaryEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    summaryEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
-    summaryRight: { alignItems: "flex-end", gap: 8 },
-    summaryVisitedChip: {
+    rateText: {
+        color: COLORS.text,
+        opacity: 0.94,
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    rateTextMuted: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "800",
+    },
+
+    empty: {
+        marginTop: 34,
+        alignItems: "center",
+        gap: 8,
+    },
+    emptyText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
+    },
+
+    modalBackdrop: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0,0,0,0.56)",
+    },
+    modalCard: {
+        position: "absolute",
+        left: 14,
+        right: 14,
+        bottom: 14,
+        backgroundColor: COLORS.card,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        padding: 12,
+        gap: 10,
+        maxHeight: "82%",
+    },
+    modalHeader: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
-        paddingHorizontal: 10,
-        height: 30,
-        borderRadius: 999,
-        backgroundColor: "rgba(34,197,94,0.10)",
-        borderWidth: 1,
-        borderColor: "rgba(34,197,94,0.22)",
+        justifyContent: "space-between",
+        gap: 8,
     },
-    summaryVisitedText: { color: COLORS.okSoft, fontWeight: "900" },
-    summaryMoneyChip: {
-        paddingHorizontal: 10,
-        height: 30,
-        borderRadius: 999,
-        backgroundColor: "rgba(167,243,208,0.10)",
+    modalTitle: {
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "900",
+    },
+    modalSub: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+    },
+
+    modalClose: {
+        width: 34,
+        height: 34,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
-        borderColor: "rgba(167,243,208,0.22)",
+        borderColor: "rgba(255,255,255,0.09)",
         alignItems: "center",
         justifyContent: "center",
     },
-    summaryMoneyText: { color: COLORS.money, fontWeight: "900", fontSize: 12 },
-
-    // user picker
-    userSheet: {
-        position: "absolute",
-        left: 16,
-        right: 16,
-        bottom: 16,
-        backgroundColor: COLORS.card,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        padding: 14,
+    modalClosePressed: {
+        transform: [{ scale: 0.97 }],
+        opacity: 0.96,
     },
-    userSheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
 
-    searchMini: {
+    modalSearch: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        backgroundColor: "rgba(255,255,255,0.04)",
+        backgroundColor: "rgba(255,255,255,0.035)",
         borderWidth: 1,
         borderColor: COLORS.border,
-        marginBottom: 10,
+        borderRadius: 14,
+        paddingHorizontal: 11,
+        height: 40,
     },
-    searchHint: { flex: 1, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    modalSearchInput: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "700",
+        paddingVertical: 0,
+    },
+    modalSearchClear: {
+        width: 28,
+        height: 28,
+        borderRadius: 10,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+    },
 
-    userList: { gap: 8 },
+    modalEmpty: {
+        marginTop: 14,
+        alignItems: "center",
+        gap: 8,
+        paddingVertical: 8,
+    },
+    modalEmptyText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
+    },
+    modalHint: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+        opacity: 0.9,
+    },
+
+    modalSectionCard: {
+        borderRadius: 15,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
+        padding: 10,
+    },
+    modalSectionHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    modalSectionTitle: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+    modalSectionSub: {
+        color: COLORS.muted,
+        fontWeight: "700",
+        fontSize: 11,
+    },
+    modalCountPill: {
+        minWidth: 30,
+        height: 24,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.09)",
+        paddingHorizontal: 8,
+    },
+    modalCountText: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 11,
+    },
+
+    modalClientCard: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        padding: 10,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
+    },
+    modalClientPhone: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    modalClientMeta: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+    },
+    modalClientAssigned: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+        marginTop: 2,
+    },
+    modalClientAssignedStrong: {
+        color: COLORS.text,
+        fontWeight: "900",
+    },
+
+    rejectTag: {
+        alignSelf: "flex-start",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 8,
+        height: 24,
+        borderRadius: 999,
+        backgroundColor: "rgba(248,113,113,0.08)",
+        borderWidth: 1,
+        borderColor: "rgba(248,113,113,0.22)",
+        marginTop: 5,
+    },
+    rejectTagText: {
+        color: COLORS.rejectedSoft,
+        fontSize: 11,
+        fontWeight: "900",
+    },
+
+    rejectTagMuted: {
+        alignSelf: "flex-start",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 8,
+        height: 24,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.045)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.09)",
+        marginTop: 5,
+    },
+    rejectTagTextMuted: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "800",
+    },
+
+    modalReassignBtn: {
+        width: 36,
+        height: 36,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.09)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    modalReassignBtnPressed: {
+        transform: [{ scale: 0.97 }],
+        opacity: 0.96,
+    },
+    modalReassignPlaceholder: {
+        width: 36,
+        height: 36,
+    },
+
     userPickRow: {
         flexDirection: "row",
         alignItems: "center",
-        justifyContent: "space-between",
         gap: 10,
-        paddingVertical: 10,
-        paddingHorizontal: 12,
+        padding: 10,
         borderRadius: 14,
-        backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
-        borderColor: COLORS.border,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
     },
-    userPickLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
-    userPickName: { color: COLORS.text, fontSize: 13, fontWeight: "900", flex: 1 },
-    userPickEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    userPickEmailMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.75 },
+    userPickRowPressed: {
+        transform: [{ scale: 0.99 }],
+        opacity: 0.95,
+    },
+    userPickAvatar: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.09)",
+    },
+    userPickName: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+    userPickEmail: {
+        color: COLORS.muted,
+        fontWeight: "700",
+        fontSize: 11,
+    },
+
+    // ✅ ganancias
+    earningRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        padding: 10,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
+    },
+    earningName: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+    earningMeta: {
+        color: COLORS.muted,
+        fontWeight: "700",
+        fontSize: 11,
+    },
+    earningAmountPill: {
+        height: 28,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        backgroundColor: "rgba(34,197,94,0.08)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.18)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    earningAmountText: {
+        color: COLORS.visitedSoft,
+        fontWeight: "900",
+        fontSize: 11,
+    },
 });
