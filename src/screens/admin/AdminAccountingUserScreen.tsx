@@ -1,9 +1,8 @@
 // src/screens/admin/AdminAccountingUserScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-    Pressable,
     ScrollView,
     StatusBar,
     StyleSheet,
@@ -17,6 +16,7 @@ import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEvents
 import {
     subscribeWeeklyInvestment,
     type WeeklyInvestmentAllocations,
+    type WeeklyInvestmentGroup,
 } from "../../data/repositories/investmentsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
@@ -30,6 +30,7 @@ const COLORS = {
     ok: "#22C55E",
     bad: "#F87171",
     warn: "#FBBF24",
+    info: "#60A5FA",
 };
 
 function clamp2(n: number) {
@@ -58,7 +59,6 @@ function toMs(v: any): number {
     return 0;
 }
 
-/** Último evento por clientId dentro del rango */
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
     for (const e of events) {
@@ -81,7 +81,6 @@ function getRatePerVisit(u?: UserDoc | null) {
 }
 
 export default function AdminAccountingUserScreen() {
-    const router = useRouter();
     const insets = useSafeAreaInsets();
 
     const params = useLocalSearchParams<{
@@ -105,8 +104,8 @@ export default function AdminAccountingUserScreen() {
 
     const [weekAmount, setWeekAmount] = useState<number>(0);
     const [allocations, setAllocations] = useState<WeeklyInvestmentAllocations>({});
+    const [groups, setGroups] = useState<WeeklyInvestmentGroup[]>([]);
 
-    // --- load users
     useEffect(() => {
         (async () => {
             const u = await listUsers("user");
@@ -114,7 +113,6 @@ export default function AdminAccountingUserScreen() {
         })();
     }, []);
 
-    // --- clients realtime (para filtro anti-inflado tipo AdminAccountingScreen)
     useEffect(() => {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
         return () => unsub();
@@ -132,7 +130,6 @@ export default function AdminAccountingUserScreen() {
         return m;
     }, [clients]);
 
-    // --- subscribe weekly investment doc
     useEffect(() => {
         if (!weekStartKey) return;
 
@@ -141,20 +138,24 @@ export default function AdminAccountingUserScreen() {
             (doc) => {
                 const amt = clamp2(safeNumber((doc as any)?.amount ?? 0));
                 const alloc = ((doc as any)?.allocations ?? {}) as WeeklyInvestmentAllocations;
+                const rawGroups = Array.isArray((doc as any)?.groups)
+                    ? ((doc as any)?.groups as WeeklyInvestmentGroup[])
+                    : [];
 
                 setWeekAmount(amt);
                 setAllocations(alloc && typeof alloc === "object" ? alloc : {});
+                setGroups(rawGroups);
             },
             () => {
                 setWeekAmount(0);
                 setAllocations({});
+                setGroups([]);
             }
         );
 
         return () => unsub();
     }, [weekStartKey]);
 
-    // --- subscribe week events
     useEffect(() => {
         if (!weekStartKey || !weekEndKey) return;
 
@@ -177,8 +178,6 @@ export default function AdminAccountingUserScreen() {
         return () => unsub();
     }, [weekStartKey, weekEndKey]);
 
-    // mismo “anti-inflado” que en la pantalla principal:
-    // solo contamos el último evento si coincide con el status actual del cliente
     const shouldCountEvent = useCallback(
         (e: DailyEventDoc) => {
             const cid = (e as any)?.clientId;
@@ -190,36 +189,146 @@ export default function AdminAccountingUserScreen() {
         [clientById]
     );
 
+    const normalizedGroups = useMemo(() => {
+        const out: WeeklyInvestmentGroup[] = [];
+
+        for (let i = 0; i < groups.length; i++) {
+            const g = groups[i];
+            const id = String(g?.id ?? `group_${i + 1}`).trim() || `group_${i + 1}`;
+            const name = String(g?.name ?? "").trim() || `Grupo ${i + 1}`;
+            const amount = clamp2(safeNumber(g?.amount ?? 0));
+            const userIds = Array.from(
+                new Set(
+                    (Array.isArray(g?.userIds) ? g.userIds : [])
+                        .map((x) => String(x).trim())
+                        .filter(Boolean)
+                )
+            );
+
+            if (!userIds.length) continue;
+
+            out.push({
+                id,
+                name,
+                amount,
+                userIds,
+            });
+        }
+
+        return out;
+    }, [groups]);
+
     const rows = useMemo(() => {
-        // base: todos los users (para que salgan con 0)
+        const latest = latestEventByClient(weekEvents);
+
+        if (normalizedGroups.length > 0) {
+            const byGroupId = new Map<
+                string,
+                {
+                    id: string;
+                    title: string;
+                    subtitle: string;
+                    memberNames: string[];
+                    memberIds: string[];
+                    visits: number;
+                    gross: number;
+                    assigned: number;
+                    avgRate: number;
+                    shared: boolean;
+                }
+            >();
+
+            const userToGroupId = new Map<string, string>();
+
+            for (const g of normalizedGroups) {
+                for (const uid of g.userIds) {
+                    if (!userToGroupId.has(uid)) userToGroupId.set(uid, g.id);
+                }
+
+                const memberNames = g.userIds.map((uid) => {
+                    const u = userById.get(uid);
+                    return u?.name?.trim() || u?.email?.trim() || uid;
+                });
+
+                const rates = g.userIds.map((uid) => getRatePerVisit(userById.get(uid)));
+                const avgRate =
+                    rates.length > 0 ? clamp2(rates.reduce((a, b) => a + b, 0) / rates.length) : 0;
+
+                byGroupId.set(g.id, {
+                    id: g.id,
+                    title: g.name,
+                    subtitle: memberNames.join(", "),
+                    memberNames,
+                    memberIds: g.userIds,
+                    visits: 0,
+                    gross: 0,
+                    assigned: clamp2(safeNumber(g.amount)),
+                    avgRate,
+                    shared: g.userIds.length > 1,
+                });
+            }
+
+            for (const e of latest.values()) {
+                if (!shouldCountEvent(e)) continue;
+                if ((e as any).type !== "visited") continue;
+
+                const uid = String((e as any)?.userId ?? "").trim();
+                if (!uid) continue;
+
+                const gid = userToGroupId.get(uid);
+                if (!gid) continue;
+
+                const row = byGroupId.get(gid);
+                if (!row) continue;
+
+                row.visits += 1;
+                row.gross = clamp2(row.gross + getRatePerVisit(userById.get(uid)));
+            }
+
+            return Array.from(byGroupId.values())
+                .map((r) => {
+                    const real = clamp2(r.gross - r.assigned);
+                    const roi = r.assigned > 0 ? (real / r.assigned) * 100 : null;
+                    return { ...r, real, roi };
+                })
+                .sort((a, b) => {
+                    const aScore = a.roi ?? Number.NEGATIVE_INFINITY;
+                    const bScore = b.roi ?? Number.NEGATIVE_INFINITY;
+                    if (bScore !== aScore) return bScore - aScore;
+                    if (b.real !== a.real) return b.real - a.real;
+                    if (b.gross !== a.gross) return b.gross - a.gross;
+                    return b.visits - a.visits;
+                });
+        }
+
         const base = users.map((u) => ({
-            uid: u.id,
-            name: u?.name?.trim() || u?.email?.trim() || "Usuario",
-            email: u?.email?.trim() || "",
-            rate: getRatePerVisit(u),
+            id: u.id,
+            title: u?.name?.trim() || u?.email?.trim() || "Usuario",
+            subtitle: u?.email?.trim() || "",
+            memberNames: [u?.name?.trim() || u?.email?.trim() || "Usuario"],
+            memberIds: [u.id],
+            avgRate: getRatePerVisit(u),
             visits: 0,
             gross: 0,
             assigned: clamp2(safeNumber((allocations as any)?.[u.id] ?? 0)),
+            shared: false,
         }));
 
         const byUid = new Map<string, (typeof base)[number]>();
-        for (const r of base) byUid.set(r.uid, r);
-
-        const latest = latestEventByClient(weekEvents);
+        for (const r of base) byUid.set(r.id, r);
 
         for (const e of latest.values()) {
             if (!shouldCountEvent(e)) continue;
-
             if ((e as any).type !== "visited") continue;
 
-            const uid = (e as any)?.userId;
+            const uid = String((e as any)?.userId ?? "").trim();
             if (!uid) continue;
 
-            const r = byUid.get(uid);
-            if (!r) continue;
+            const row = byUid.get(uid);
+            if (!row) continue;
 
-            r.visits += 1;
-            r.gross = clamp2(r.gross + r.rate);
+            row.visits += 1;
+            row.gross = clamp2(row.gross + row.avgRate);
         }
 
         return base
@@ -228,8 +337,15 @@ export default function AdminAccountingUserScreen() {
                 const roi = r.assigned > 0 ? (real / r.assigned) * 100 : null;
                 return { ...r, real, roi };
             })
-            .sort((a, b) => b.real - a.real);
-    }, [users, allocations, weekEvents, shouldCountEvent]);
+            .sort((a, b) => {
+                const aScore = a.roi ?? Number.NEGATIVE_INFINITY;
+                const bScore = b.roi ?? Number.NEGATIVE_INFINITY;
+                if (bScore !== aScore) return bScore - aScore;
+                if (b.real !== a.real) return b.real - a.real;
+                if (b.gross !== a.gross) return b.gross - a.gross;
+                return b.visits - a.visits;
+            });
+    }, [weekEvents, shouldCountEvent, normalizedGroups, userById, users, allocations]);
 
     const totals = useMemo(() => {
         const visits = rows.reduce((a, b) => a + (b.visits || 0), 0);
@@ -241,33 +357,29 @@ export default function AdminAccountingUserScreen() {
     }, [rows]);
 
     const guardInvalid = !weekStartKey || !weekEndKey;
+    const usingGroups = normalizedGroups.length > 0;
 
     return (
-        <SafeAreaView style={[styles.safe, { paddingBottom: Math.max(16, insets.bottom) }]}>
+        <SafeAreaView
+            style={styles.safe}
+            edges={["left", "right", "bottom"]}
+        >
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
-
-            <View style={styles.header}>
-                <Pressable
-                    onPress={() => router.back()}
-                    style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
-                >
-                    <Ionicons name="chevron-back" size={18} color={COLORS.text} />
-                    <Text style={styles.backText}>Volver</Text>
-                </Pressable>
-
-                <View style={{ flex: 1 }} />
-            </View>
 
             <ScrollView
                 showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingBottom: 24 }}
+                contentContainerStyle={{
+                    paddingTop: 6,
+                    paddingBottom: Math.max(20, insets.bottom + 12),
+                }}
             >
                 <View style={styles.card}>
-                    <Text style={styles.title}>Contabilidad por usuario</Text>
+                    <Text style={styles.title}>
+                        {usingGroups ? "Contabilidad por grupo" : "Contabilidad por usuario"}
+                    </Text>
 
                     <Text style={styles.sub}>
-                        Semana{" "}
-                        <Text style={styles.strong}>{weekStartKey || "—"}</Text> →{" "}
+                        Semana <Text style={styles.strong}>{weekStartKey || "—"}</Text> →{" "}
                         <Text style={styles.strong}>{weekEndKey || "—"}</Text>
                     </Text>
 
@@ -277,12 +389,20 @@ export default function AdminAccountingUserScreen() {
                         </Text>
                     ) : null}
 
-                    {weekErr ? (
-                        <Text style={styles.errText}>Eventos: {weekErr}</Text>
-                    ) : null}
+                    {weekErr ? <Text style={styles.errText}>Eventos: {weekErr}</Text> : null}
+
+                    <View style={styles.modePill}>
+                        <Ionicons
+                            name={usingGroups ? "people-outline" : "person-outline"}
+                            size={14}
+                            color={COLORS.muted}
+                        />
+                        <Text style={styles.modePillText}>
+                            {usingGroups ? "Modo compartido por grupo" : "Modo individual por usuario"}
+                        </Text>
+                    </View>
                 </View>
 
-                {/* Totales */}
                 <View style={styles.kpiRow}>
                     <View style={styles.kpiCard}>
                         <Text style={styles.kpiLabel}>Bruta</Text>
@@ -293,13 +413,18 @@ export default function AdminAccountingUserScreen() {
                     <View style={styles.kpiCard}>
                         <Text style={styles.kpiLabel}>Asignado</Text>
                         <Text style={styles.kpiValue}>R$ {money(totals.assigned)}</Text>
-                        <Text style={styles.kpiHint}>
-                            Total doc: R$ {money(weekAmount)}
-                        </Text>
+                        <Text style={styles.kpiHint}>Total doc: R$ {money(weekAmount)}</Text>
                     </View>
 
                     <View style={styles.kpiCard}>
-                        <Text style={styles.kpiLabel}>Real</Text>
+                        <Text
+                            style={[
+                                styles.kpiLabel,
+                                totals.real > 0 ? styles.pos : totals.real < 0 ? styles.neg : null,
+                            ]}
+                        >
+                            Real
+                        </Text>
                         <Text
                             style={[
                                 styles.kpiValue,
@@ -314,29 +439,65 @@ export default function AdminAccountingUserScreen() {
                     </View>
                 </View>
 
-                {/* Lista por usuario */}
                 <View style={styles.card}>
-                    <Text style={styles.cardTitle}>Usuarios</Text>
+                    <View style={styles.listHeader}>
+                        <Text style={styles.cardTitle}>
+                            {usingGroups ? "Grupos / ciudades / campañas" : "Usuarios"}
+                        </Text>
+                    </View>
 
                     {rows.length === 0 ? (
-                        <Text style={styles.hint}>No hay usuarios o no cargaron todavía.</Text>
+                        <Text style={styles.hint}>No hay datos todavía para esta semana.</Text>
                     ) : (
                         <View style={{ gap: 10 }}>
-                            {rows.map((r) => {
+                            {rows.map((r, idx) => {
                                 const tone = r.real > 0 ? "pos" : r.real < 0 ? "neg" : "neu";
+                                const isTop = idx === 0;
+
                                 return (
-                                    <View key={r.uid} style={styles.userRow}>
+                                    <View
+                                        key={r.id}
+                                        style={[
+                                            styles.userRow,
+                                            isTop ? styles.userRowTop : null,
+                                        ]}
+                                    >
+                                        <View style={styles.rankBadge}>
+                                            <Text style={styles.rankBadgeText}>#{idx + 1}</Text>
+                                        </View>
+
                                         <View style={{ flex: 1, gap: 2 }}>
-                                            <Text style={styles.userName} numberOfLines={1}>
-                                                {r.name}
-                                            </Text>
-                                            <Text style={styles.userSub} numberOfLines={1}>
-                                                {r.email ? r.email : `ID: ${r.uid}`}
+                                            <Text style={styles.userName}>{r.title}</Text>
+
+                                            <View style={styles.badgesRow}>
+                                                {r.shared ? (
+                                                    <View style={styles.sharedBadge}>
+                                                        <Ionicons name="people-outline" size={12} color={COLORS.text} />
+                                                        <Text style={styles.sharedBadgeText}>Compartido</Text>
+                                                    </View>
+                                                ) : null}
+
+                                                {isTop ? (
+                                                    <View style={styles.bestBadge}>
+                                                        <Ionicons name="trophy" size={12} color={COLORS.text} />
+                                                        <Text style={styles.bestBadgeText}>Mejor</Text>
+                                                    </View>
+                                                ) : null}
+                                            </View>
+
+                                            <Text style={styles.userSub} numberOfLines={2}>
+                                                {r.subtitle || (r.memberIds[0] ?? "")}
                                             </Text>
 
                                             <Text style={styles.userMeta}>
-                                                {r.visits} visitados · tarifa R$ {money(r.rate)}
+                                                {r.visits} visitados · tarifa prom. R$ {money(r.avgRate)}
                                             </Text>
+
+                                            {r.memberNames.length > 1 ? (
+                                                <Text style={styles.membersText} numberOfLines={3}>
+                                                    Miembros: {r.memberNames.join(", ")}
+                                                </Text>
+                                            ) : null}
                                         </View>
 
                                         <View style={styles.userPills}>
@@ -350,6 +511,18 @@ export default function AdminAccountingUserScreen() {
                                                 <Text style={styles.pillValue}>R$ {money(r.assigned)}</Text>
                                             </View>
 
+                                            <View style={styles.roiPill}>
+                                                <Text style={styles.roiLabel}>ROI</Text>
+                                                <Text
+                                                    style={[
+                                                        styles.roiValue,
+                                                        (r.roi ?? 0) > 0 ? styles.pos : (r.roi ?? 0) < 0 ? styles.neg : null,
+                                                    ]}
+                                                >
+                                                    {r.roi == null ? "—" : `${r.roi.toFixed(0)}%`}
+                                                </Text>
+                                            </View>
+
                                             <View
                                                 style={[
                                                     styles.realPill,
@@ -361,9 +534,7 @@ export default function AdminAccountingUserScreen() {
                                                 ]}
                                             >
                                                 <Text style={styles.realValue}>R$ {money(r.real)}</Text>
-                                                <Text style={styles.realSub}>
-                                                    {r.roi == null ? "ROI —" : `${r.roi.toFixed(0)}%`}
-                                                </Text>
+                                                <Text style={styles.realSub}>Ganancia real</Text>
                                             </View>
                                         </View>
                                     </View>
@@ -372,32 +543,17 @@ export default function AdminAccountingUserScreen() {
                         </View>
                     )}
                 </View>
-
-                <View style={styles.noteCard}>
-                    <Ionicons name="information-circle-outline" size={18} color={COLORS.muted} />
-
-                </View>
             </ScrollView>
         </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
-    safe: { flex: 1, backgroundColor: COLORS.bg, padding: 16 },
-
-    header: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
-    backBtn: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-        paddingHorizontal: 10,
-        height: 38,
-        borderRadius: 12,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
+    safe: {
+        flex: 1,
+        backgroundColor: COLORS.bg,
+        paddingHorizontal: 16,
     },
-    backText: { color: COLORS.text, fontWeight: "900" },
 
     card: {
         backgroundColor: COLORS.card,
@@ -414,6 +570,21 @@ const styles = StyleSheet.create({
     strong: { color: COLORS.text, fontWeight: "900" },
     hint: { color: "rgba(255,255,255,0.70)", fontWeight: "700", fontSize: 12, lineHeight: 18 },
     errText: { marginTop: 6, color: "#FCA5A5", fontSize: 12, fontWeight: "900" },
+
+    modePill: {
+        marginTop: 4,
+        alignSelf: "flex-start",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        height: 30,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+    },
+    modePillText: { color: COLORS.muted, fontWeight: "900", fontSize: 11 },
 
     kpiRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
     kpiCard: {
@@ -432,6 +603,12 @@ const styles = StyleSheet.create({
     pos: { color: "#86EFAC" },
     neg: { color: "#FCA5A5" },
 
+    listHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
     cardTitle: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
 
     userRow: {
@@ -443,13 +620,61 @@ const styles = StyleSheet.create({
         borderColor: "rgba(255,255,255,0.08)",
         backgroundColor: "rgba(255,255,255,0.03)",
     },
-    userName: { color: COLORS.text, fontWeight: "900", fontSize: 13 },
+    userRowTop: {
+        borderColor: "rgba(96,165,250,0.28)",
+        backgroundColor: "rgba(96,165,250,0.06)",
+    },
+
+    rankBadge: {
+        width: 34,
+        height: 34,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.06)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+    rankBadgeText: { color: COLORS.text, fontWeight: "900", fontSize: 11 },
+
+    userName: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 14,
+    },
     userSub: { color: "rgba(255,255,255,0.55)", fontWeight: "800", fontSize: 11 },
     userMeta: { marginTop: 6, color: "rgba(255,255,255,0.60)", fontWeight: "800", fontSize: 11 },
+    membersText: { marginTop: 4, color: "rgba(255,255,255,0.48)", fontWeight: "800", fontSize: 10 },
+
+    sharedBadge: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        paddingHorizontal: 8,
+        height: 22,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.08)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.14)",
+    },
+    sharedBadgeText: { color: COLORS.text, fontWeight: "900", fontSize: 10 },
+
+    bestBadge: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        paddingHorizontal: 4,
+        height: 22,
+        borderRadius: 999,
+        backgroundColor: "rgba(34,197,94,0.14)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.24)",
+    },
+    bestBadgeText: { color: COLORS.text, fontWeight: "900", fontSize: 10 },
 
     userPills: { alignItems: "flex-end", gap: 8 },
     pill: {
-        width: 110,
+        width: 90,
         borderRadius: 14,
         paddingVertical: 8,
         paddingHorizontal: 10,
@@ -462,8 +687,22 @@ const styles = StyleSheet.create({
     pillLabel: { color: "rgba(255,255,255,0.55)", fontWeight: "900", fontSize: 10 },
     pillValue: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
 
+    roiPill: {
+        width: 90,
+        borderRadius: 14,
+        paddingVertical: 8,
+        paddingHorizontal: 10,
+        borderWidth: 1,
+        borderColor: "rgba(96,165,250,0.24)",
+        backgroundColor: "rgba(96,165,250,0.08)",
+        gap: 2,
+        alignItems: "flex-end",
+    },
+    roiLabel: { color: "#93C5FD", fontWeight: "900", fontSize: 10 },
+    roiValue: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
+
     realPill: {
-        width: 110,
+        width: 90,
         borderRadius: 14,
         paddingVertical: 8,
         paddingHorizontal: 10,
@@ -477,18 +716,10 @@ const styles = StyleSheet.create({
     realValue: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
     realSub: { color: "rgba(255,255,255,0.55)", fontWeight: "900", fontSize: 10 },
 
-    noteCard: {
+    badgesRow: {
         flexDirection: "row",
-        gap: 10,
-        padding: 12,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        backgroundColor: "rgba(255,255,255,0.03)",
-        alignItems: "flex-start",
-        marginBottom: 12,
+        flexWrap: "wrap",
+        gap: 6,
+        marginTop: 4,
     },
-    noteText: { flex: 1, color: "rgba(255,255,255,0.65)", fontWeight: "700", fontSize: 12, lineHeight: 18 },
-
-    pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
 });
