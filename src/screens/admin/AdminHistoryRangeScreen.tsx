@@ -16,7 +16,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { assignClient, subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
+import type { ClientDoc, DailyEventDoc, RejectedReason, UserDoc } from "../../types/models";
 
 // ----------------------
 // DayKey helpers
@@ -98,31 +98,106 @@ function latestEventByClient(events: DailyEventDoc[]) {
     return map;
 }
 
-type RejectReason = "clavo" | "localizacion" | "otro";
-
-function normalizeReason(raw?: string): RejectReason | undefined {
+function normalizeReason(raw?: string): RejectedReason | undefined {
     if (!raw) return undefined;
     const r = String(raw).toLowerCase().trim();
+
     if (r === "clavo") return "clavo";
-    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização") {
+
+    if (
+        r === "localizacion" ||
+        r === "localización" ||
+        r === "localizacao" ||
+        r === "localização"
+    ) {
         return "localizacion";
     }
+
+    if (r === "zona_riesgosa" || r === "zona riesgosa" || r === "zona peligrosa") {
+        return "zona_riesgosa";
+    }
+
+    if (
+        r === "ingresos_insuficientes" ||
+        r === "ingresos insuficientes" ||
+        r === "sin ingresos suficientes"
+    ) {
+        return "ingresos_insuficientes";
+    }
+
+    if (r === "muy_endeudado" || r === "muy endeudado" || r === "endeudado") {
+        return "muy_endeudado";
+    }
+
+    if (
+        r === "informacion_dudosa" ||
+        r === "información dudosa" ||
+        r === "datos dudosos"
+    ) {
+        return "informacion_dudosa";
+    }
+
+    if (r === "no_le_interesa" || r === "no le interesa" || r === "no interesado") {
+        return "no_le_interesa";
+    }
+
+    if (
+        r === "no_estaba_cerrado" ||
+        r === "no estaba / cerrado" ||
+        r === "no estaba" ||
+        r === "cerrado"
+    ) {
+        return "no_estaba_cerrado";
+    }
+
+    if (r === "fuera_de_ruta" || r === "fuera de ruta") {
+        return "fuera_de_ruta";
+    }
+
     if (r === "otro" || r === "outro") return "otro";
+
     return undefined;
 }
 
-function reasonLabel(r?: RejectReason) {
+function reasonLabel(r?: RejectedReason) {
     if (r === "clavo") return "Clavo";
     if (r === "localizacion") return "Localización";
+    if (r === "zona_riesgosa") return "Zona riesgosa";
+    if (r === "ingresos_insuficientes") return "Ingresos insuficientes";
+    if (r === "muy_endeudado") return "Muy endeudado";
+    if (r === "informacion_dudosa") return "Información dudosa";
+    if (r === "no_le_interesa") return "No le interesa";
+    if (r === "no_estaba_cerrado") return "No estaba / cerrado";
+    if (r === "fuera_de_ruta") return "Fuera de ruta";
     if (r === "otro") return "Otro";
     return "—";
 }
 
-function reasonIcon(r?: RejectReason) {
+function reasonIcon(r?: RejectedReason) {
     if (r === "clavo") return "alert-circle-outline";
     if (r === "localizacion") return "navigate-outline";
+    if (r === "zona_riesgosa") return "warning-outline";
+    if (r === "ingresos_insuficientes") return "cash-outline";
+    if (r === "muy_endeudado") return "trending-down-outline";
+    if (r === "informacion_dudosa") return "help-circle-outline";
+    if (r === "no_le_interesa") return "close-circle-outline";
+    if (r === "no_estaba_cerrado") return "storefront-outline";
+    if (r === "fuera_de_ruta") return "map-outline";
     if (r === "otro") return "help-circle-outline";
     return "information-circle-outline";
+}
+
+function extractRejectReasonFromClient(c: ClientDoc): RejectedReason | undefined {
+    const anyC: any = c as any;
+
+    const raw =
+        (anyC?.rejectReason ??
+            anyC?.rejectedReason ??
+            anyC?.statusReason ??
+            anyC?.rejectedMeta?.reason ??
+            anyC?.statusMeta?.reason) as string | undefined;
+
+    return normalizeReason(raw);
 }
 
 type Row = {
@@ -245,7 +320,12 @@ export default function AdminWeeklyReportScreen() {
     }, [rangeEvents]);
 
     const rejectedReasonByClientId = useMemo(() => {
-        const m = new Map<string, RejectReason>();
+        const m = new Map<string, RejectedReason>();
+
+        for (const c of clients) {
+            const fromClient = extractRejectReasonFromClient(c);
+            if (fromClient) m.set(c.id, fromClient);
+        }
 
         for (const [cid, ev] of lastEventRangeByClient.entries()) {
             const anyEv: any = ev as any;
@@ -262,7 +342,7 @@ export default function AdminWeeklyReportScreen() {
         }
 
         return m;
-    }, [lastEventRangeByClient]);
+    }, [clients, lastEventRangeByClient]);
 
     const assignedThisWeekIds = useMemo(() => {
         const s = new Set<string>();
@@ -684,7 +764,7 @@ export default function AdminWeeklyReportScreen() {
         return (u?.name ?? "").trim() || (u?.email ?? "").trim() || uid;
     };
 
-    const RejectTag = ({ reason }: { reason?: RejectReason }) => {
+    const RejectTag = ({ reason }: { reason?: RejectedReason }) => {
         if (!reason) return null;
         return (
             <View style={styles.rejectTag}>
@@ -1710,7 +1790,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 6,
         paddingHorizontal: 8,
-        height: 24,
+        minHeight: 24,
         borderRadius: 999,
         backgroundColor: "rgba(248,113,113,0.08)",
         borderWidth: 1,
@@ -1721,6 +1801,7 @@ const styles = StyleSheet.create({
         color: COLORS.rejectedSoft,
         fontSize: 11,
         fontWeight: "900",
+        flexShrink: 1,
     },
 
     rejectTagMuted: {

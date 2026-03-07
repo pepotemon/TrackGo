@@ -39,7 +39,17 @@ function safeText(x?: string) {
 }
 
 type FilterKey = "all" | "pending" | "visited" | "rejected";
-type RejectReason = "clavo" | "localizacion" | "otro";
+type RejectReason =
+    | "clavo"
+    | "localizacion"
+    | "zona_riesgosa"
+    | "ingresos_insuficientes"
+    | "muy_endeudado"
+    | "informacion_dudosa"
+    | "no_le_interesa"
+    | "no_estaba_cerrado"
+    | "fuera_de_ruta"
+    | "otro";
 
 function isUnassignedClient(c: ClientDoc) {
     const assigned = ((c.assignedTo ?? "") as any).toString().trim();
@@ -151,7 +161,6 @@ function latestEventByClientAndType(events: DailyEventDoc[]) {
     return map;
 }
 
-/** ✅ motivo desde el evento (robusto) */
 function extractRejectReasonFromEvent(ev?: DailyEventDoc | null): RejectReason | undefined {
     if (!ev) return undefined;
     const anyEv: any = ev as any;
@@ -165,14 +174,24 @@ function extractRejectReasonFromEvent(ev?: DailyEventDoc | null): RejectReason |
     if (!raw) return undefined;
 
     const r = String(raw).toLowerCase().trim();
+
     if (r === "clavo") return "clavo";
     if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
         return "localizacion";
+
+    if (r === "zona_riesgosa") return "zona_riesgosa";
+    if (r === "ingresos_insuficientes") return "ingresos_insuficientes";
+    if (r === "muy_endeudado") return "muy_endeudado";
+    if (r === "informacion_dudosa") return "informacion_dudosa";
+    if (r === "no_le_interesa") return "no_le_interesa";
+    if (r === "no_estaba_cerrado") return "no_estaba_cerrado";
+    if (r === "fuera_de_ruta") return "fuera_de_ruta";
+
     if (r === "otro" || r === "outro") return "otro";
+
     return undefined;
 }
 
-/** ✅ motivo desde el CLIENT DOC (por si ya lo guardas ahí) */
 function extractRejectReasonFromClient(c: ClientDoc): RejectReason | undefined {
     const anyC: any = c as any;
 
@@ -186,22 +205,50 @@ function extractRejectReasonFromClient(c: ClientDoc): RejectReason | undefined {
     if (!raw) return undefined;
 
     const r = String(raw).toLowerCase().trim();
+
     if (r === "clavo") return "clavo";
     if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
         return "localizacion";
+
+    if (r === "zona_riesgosa") return "zona_riesgosa";
+    if (r === "ingresos_insuficientes") return "ingresos_insuficientes";
+    if (r === "muy_endeudado") return "muy_endeudado";
+    if (r === "informacion_dudosa") return "informacion_dudosa";
+    if (r === "no_le_interesa") return "no_le_interesa";
+    if (r === "no_estaba_cerrado") return "no_estaba_cerrado";
+    if (r === "fuera_de_ruta") return "fuera_de_ruta";
+
     if (r === "otro" || r === "outro") return "otro";
+
     return undefined;
 }
+
+
 
 function reasonLabel(r?: RejectReason) {
     if (r === "clavo") return "Clavo";
     if (r === "localizacion") return "Localización";
+    if (r === "zona_riesgosa") return "Zona riesgosa";
+    if (r === "ingresos_insuficientes") return "Ingresos insuficientes";
+    if (r === "muy_endeudado") return "Muy endeudado";
+    if (r === "informacion_dudosa") return "Información dudosa";
+    if (r === "no_le_interesa") return "No le interesa";
+    if (r === "no_estaba_cerrado") return "No estaba / cerrado";
+    if (r === "fuera_de_ruta") return "Fuera de ruta";
     if (r === "otro") return "Otro";
     return "—";
 }
+
 function reasonIcon(r?: RejectReason) {
     if (r === "clavo") return "alert-circle-outline";
     if (r === "localizacion") return "navigate-outline";
+    if (r === "zona_riesgosa") return "warning-outline";
+    if (r === "ingresos_insuficientes") return "cash-outline";
+    if (r === "muy_endeudado") return "trending-down-outline";
+    if (r === "informacion_dudosa") return "help-circle-outline";
+    if (r === "no_le_interesa") return "close-circle-outline";
+    if (r === "no_estaba_cerrado") return "storefront-outline";
+    if (r === "fuera_de_ruta") return "map-outline";
     if (r === "otro") return "help-circle-outline";
     return "information-circle-outline";
 }

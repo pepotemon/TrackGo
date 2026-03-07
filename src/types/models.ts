@@ -37,9 +37,19 @@ export type UserDoc = {
 export type ClientStatus = "pending" | "visited" | "rejected";
 
 /**
- * Motivos permitidos (nuevo campo)
+ * ✅ Motivos permitidos de rechazo
  */
-export type RejectedReason = "clavo" | "localizacion" | "otro";
+export type RejectedReason =
+    | "clavo"
+    | "localizacion"
+    | "zona_riesgosa"
+    | "ingresos_insuficientes"
+    | "muy_endeudado"
+    | "informacion_dudosa"
+    | "no_le_interesa"
+    | "no_estaba_cerrado"
+    | "fuera_de_ruta"
+    | "otro";
 
 export type ClientDoc = {
     id: string;
@@ -113,7 +123,7 @@ export type DailyEventDoc = {
     address?: string;
 
     /**
-     * ✅ Compat (legacy): motivo como texto
+     * ✅ Compat (legacy): motivo como texto libre
      */
     note?: string | null;
 
@@ -133,7 +143,7 @@ export type DailyEventDoc = {
 export type WeeklyInvestmentDoc = {
     id: string; // weekStartKey (docId recomendado)
     weekStartKey: string; // "YYYY-MM-DD" (lunes)
-    weekEndKey: string;   // "YYYY-MM-DD" (domingo)
+    weekEndKey: string; // "YYYY-MM-DD" (domingo)
 
     /**
      * Monto invertido esa semana (R$)

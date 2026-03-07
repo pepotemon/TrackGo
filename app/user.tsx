@@ -23,7 +23,17 @@ import { dayKeyFromMs, subscribeDailyEventsByRangeForUser } from "../src/data/re
 import type { ClientDoc, DailyEventDoc } from "../src/types/models";
 
 type Filter = "pending" | "visited" | "rejected" | "all";
-type RejectReason = "clavo" | "localizacion" | "otro";
+type RejectReason =
+    | "clavo"
+    | "localizacion"
+    | "zona_riesgosa"
+    | "ingresos_insuficientes"
+    | "muy_endeudado"
+    | "informacion_dudosa"
+    | "no_le_interesa"
+    | "no_estaba_cerrado"
+    | "fuera_de_ruta"
+    | "otro";
 
 function safeText(x?: string) {
     return (x ?? "").toLowerCase();
@@ -77,6 +87,60 @@ function normalizeBRPhoneToWa(phoneRaw: string) {
     return digits.startsWith("55") ? digits : `55${digits}`;
 }
 
+function reasonLabel(reason?: RejectReason | null) {
+    switch (reason) {
+        case "clavo":
+            return "Clavo";
+        case "localizacion":
+            return "Localización lejana";
+        case "zona_riesgosa":
+            return "Zona riesgosa";
+        case "ingresos_insuficientes":
+            return "Ingresos insuficientes";
+        case "muy_endeudado":
+            return "Muy endeudado";
+        case "informacion_dudosa":
+            return "Información dudosa";
+        case "no_le_interesa":
+            return "No le interesa";
+        case "no_estaba_cerrado":
+            return "No estaba / cerrado";
+        case "fuera_de_ruta":
+            return "Fuera de ruta";
+        case "otro":
+            return "Otro";
+        default:
+            return "Motivo";
+    }
+}
+
+function reasonIcon(reason?: RejectReason | null) {
+    switch (reason) {
+        case "clavo":
+            return "warning-outline";
+        case "localizacion":
+            return "location-outline";
+        case "zona_riesgosa":
+            return "shield-outline";
+        case "ingresos_insuficientes":
+            return "cash-outline";
+        case "muy_endeudado":
+            return "alert-circle-outline";
+        case "informacion_dudosa":
+            return "help-circle-outline";
+        case "no_le_interesa":
+            return "close-circle-outline";
+        case "no_estaba_cerrado":
+            return "business-outline";
+        case "fuera_de_ruta":
+            return "navigate-outline";
+        case "otro":
+            return "ellipsis-horizontal";
+        default:
+            return "help-outline";
+    }
+}
+
 type Toast = { id: string; text: string; createdAt: number };
 
 function buildNewClientToast(c: ClientDoc) {
@@ -98,7 +162,6 @@ function notesStorageKey(uid: string) {
 
 type NotesMap = Record<string, string>;
 
-/** ✅ Semana local: Lunes → Domingo */
 function dayKeyFromDate(d: Date) {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -109,8 +172,8 @@ function dayKeyFromDate(d: Date) {
 function weekRangeKeys(base = new Date()) {
     const d = new Date(base);
     d.setHours(0, 0, 0, 0);
-    const jsDay = d.getDay(); // 0=Dom..6=Sáb
-    const diffToMonday = jsDay === 0 ? 6 : jsDay - 1; // lunes=0
+    const jsDay = d.getDay();
+    const diffToMonday = jsDay === 0 ? 6 : jsDay - 1;
     const start = new Date(d);
     start.setDate(d.getDate() - diffToMonday);
     const end = new Date(start);
@@ -142,6 +205,14 @@ export default function UserHome() {
     const [noteDraft, setNoteDraft] = useState("");
     const saveNotesTimer = useRef<any>(null);
 
+    const [rejectModalOpen, setRejectModalOpen] = useState(false);
+    const [confirmRejectOpen, setConfirmRejectOpen] = useState(false);
+    const [rejectClient, setRejectClient] = useState<ClientDoc | null>(null);
+    const [selectedRejectReason, setSelectedRejectReason] = useState<RejectReason | null>(null);
+
+    const [confirmVisitOpen, setConfirmVisitOpen] = useState(false);
+    const [visitClient, setVisitClient] = useState<ClientDoc | null>(null);
+
     const helloName = useMemo(() => {
         const n = pickFirstName(profile?.name ?? "");
         return n ? ` · Hola ${n}` : "";
@@ -149,11 +220,11 @@ export default function UserHome() {
 
     const todayDayKey = useMemo(() => dayKeyFromMs(Date.now()), []);
     const weekRange = useMemo(() => weekRangeKeys(new Date()), [todayDayKey]);
-    const weekLabel = useMemo(() => `${weekRange.startKey} → ${weekRange.endKey}`, [weekRange.startKey, weekRange.endKey]);
+    const weekLabel = useMemo(
+        () => `${weekRange.startKey} → ${weekRange.endKey}`,
+        [weekRange.startKey, weekRange.endKey]
+    );
 
-    // -------------------------
-    // Guard
-    // -------------------------
     useEffect(() => {
         if (loading) return;
 
@@ -171,11 +242,8 @@ export default function UserHome() {
             router.replace({ pathname: "/admin" as any });
             return;
         }
-    }, [loading, firebaseUser?.uid, profile?.role, profile?.active]);
+    }, [loading, firebaseUser?.uid, profile?.role, profile?.active, firebaseUser, profile, router]);
 
-    // -------------------------
-    // Load notes
-    // -------------------------
     useEffect(() => {
         if (!firebaseUser?.uid) return;
 
@@ -201,9 +269,6 @@ export default function UserHome() {
         };
     }, [firebaseUser?.uid]);
 
-    // -------------------------
-    // Persist notes (debounced)
-    // -------------------------
     useEffect(() => {
         if (!firebaseUser?.uid) return;
 
@@ -211,7 +276,10 @@ export default function UserHome() {
 
         saveNotesTimer.current = setTimeout(async () => {
             try {
-                await AsyncStorage.setItem(notesStorageKey(firebaseUser.uid), JSON.stringify(notesByClientId ?? {}));
+                await AsyncStorage.setItem(
+                    notesStorageKey(firebaseUser.uid),
+                    JSON.stringify(notesByClientId ?? {})
+                );
             } catch { }
         }, 350);
 
@@ -220,9 +288,6 @@ export default function UserHome() {
         };
     }, [notesByClientId, firebaseUser?.uid]);
 
-    // -------------------------
-    // Subs clients + toasts
-    // -------------------------
     useEffect(() => {
         if (!firebaseUser) return;
 
@@ -263,7 +328,6 @@ export default function UserHome() {
                 }
             }
 
-            // cleanup notes
             setNotesByClientId((prevNotes) => {
                 const alive = new Set(list.map((c) => c.id));
                 let changed = false;
@@ -279,11 +343,8 @@ export default function UserHome() {
         });
 
         return () => unsub();
-    }, [firebaseUser?.uid]);
+    }, [firebaseUser?.uid, firebaseUser]);
 
-    // -------------------------
-    // Subs week events
-    // -------------------------
     useEffect(() => {
         if (!firebaseUser?.uid) return;
 
@@ -305,7 +366,10 @@ export default function UserHome() {
         return () => unsub();
     }, [firebaseUser?.uid, weekRange.startKey, weekRange.endKey]);
 
-    const pendingNowCount = useMemo(() => clients.filter((c) => c.status === "pending").length, [clients]);
+    const pendingNowCount = useMemo(
+        () => clients.filter((c) => c.status === "pending").length,
+        [clients]
+    );
 
     const weekLatestByClient = useMemo(() => {
         const last = new Map<string, DailyEventDoc>();
@@ -323,13 +387,17 @@ export default function UserHome() {
 
     const weekVisitedIds = useMemo(() => {
         const s = new Set<string>();
-        for (const e of weekLatestByClient.values()) if (e.type === "visited" && e.clientId) s.add(e.clientId);
+        for (const e of weekLatestByClient.values()) {
+            if (e.type === "visited" && e.clientId) s.add(e.clientId);
+        }
         return s;
     }, [weekLatestByClient]);
 
     const weekRejectedIds = useMemo(() => {
         const s = new Set<string>();
-        for (const e of weekLatestByClient.values()) if (e.type === "rejected" && e.clientId) s.add(e.clientId);
+        for (const e of weekLatestByClient.values()) {
+            if (e.type === "rejected" && e.clientId) s.add(e.clientId);
+        }
         return s;
     }, [weekLatestByClient]);
 
@@ -420,9 +488,6 @@ export default function UserHome() {
         });
     }, [clients, filter, q, weekVisitedIds, weekRejectedIds]);
 
-    // -------------------------
-    // External actions
-    // -------------------------
     const openWhatsApp = async (phone: string) => {
         const waDigits = normalizeBRPhoneToWa(phone);
         if (!waDigits) {
@@ -456,10 +521,11 @@ export default function UserHome() {
         Alert.alert("Copiado", "La información del cliente fue copiada.");
     };
 
-    // -------------------------
-    // Status handlers
-    // -------------------------
-    const doUpdateStatus = async (client: ClientDoc, nextStatus: "pending" | "visited" | "rejected", reason?: RejectReason) => {
+    const doUpdateStatus = async (
+        client: ClientDoc,
+        nextStatus: "pending" | "visited" | "rejected",
+        reason?: RejectReason
+    ) => {
         if (!firebaseUser || !client.id) return;
 
         const snapshot = {
@@ -478,13 +544,50 @@ export default function UserHome() {
         }
     };
 
+    const resetRejectFlow = () => {
+        setRejectModalOpen(false);
+        setConfirmRejectOpen(false);
+        setRejectClient(null);
+        setSelectedRejectReason(null);
+    };
+
+    const resetVisitFlow = () => {
+        setConfirmVisitOpen(false);
+        setVisitClient(null);
+    };
+
     const confirmRejectedWithReason = (client: ClientDoc) => {
-        Alert.alert("Rechazado por", "Selecciona el motivo:", [
-            { text: "Cancelar", style: "cancel" },
-            { text: "Clavo", onPress: () => doUpdateStatus(client, "rejected", "clavo") },
-            { text: "Localización", onPress: () => doUpdateStatus(client, "rejected", "localizacion") },
-            { text: "Otro", onPress: () => doUpdateStatus(client, "rejected", "otro") },
-        ]);
+        setRejectClient(client);
+        setSelectedRejectReason(null);
+        setRejectModalOpen(true);
+    };
+
+    const openConfirmVisited = (client: ClientDoc) => {
+        setVisitClient(client);
+        setConfirmVisitOpen(true);
+    };
+
+    const selectRejectReason = (reason: RejectReason) => {
+        setSelectedRejectReason(reason);
+        setRejectModalOpen(false);
+        setConfirmRejectOpen(true);
+    };
+
+    const submitRejectReason = async () => {
+        if (!rejectClient || !selectedRejectReason) return;
+
+        const client = rejectClient;
+        const reason = selectedRejectReason;
+
+        resetRejectFlow();
+        await doUpdateStatus(client, "rejected", reason);
+    };
+
+    const submitVisited = async () => {
+        if (!visitClient) return;
+        const client = visitClient;
+        resetVisitFlow();
+        await doUpdateStatus(client, "visited");
     };
 
     const canRestoreToPendingToday = (client: ClientDoc) => {
@@ -493,34 +596,42 @@ export default function UserHome() {
         return dayKeyFromMs(at) === todayDayKey;
     };
 
-    const confirmSetStatus = (client: ClientDoc, nextStatus: "pending" | "visited" | "rejected") => {
+    const confirmSetStatus = (
+        client: ClientDoc,
+        nextStatus: "pending" | "visited" | "rejected"
+    ) => {
         if (nextStatus === "rejected") {
             confirmRejectedWithReason(client);
             return;
         }
 
+        if (nextStatus === "visited") {
+            openConfirmVisited(client);
+            return;
+        }
+
         if (nextStatus === "pending" && client.status !== "pending") {
             if (!canRestoreToPendingToday(client)) {
-                Alert.alert("No permitido", "Solo puedes restaurar a Pendiente los clientes que visitaste o rechazaste HOY.");
+                Alert.alert(
+                    "No permitido",
+                    "Solo puedes restaurar a Pendiente los clientes que visitaste o rechazaste HOY."
+                );
                 return;
             }
         }
 
-        const title = nextStatus === "pending" ? "Volver a pendiente" : "Marcar como visitado";
-        const msg =
-            nextStatus === "pending"
-                ? "¿Quieres quitar el estado actual y volver a Pendiente?"
-                : "¿Confirmas que ya fue visitado?";
-
-        Alert.alert(title, msg, [
+        Alert.alert("Volver a pendiente", "¿Quieres quitar el estado actual y volver a Pendiente?", [
             { text: "Cancelar", style: "cancel" },
-            { text: "Confirmar", style: "default", onPress: () => doUpdateStatus(client, nextStatus) },
+            {
+                text: "Confirmar",
+                style: "default",
+                onPress: () => doUpdateStatus(client, "pending"),
+            },
         ]);
     };
 
     const clearSearch = () => setQ("");
 
-    // Notes handlers
     const openNoteModal = (clientId: string) => {
         const existing = (notesByClientId?.[clientId] ?? "").trim();
         setNoteClientId(clientId);
@@ -563,7 +674,6 @@ export default function UserHome() {
         closeNoteModal();
     };
 
-    // UI atoms
     const MiniChip = ({
         active,
         onPress,
@@ -597,11 +707,15 @@ export default function UserHome() {
         >
             <Ionicons name={icon} size={10} color={tint ?? COLORS.text} />
             {showLabel && label ? (
-                <Text style={[styles.miniChipText, active && styles.miniChipTextActive]}>{label}</Text>
+                <Text style={[styles.miniChipText, active && styles.miniChipTextActive]}>
+                    {label}
+                </Text>
             ) : null}
             {typeof badge === "number" ? (
                 <View style={[styles.miniBadge, active && styles.miniBadgeActive]}>
-                    <Text style={[styles.miniBadgeText, active && styles.miniBadgeTextActive]}>{badge}</Text>
+                    <Text style={[styles.miniBadgeText, active && styles.miniBadgeTextActive]}>
+                        {badge}
+                    </Text>
                 </View>
             ) : null}
         </Pressable>
@@ -642,7 +756,8 @@ export default function UserHome() {
         disabled?: boolean;
     }) => {
         const icon = kind === "visited" ? "checkmark" : kind === "rejected" ? "close" : "refresh";
-        const tint = kind === "visited" ? COLORS.visited : kind === "rejected" ? COLORS.rejected : COLORS.text;
+        const tint =
+            kind === "visited" ? COLORS.visited : kind === "rejected" ? COLORS.rejected : COLORS.text;
 
         return (
             <Pressable
@@ -730,11 +845,17 @@ export default function UserHome() {
                             ]}
                             accessibilityLabel="Nota del cliente"
                         >
-                            <Ionicons name={localNote ? "create" : "create-outline"} size={16} color={COLORS.text} />
+                            <Ionicons
+                                name={localNote ? "create" : "create-outline"}
+                                size={16}
+                                color={COLORS.text}
+                            />
                         </Pressable>
 
                         <View style={[styles.pill, statusPillStyle(item.status)]}>
-                            <Text style={[styles.pillText, statusPillTextStyle(item.status)]}>{statusLabel(item.status)}</Text>
+                            <Text style={[styles.pillText, statusPillTextStyle(item.status)]}>
+                                {statusLabel(item.status)}
+                            </Text>
                         </View>
                     </View>
                 </View>
@@ -759,19 +880,46 @@ export default function UserHome() {
 
                 <View style={styles.actionsRow}>
                     <View style={styles.actionsLeft}>
-                        <IconBtn icon="logo-whatsapp" label="Abrir WhatsApp" onPress={() => openWhatsApp(phone)} disabled={!phone || isBusy} />
-                        <IconBtn icon="map-outline" label="Abrir Maps" onPress={() => openMaps(mapsUrl)} disabled={!mapsUrl || isBusy} />
-                        <IconBtn icon="copy-outline" label="Copiar datos" onPress={() => copyClient(item)} disabled={isBusy} />
+                        <IconBtn
+                            icon="logo-whatsapp"
+                            label="Abrir WhatsApp"
+                            onPress={() => openWhatsApp(phone)}
+                            disabled={!phone || isBusy}
+                        />
+                        <IconBtn
+                            icon="map-outline"
+                            label="Abrir Maps"
+                            onPress={() => openMaps(mapsUrl)}
+                            disabled={!mapsUrl || isBusy}
+                        />
+                        <IconBtn
+                            icon="copy-outline"
+                            label="Copiar datos"
+                            onPress={() => copyClient(item)}
+                            disabled={isBusy}
+                        />
                     </View>
 
                     <View style={styles.actionsRight}>
                         {isPending ? (
                             <>
-                                <StatusIconBtn kind="visited" onPress={() => confirmSetStatus(item, "visited")} disabled={isBusy} />
-                                <StatusIconBtn kind="rejected" onPress={() => confirmSetStatus(item, "rejected")} disabled={isBusy} />
+                                <StatusIconBtn
+                                    kind="visited"
+                                    onPress={() => confirmSetStatus(item, "visited")}
+                                    disabled={isBusy}
+                                />
+                                <StatusIconBtn
+                                    kind="rejected"
+                                    onPress={() => confirmSetStatus(item, "rejected")}
+                                    disabled={isBusy}
+                                />
                             </>
                         ) : (
-                            <StatusIconBtn kind="undo" onPress={() => confirmSetStatus(item, "pending")} disabled={isBusy || !canUndo} />
+                            <StatusIconBtn
+                                kind="undo"
+                                onPress={() => confirmSetStatus(item, "pending")}
+                                disabled={isBusy || !canUndo}
+                            />
                         )}
                     </View>
                 </View>
@@ -779,7 +927,9 @@ export default function UserHome() {
                 {!isPending && !canUndo ? (
                     <View style={styles.lockHintRow}>
                         <Ionicons name="lock-closed-outline" size={14} color={COLORS.muted} />
-                        <Text style={styles.lockHintText}>No se puede restaurar: solo el mismo día.</Text>
+                        <Text style={styles.lockHintText}>
+                            No se puede restaurar: solo el mismo día.
+                        </Text>
                     </View>
                 ) : null}
 
@@ -796,15 +946,20 @@ export default function UserHome() {
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
-            {/* 🔔 Top toasts */}
-            <View pointerEvents="box-none" style={[styles.toastLayer, { top: Math.max(10, insets.top + 8) }]}>
+            <View
+                pointerEvents="box-none"
+                style={[styles.toastLayer, { top: Math.max(10, insets.top + 8) }]}
+            >
                 {toasts.map((t) => (
                     <View key={t.id} style={styles.toast}>
                         <Ionicons name="notifications-outline" size={16} color={COLORS.text} />
                         <Text style={styles.toastText} numberOfLines={2}>
                             {t.text}
                         </Text>
-                        <Pressable onPress={() => setToasts((p) => p.filter((x) => x.id !== t.id))} style={styles.toastClose}>
+                        <Pressable
+                            onPress={() => setToasts((p) => p.filter((x) => x.id !== t.id))}
+                            style={styles.toastClose}
+                        >
                             <Ionicons name="close" size={16} color={COLORS.muted} />
                         </Pressable>
                     </View>
@@ -818,20 +973,28 @@ export default function UserHome() {
                     </Text>
 
                     <Text style={styles.hSub}>
-                        Semana ({weekLabel}): <Text style={styles.hSubStrong}>{weekCounts.visited}</Text> visitados ·{" "}
-                        <Text style={styles.hSubStrong}>{weekCounts.rejected}</Text> rechazados
+                        Semana ({weekLabel}): <Text style={styles.hSubStrong}>{weekCounts.visited}</Text>{" "}
+                        visitados · <Text style={styles.hSubStrong}>{weekCounts.rejected}</Text>{" "}
+                        rechazados
                     </Text>
 
                     {eventsErr ? <Text style={styles.hErr}>{eventsErr}</Text> : null}
                 </View>
 
-                {/* ✅ Historial + Salir */}
                 <View style={styles.headerRight}>
-                    <Pressable onPress={goHistory} style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]} accessibilityLabel="Historial">
+                    <Pressable
+                        onPress={goHistory}
+                        style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]}
+                        accessibilityLabel="Historial"
+                    >
                         <Ionicons name="time-outline" size={18} color={COLORS.text} />
                     </Pressable>
 
-                    <Pressable onPress={logout} style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]} accessibilityLabel="Salir">
+                    <Pressable
+                        onPress={logout}
+                        style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]}
+                        accessibilityLabel="Salir"
+                    >
                         <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
                     </Pressable>
                 </View>
@@ -853,7 +1016,6 @@ export default function UserHome() {
                 ) : null}
             </View>
 
-            {/* Filters */}
             <View style={styles.filtersRow}>
                 <MiniChip
                     active={filter === "pending"}
@@ -911,13 +1073,15 @@ export default function UserHome() {
                 }
             />
 
-            {/* ✅ Modal Nota (local) */}
             <Modal visible={noteModalOpen} transparent animationType="fade" onRequestClose={closeNoteModal}>
                 <Pressable style={styles.modalBackdrop} onPress={closeNoteModal} />
                 <View style={styles.modalCard}>
                     <View style={styles.modalHeader}>
                         <Text style={styles.modalTitle}>Nota del cliente</Text>
-                        <Pressable onPress={closeNoteModal} style={({ pressed }) => [styles.modalClose, pressed && styles.modalClosePressed]}>
+                        <Pressable
+                            onPress={closeNoteModal}
+                            style={({ pressed }) => [styles.modalClose, pressed && styles.modalClosePressed]}
+                        >
                             <Ionicons name="close" size={18} color={COLORS.text} />
                         </Pressable>
                     </View>
@@ -932,18 +1096,214 @@ export default function UserHome() {
                     />
 
                     <View style={styles.modalActions}>
-                        <Pressable onPress={clearNote} style={({ pressed }) => [styles.modalBtn, styles.modalBtnDanger, pressed && styles.modalBtnPressed]}>
+                        <Pressable
+                            onPress={clearNote}
+                            style={({ pressed }) => [
+                                styles.modalBtn,
+                                styles.modalBtnDanger,
+                                pressed && styles.modalBtnPressed,
+                            ]}
+                        >
                             <Ionicons name="trash-outline" size={18} color={COLORS.rejected} />
                             <Text style={styles.modalBtnTextDanger}>Borrar</Text>
                         </Pressable>
 
-                        <Pressable onPress={saveNote} style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, pressed && styles.modalBtnPressed]}>
+                        <Pressable
+                            onPress={saveNote}
+                            style={({ pressed }) => [
+                                styles.modalBtn,
+                                styles.modalBtnPrimary,
+                                pressed && styles.modalBtnPressed,
+                            ]}
+                        >
                             <Ionicons name="save-outline" size={18} color={COLORS.text} />
                             <Text style={styles.modalBtnText}>Guardar</Text>
                         </Pressable>
                     </View>
 
-                    <Text style={styles.modalHint}>* Esta nota se guarda solo en tu teléfono. El admin no la ve.</Text>
+                    <Text style={styles.modalHint}>
+                        * Esta nota se guarda solo en tu teléfono. El admin no la ve.
+                    </Text>
+                </View>
+            </Modal>
+
+            <Modal
+                visible={rejectModalOpen}
+                transparent
+                animationType="fade"
+                onRequestClose={resetRejectFlow}
+            >
+                <Pressable style={styles.modalBackdrop} onPress={resetRejectFlow} />
+
+                <View style={styles.rejectModalCard}>
+                    <View style={styles.modalHeader}>
+                        <View style={{ flex: 1, gap: 3 }}>
+                            <Text style={styles.modalTitle}>Motivo del rechazo</Text>
+                            <Text style={styles.rejectModalSub} numberOfLines={2}>
+                                {rejectClient
+                                    ? `Selecciona el motivo para ${((rejectClient as any)?.name ?? (rejectClient as any)?.business ?? rejectClient.phone ?? "este cliente").toString().trim()}`
+                                    : "Selecciona el motivo"}
+                            </Text>
+                        </View>
+
+                        <Pressable onPress={resetRejectFlow} style={styles.modalClose}>
+                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        </Pressable>
+                    </View>
+
+                    <View style={styles.rejectGrid}>
+                        {(
+                            [
+                                "clavo",
+                                "localizacion",
+                                "zona_riesgosa",
+                                "ingresos_insuficientes",
+                                "muy_endeudado",
+                                "informacion_dudosa",
+                                "no_le_interesa",
+                                "no_estaba_cerrado",
+                                "fuera_de_ruta",
+                                "otro",
+                            ] as RejectReason[]
+                        ).map((reason) => (
+                            <Pressable
+                                key={reason}
+                                style={({ pressed }) => [
+                                    styles.rejectOption,
+                                    pressed && styles.rejectOptionPressed,
+                                ]}
+                                onPress={() => selectRejectReason(reason)}
+                            >
+                                <Ionicons
+                                    name={reasonIcon(reason) as any}
+                                    size={18}
+                                    color={reason === "clavo" ? COLORS.rejected : COLORS.text}
+                                />
+                                <Text style={styles.rejectOptionText}>{reasonLabel(reason)}</Text>
+                            </Pressable>
+                        ))}
+                    </View>
+                </View>
+            </Modal>
+
+            <Modal
+                visible={confirmRejectOpen}
+                transparent
+                animationType="fade"
+                onRequestClose={resetRejectFlow}
+            >
+                <Pressable style={styles.modalBackdrop} onPress={resetRejectFlow} />
+
+                <View style={styles.confirmModalCard}>
+                    <View style={styles.confirmIconWrap}>
+                        <Ionicons
+                            name={reasonIcon(selectedRejectReason) as any}
+                            size={22}
+                            color={COLORS.rejected}
+                        />
+                    </View>
+
+                    <Text style={styles.confirmTitle}>Confirmar rechazo</Text>
+
+                    <Text style={styles.confirmText}>
+                        ¿Seguro que quieres rechazar este cliente por{" "}
+                        <Text style={styles.confirmTextStrong}>
+                            {reasonLabel(selectedRejectReason)}
+                        </Text>
+                        ?
+                    </Text>
+
+                    {!!rejectClient ? (
+                        <Text style={styles.confirmClientText} numberOfLines={2}>
+                            {(((rejectClient as any)?.name ??
+                                (rejectClient as any)?.business ??
+                                rejectClient.phone ??
+                                "") as string).trim()}
+                        </Text>
+                    ) : null}
+
+                    <View style={styles.confirmActions}>
+                        <Pressable
+                            onPress={resetRejectFlow}
+                            style={({ pressed }) => [
+                                styles.confirmBtn,
+                                styles.confirmBtnGhost,
+                                pressed && styles.modalBtnPressed,
+                            ]}
+                        >
+                            <Text style={styles.confirmBtnGhostText}>Cancelar</Text>
+                        </Pressable>
+
+                        <Pressable
+                            onPress={submitRejectReason}
+                            style={({ pressed }) => [
+                                styles.confirmBtn,
+                                styles.confirmBtnDanger,
+                                pressed && styles.modalBtnPressed,
+                            ]}
+                        >
+                            <Text style={styles.confirmBtnDangerText}>Confirmar</Text>
+                        </Pressable>
+                    </View>
+                </View>
+            </Modal>
+
+            <Modal
+                visible={confirmVisitOpen}
+                transparent
+                animationType="fade"
+                onRequestClose={resetVisitFlow}
+            >
+                <Pressable style={styles.modalBackdrop} onPress={resetVisitFlow} />
+
+                <View style={styles.confirmModalCard}>
+                    <View style={styles.confirmIconWrapVisited}>
+                        <Ionicons
+                            name="checkmark-outline"
+                            size={22}
+                            color={COLORS.visited}
+                        />
+                    </View>
+
+                    <Text style={styles.confirmTitle}>Confirmar visita</Text>
+
+                    <Text style={styles.confirmText}>
+                        ¿Seguro que quieres marcar este cliente como{" "}
+                        <Text style={styles.confirmTextStrong}>Visitado</Text>?
+                    </Text>
+
+                    {!!visitClient ? (
+                        <Text style={styles.confirmClientText} numberOfLines={2}>
+                            {(((visitClient as any)?.name ??
+                                (visitClient as any)?.business ??
+                                visitClient.phone ??
+                                "") as string).trim()}
+                        </Text>
+                    ) : null}
+
+                    <View style={styles.confirmActions}>
+                        <Pressable
+                            onPress={resetVisitFlow}
+                            style={({ pressed }) => [
+                                styles.confirmBtn,
+                                styles.confirmBtnGhost,
+                                pressed && styles.modalBtnPressed,
+                            ]}
+                        >
+                            <Text style={styles.confirmBtnGhostText}>Cancelar</Text>
+                        </Pressable>
+
+                        <Pressable
+                            onPress={submitVisited}
+                            style={({ pressed }) => [
+                                styles.confirmBtn,
+                                styles.confirmBtnVisited,
+                                pressed && styles.modalBtnPressed,
+                            ]}
+                        >
+                            <Text style={styles.confirmBtnVisitedText}>Confirmar</Text>
+                        </Pressable>
+                    </View>
                 </View>
             </Modal>
         </SafeAreaView>
@@ -1114,7 +1474,12 @@ const styles = StyleSheet.create({
         opacity: 0.95,
     },
 
-    cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+    cardTop: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 12,
+    },
     cardTitleWrap: { flex: 1, gap: 2 },
 
     titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
@@ -1159,18 +1524,33 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     pillText: { fontSize: 12, fontWeight: "900" },
-    pillPending: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.35)" },
+    pillPending: {
+        backgroundColor: "rgba(251,191,36,0.12)",
+        borderColor: "rgba(251,191,36,0.35)",
+    },
     pillTextPending: { color: "#FDE68A" },
-    pillVisited: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.35)" },
+    pillVisited: {
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderColor: "rgba(34,197,94,0.35)",
+    },
     pillTextVisited: { color: "#86EFAC" },
-    pillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.35)" },
+    pillRejected: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.35)",
+    },
     pillTextRejected: { color: "#FCA5A5" },
 
     cardInfo: { gap: 6 },
     infoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
     infoText: { flex: 1, color: COLORS.text, opacity: 0.9, fontSize: 13, fontWeight: "700" },
 
-    actionsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingTop: 2 },
+    actionsRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        paddingTop: 2,
+    },
     actionsLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
     actionsRight: { flexDirection: "row", alignItems: "center", gap: 10 },
 
@@ -1197,9 +1577,18 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
-    statusIconBtnVisited: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.30)" },
-    statusIconBtnRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.30)" },
-    statusIconBtnUndo: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" },
+    statusIconBtnVisited: {
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderColor: "rgba(34,197,94,0.30)",
+    },
+    statusIconBtnRejected: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.30)",
+    },
+    statusIconBtnUndo: {
+        backgroundColor: "rgba(255,255,255,0.06)",
+        borderColor: "rgba(255,255,255,0.10)",
+    },
     statusIconBtnPressed: { transform: [{ scale: 0.97 }], opacity: 0.96 },
     statusIconBtnDisabled: { opacity: 0.5 },
 
@@ -1212,7 +1601,10 @@ const styles = StyleSheet.create({
     empty: { marginTop: 40, alignItems: "center", gap: 10 },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "800" },
 
-    modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
+    modalBackdrop: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0,0,0,0.55)",
+    },
     modalCard: {
         position: "absolute",
         left: 16,
@@ -1225,7 +1617,12 @@ const styles = StyleSheet.create({
         padding: 14,
         gap: 12,
     },
-    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+    modalHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
     modalTitle: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
     modalClose: {
         width: 40,
@@ -1267,9 +1664,160 @@ const styles = StyleSheet.create({
         gap: 10,
     },
     modalBtnPrimary: { backgroundColor: "rgba(255,255,255,0.06)" },
-    modalBtnDanger: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.28)" },
+    modalBtnDanger: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.28)",
+    },
     modalBtnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     modalBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
     modalBtnTextDanger: { color: COLORS.rejected, fontSize: 13, fontWeight: "900" },
     modalHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.9 },
+
+    rejectModalCard: {
+        position: "absolute",
+        left: 16,
+        right: 16,
+        bottom: 16,
+        backgroundColor: COLORS.card,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        padding: 16,
+        gap: 14,
+    },
+    rejectModalSub: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "700",
+        lineHeight: 18,
+    },
+
+    rejectGrid: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 10,
+    },
+
+    rejectOption: {
+        width: "48%",
+        minHeight: 48,
+        borderRadius: 12,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.12)",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        paddingHorizontal: 10,
+    },
+    rejectOptionPressed: {
+        transform: [{ scale: 0.98 }],
+        opacity: 0.96,
+    },
+    rejectOptionText: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "800",
+        textAlign: "center",
+        flexShrink: 1,
+    },
+
+    confirmModalCard: {
+        position: "absolute",
+        left: 24,
+        right: 24,
+        top: "32%",
+        backgroundColor: COLORS.card,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        padding: 18,
+        gap: 14,
+        alignItems: "center",
+    },
+    confirmIconWrap: {
+        width: 52,
+        height: 52,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(248,113,113,0.25)",
+    },
+    confirmIconWrapVisited: {
+        width: 52,
+        height: 52,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.25)",
+    },
+    confirmTitle: {
+        color: COLORS.text,
+        fontSize: 16,
+        fontWeight: "900",
+    },
+    confirmText: {
+        color: COLORS.muted,
+        fontSize: 13,
+        fontWeight: "700",
+        textAlign: "center",
+        lineHeight: 20,
+    },
+    confirmTextStrong: {
+        color: COLORS.text,
+        fontWeight: "900",
+    },
+    confirmClientText: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "800",
+        textAlign: "center",
+        opacity: 0.92,
+    },
+    confirmActions: {
+        flexDirection: "row",
+        gap: 10,
+        width: "100%",
+        marginTop: 2,
+    },
+    confirmBtn: {
+        flex: 1,
+        height: 46,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+    },
+    confirmBtnGhost: {
+        backgroundColor: "#0F172A",
+        borderColor: "rgba(255,255,255,0.12)",
+    },
+    confirmBtnDanger: {
+        backgroundColor: "rgba(248,113,113,0.12)",
+        borderColor: "rgba(248,113,113,0.30)",
+    },
+    confirmBtnVisited: {
+        backgroundColor: "rgba(34,197,94,0.12)",
+        borderColor: "rgba(34,197,94,0.30)",
+    },
+    confirmBtnGhostText: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    confirmBtnDangerText: {
+        color: COLORS.rejected,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    confirmBtnVisitedText: {
+        color: COLORS.visited,
+        fontSize: 13,
+        fontWeight: "900",
+    },
 });

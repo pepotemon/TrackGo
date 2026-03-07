@@ -30,6 +30,94 @@ function stripUndefined<T extends Record<string, any>>(obj: T): T {
     return out;
 }
 
+/**
+ * ✅ Motivos ampliados de rechazo
+ */
+export type RejectReason =
+    | "clavo"
+    | "localizacion"
+    | "zona_riesgosa"
+    | "ingresos_insuficientes"
+    | "muy_endeudado"
+    | "informacion_dudosa"
+    | "no_le_interesa"
+    | "no_estaba_cerrado"
+    | "fuera_de_ruta"
+    | "otro";
+
+function normalizeRejectReason(value?: string | null): RejectReason | null {
+    if (!value) return null;
+
+    const v = String(value).toLowerCase().trim();
+
+    if (v === "clavo") return "clavo";
+
+    if (
+        v === "localizacion" ||
+        v === "localización" ||
+        v === "localizacao" ||
+        v === "localização"
+    ) {
+        return "localizacion";
+    }
+
+    if (v === "zona_riesgosa" || v === "zona riesgosa" || v === "zona peligrosa") {
+        return "zona_riesgosa";
+    }
+
+    if (
+        v === "ingresos_insuficientes" ||
+        v === "ingresos insuficientes" ||
+        v === "sin ingresos suficientes"
+    ) {
+        return "ingresos_insuficientes";
+    }
+
+    if (
+        v === "muy_endeudado" ||
+        v === "muy endeudado" ||
+        v === "endeudado"
+    ) {
+        return "muy_endeudado";
+    }
+
+    if (
+        v === "informacion_dudosa" ||
+        v === "información dudosa" ||
+        v === "datos dudosos"
+    ) {
+        return "informacion_dudosa";
+    }
+
+    if (
+        v === "no_le_interesa" ||
+        v === "no le interesa" ||
+        v === "no interesado"
+    ) {
+        return "no_le_interesa";
+    }
+
+    if (
+        v === "no_estaba_cerrado" ||
+        v === "no estaba / cerrado" ||
+        v === "no estaba" ||
+        v === "cerrado"
+    ) {
+        return "no_estaba_cerrado";
+    }
+
+    if (
+        v === "fuera_de_ruta" ||
+        v === "fuera de ruta"
+    ) {
+        return "fuera_de_ruta";
+    }
+
+    if (v === "otro" || v === "outro") return "otro";
+
+    return "otro";
+}
+
 export async function createClient(input: Omit<ClientDoc, "id">) {
     await addDoc(col.clients, input);
 }
@@ -43,7 +131,7 @@ export async function createClient(input: Omit<ClientDoc, "id">) {
  *    (evita duplicar si cambia actor o si togglea varias veces)
  *
  * EXTRA:
- * - Soporta "rechazado por": "clavo" | "localizacion" | "otro"
+ * - Soporta motivos ampliados de rechazo
  * - Guarda el motivo en:
  *   - client.rejectedReason
  *   - dailyEvent.rejectedReason
@@ -59,24 +147,24 @@ export async function updateClientStatus(
     extra?:
         | string
         | {
-            rejectedReason?: "clavo" | "localizacion" | "otro" | string;
-            note?: string; // texto libre opcional
+            rejectedReason?: RejectReason | string;
+            note?: string;
         }
 ) {
     const now = Date.now();
     const dayKey = dayKeyFromMs(now);
 
-    const rejectedReason =
+    const normalizedRejectedReason =
         status === "rejected"
-            ? typeof extra === "string"
-                ? extra
-                : extra?.rejectedReason
+            ? normalizeRejectReason(
+                typeof extra === "string" ? extra : extra?.rejectedReason
+            ) ?? "otro"
             : null;
 
     const note =
         status === "rejected"
             ? typeof extra === "string"
-                ? null // si te pasan string, asumimos que es reason (no note)
+                ? null
                 : extra?.note ?? null
             : null;
 
@@ -106,8 +194,8 @@ export async function updateClientStatus(
                     status: "rejected" as const,
                     statusBy: actorId,
                     statusAt: now,
-                    rejectedReason: (rejectedReason ?? "otro") as string,
-                    note: note, // null o string
+                    rejectedReason: normalizedRejectedReason,
+                    note,
                     updatedAt: now,
                 };
 
@@ -117,7 +205,7 @@ export async function updateClientStatus(
     const eventId = `${dayKey}_${clientId}`;
 
     const event: any = stripUndefined({
-        type: status, // "pending" | "visited" | "rejected"
+        type: status,
         userId: actorId,
         clientId,
 
@@ -128,10 +216,10 @@ export async function updateClientStatus(
         address: snapshot?.address,
 
         // motivo / nota solo si rejected
-        rejectedReason: status === "rejected" ? (rejectedReason ?? "otro") : null,
+        rejectedReason: status === "rejected" ? normalizedRejectedReason : null,
         note: status === "rejected" ? note : null,
 
-        createdAt: now, // si vuelve a tocar, se actualiza con merge
+        createdAt: now,
         dayKey,
     });
 
