@@ -80,9 +80,10 @@ function toMs(v: any): number {
     return 0;
 }
 
-// ✅ dedupe: último evento por cliente (por createdAt)
+// ✅ último evento por cliente (por createdAt)
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
+
     for (const e of events) {
         const cid = (e as any)?.clientId as string | undefined;
         const type = (e as any)?.type as string | undefined;
@@ -95,6 +96,7 @@ function latestEventByClient(events: DailyEventDoc[]) {
 
         if (!prev || eMs >= pMs) map.set(cid, e);
     }
+
     return map;
 }
 
@@ -245,7 +247,6 @@ export default function AdminWeeklyReportScreen() {
     const [assignSearch, setAssignSearch] = useState("");
     const [busyClientId, setBusyClientId] = useState<string | null>(null);
 
-    // ✅ modal ganancias
     const [earningsOpen, setEarningsOpen] = useState(false);
 
     const weekStartKey = useMemo(() => dayKeyFromDate(startOfWeekMonday(new Date())), []);
@@ -344,17 +345,12 @@ export default function AdminWeeklyReportScreen() {
         return m;
     }, [clients, lastEventRangeByClient]);
 
-    const assignedThisWeekIds = useMemo(() => {
-        const s = new Set<string>();
-        for (const c of clients) {
-            const assignedDayKey = String((c as any).assignedDayKey ?? "");
-            if (isDayKeyWithinRange(assignedDayKey, weekStartKey, weekEndKey)) {
-                s.add(c.id);
-            }
-        }
-        return s;
-    }, [clients, weekStartKey, weekEndKey]);
-
+    /**
+     * ✅ MISMA LÓGICA DEL HOME ADMIN
+     * Solo cuenta si:
+     * 1) el cliente todavía existe
+     * 2) el status actual del cliente coincide con el tipo del evento
+     */
     const shouldCountWeekEvent = useCallback(
         (e: DailyEventDoc) => {
             const cid = (e as any)?.clientId as string | undefined;
@@ -363,11 +359,9 @@ export default function AdminWeeklyReportScreen() {
             const c = clientsById.get(cid);
             if (!c) return false;
 
-            if (!assignedThisWeekIds.has(cid)) return false;
-
-            return (c as any).status === (e as any).type;
+            return c.status === e.type;
         },
-        [clientsById, assignedThisWeekIds]
+        [clientsById]
     );
 
     const rows: Row[] = useMemo(() => {
@@ -388,6 +382,8 @@ export default function AdminWeeklyReportScreen() {
             };
         }
 
+        // ✅ Asignados de la semana
+        // ✅ Pendientes SIEMPRE actuales, sin importar la fecha
         for (const c of clients) {
             const uid = c.assignedTo;
             if (!uid) continue;
@@ -412,10 +408,17 @@ export default function AdminWeeklyReportScreen() {
 
             if (assignedThisWeek) {
                 row.assignedWeek += 1;
-                if ((c as any).status === "pending") row.pendingWeek += 1;
+            }
+
+            // ✅ IMPORTANTE:
+            // Los pendientes no dependen del cierre semanal.
+            // Si siguen pending, deben seguir apareciendo.
+            if ((c as any).status === "pending") {
+                row.pendingWeek += 1;
             }
         }
 
+        // ✅ Visitados / rechazados usando lógica anti-inflado
         for (const ev of lastEventWeekByClient.values()) {
             if (!shouldCountWeekEvent(ev)) continue;
 
@@ -457,15 +460,7 @@ export default function AdminWeeklyReportScreen() {
         return filtered.sort(
             (a, b) => b.visitedWeek + b.rejectedWeek - (a.visitedWeek + a.rejectedWeek)
         );
-    }, [
-        clients,
-        users,
-        lastEventWeekByClient,
-        q,
-        shouldCountWeekEvent,
-        weekStartKey,
-        weekEndKey,
-    ]);
+    }, [clients, users, lastEventWeekByClient, q, shouldCountWeekEvent, weekStartKey, weekEndKey]);
 
     const totals = useMemo(() => {
         return rows.reduce(
@@ -572,6 +567,7 @@ export default function AdminWeeklyReportScreen() {
 
     const visitedIdsByUser = useMemo(() => {
         const m = new Map<string, Set<string>>();
+
         for (const ev of lastEventWeekByClient.values()) {
             if ((ev as any)?.type !== "visited") continue;
             if (!shouldCountWeekEvent(ev)) continue;
@@ -583,11 +579,13 @@ export default function AdminWeeklyReportScreen() {
             if (!m.has(uid)) m.set(uid, new Set<string>());
             m.get(uid)!.add(cid);
         }
+
         return m;
     }, [lastEventWeekByClient, shouldCountWeekEvent]);
 
     const rejectedByAssignedTo = useMemo(() => {
         const m = new Map<string, ClientDoc[]>();
+
         for (const ev of lastEventWeekByClient.values()) {
             if ((ev as any)?.type !== "rejected") continue;
             if (!shouldCountWeekEvent(ev)) continue;
@@ -604,17 +602,16 @@ export default function AdminWeeklyReportScreen() {
             if (!m.has(uid)) m.set(uid, []);
             m.get(uid)!.push(c);
         }
+
         return m;
     }, [lastEventWeekByClient, clientsById, shouldCountWeekEvent]);
 
+    // ✅ Pendientes actuales, sin filtrar por semana
     const pendingByUser = useMemo(() => {
         const m = new Map<string, ClientDoc[]>();
 
         for (const c of clients) {
             if ((c as any).status !== "pending") continue;
-
-            const assignedDayKey = String((c as any).assignedDayKey ?? "");
-            if (!isDayKeyWithinRange(assignedDayKey, weekStartKey, weekEndKey)) continue;
 
             const uid = c.assignedTo;
             if (!uid) continue;
@@ -624,7 +621,7 @@ export default function AdminWeeklyReportScreen() {
         }
 
         return m;
-    }, [clients, weekStartKey, weekEndKey]);
+    }, [clients]);
 
     const filterClientByListQ = (c: ClientDoc) => {
         const qt2 = listQ.trim().toLowerCase();
@@ -864,10 +861,7 @@ export default function AdminWeeklyReportScreen() {
 
                 <Pressable
                     onPress={() => setEarningsOpen(true)}
-                    style={({ pressed }) => [
-                        styles.moneyChip,
-                        pressed && styles.moneyChipPressed,
-                    ]}
+                    style={({ pressed }) => [styles.moneyChip, pressed && styles.moneyChipPressed]}
                     accessibilityLabel="Ver ganancias de la semana"
                 >
                     <Ionicons name="cash-outline" size={12} color={COLORS.money} />
@@ -989,33 +983,21 @@ export default function AdminWeeklyReportScreen() {
 
                             <View style={styles.metricsRow}>
                                 <View style={[styles.miniStat, styles.miniOk]}>
-                                    <Ionicons
-                                        name="checkmark"
-                                        size={12}
-                                        color={COLORS.visitedSoft}
-                                    />
+                                    <Ionicons name="checkmark" size={12} color={COLORS.visitedSoft} />
                                     <Text style={[styles.miniText, { color: COLORS.visitedSoft }]}>
                                         {item.visitedWeek}
                                     </Text>
                                 </View>
 
                                 <View style={[styles.miniStat, styles.miniBad]}>
-                                    <Ionicons
-                                        name="close"
-                                        size={12}
-                                        color={COLORS.rejectedSoft}
-                                    />
+                                    <Ionicons name="close" size={12} color={COLORS.rejectedSoft} />
                                     <Text style={[styles.miniText, { color: COLORS.rejectedSoft }]}>
                                         {item.rejectedWeek}
                                     </Text>
                                 </View>
 
                                 <View style={[styles.miniStat, styles.miniWarn]}>
-                                    <Ionicons
-                                        name="time"
-                                        size={12}
-                                        color={COLORS.pendingSoft}
-                                    />
+                                    <Ionicons name="time" size={12} color={COLORS.pendingSoft} />
                                     <Text style={[styles.miniText, { color: COLORS.pendingSoft }]}>
                                         {item.pendingWeek}
                                     </Text>
@@ -1056,7 +1038,6 @@ export default function AdminWeeklyReportScreen() {
                 }
             />
 
-            {/* ✅ MODAL LISTA */}
             <Modal visible={listOpen} transparent animationType="fade" onRequestClose={closeList}>
                 <Pressable style={styles.modalBackdrop} onPress={closeList} />
 
@@ -1067,7 +1048,7 @@ export default function AdminWeeklyReportScreen() {
                                 {listMode === "visited"
                                     ? "Visitados (semana)"
                                     : listMode === "pending"
-                                        ? "Pendientes (semana)"
+                                        ? "Pendientes"
                                         : "Rechazados (semana)"}
                             </Text>
                             <Text style={styles.modalSub}>
@@ -1149,7 +1130,6 @@ export default function AdminWeeklyReportScreen() {
                 </View>
             </Modal>
 
-            {/* ✅ MODAL REASIGNAR */}
             <Modal visible={assignOpen} transparent animationType="fade" onRequestClose={closeAssign}>
                 <Pressable style={styles.modalBackdrop} onPress={closeAssign} />
 
@@ -1230,7 +1210,6 @@ export default function AdminWeeklyReportScreen() {
                 </View>
             </Modal>
 
-            {/* ✅ MODAL GANANCIAS */}
             <Modal
                 visible={earningsOpen}
                 transparent
@@ -1243,9 +1222,7 @@ export default function AdminWeeklyReportScreen() {
                     <View style={styles.modalHeader}>
                         <View style={{ flex: 1, gap: 2 }}>
                             <Text style={styles.modalTitle}>Ganancias de la semana</Text>
-                            <Text style={styles.modalSub}>
-                                Total: R$ {money(totals.amountWeek)}
-                            </Text>
+                            <Text style={styles.modalSub}>Total: R$ {money(totals.amountWeek)}</Text>
                         </View>
 
                         <Pressable
@@ -1271,7 +1248,8 @@ export default function AdminWeeklyReportScreen() {
                                         {item.name}
                                     </Text>
                                     <Text style={styles.earningMeta} numberOfLines={1}>
-                                        {item.visitedWeek} visita{item.visitedWeek === 1 ? "" : "s"} · R$ {money(item.ratePerVisit)}/visita
+                                        {item.visitedWeek} visita{item.visitedWeek === 1 ? "" : "s"} · R${" "}
+                                        {money(item.ratePerVisit)}/visita
                                     </Text>
                                 </View>
 
@@ -1877,7 +1855,6 @@ const styles = StyleSheet.create({
         fontSize: 11,
     },
 
-    // ✅ ganancias
     earningRow: {
         flexDirection: "row",
         alignItems: "center",

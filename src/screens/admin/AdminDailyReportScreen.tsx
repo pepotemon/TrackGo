@@ -226,7 +226,6 @@ export default function AdminDailyReportScreen() {
     const [assignSearch, setAssignSearch] = useState("");
     const [busyClientId, setBusyClientId] = useState<string | null>(null);
 
-    // ✅ modal dinero / ganancias
     const [moneyOpen, setMoneyOpen] = useState(false);
 
     const tk = useMemo(() => todayKey(), []);
@@ -324,6 +323,12 @@ export default function AdminDailyReportScreen() {
         return m;
     }, [clients, lastEventRangeByClient]);
 
+    /**
+     * ✅ MISMA LÓGICA DEL HOME ADMIN
+     * Solo cuenta el evento si:
+     * 1) el cliente todavía existe
+     * 2) el status actual del cliente coincide con el type del evento
+     */
     const shouldCountEvent = useCallback(
         (e: DailyEventDoc) => {
             const cid = (e as any)?.clientId as string | undefined;
@@ -332,7 +337,7 @@ export default function AdminDailyReportScreen() {
             const c = clientsById.get(cid);
             if (!c) return false;
 
-            return (c as any).status === (e as any).type;
+            return c.status === e.type;
         },
         [clientsById]
     );
@@ -355,6 +360,7 @@ export default function AdminDailyReportScreen() {
             };
         }
 
+        // ✅ asignados hoy + pendientes actuales
         for (const c of clients) {
             const uid = c.assignedTo;
             if (!uid) continue;
@@ -380,6 +386,7 @@ export default function AdminDailyReportScreen() {
             if ((c as any).status === "pending") row.pending += 1;
         }
 
+        // ✅ visitados / rechazados de hoy con filtro anti-inflado
         for (const ev of lastEventTodayByClient.values()) {
             if (!shouldCountEvent(ev)) continue;
 
@@ -1174,7 +1181,6 @@ export default function AdminDailyReportScreen() {
                 </View>
             </Modal>
 
-            {/* ✅ MODAL DINERO / GANANCIAS */}
             <Modal visible={moneyOpen} transparent animationType="fade" onRequestClose={() => setMoneyOpen(false)}>
                 <Pressable style={styles.modalBackdrop} onPress={() => setMoneyOpen(false)} />
 
@@ -1821,7 +1827,6 @@ const styles = StyleSheet.create({
         fontSize: 11,
     },
 
-    // ✅ modal dinero
     moneyRowCard: {
         flexDirection: "row",
         alignItems: "center",
