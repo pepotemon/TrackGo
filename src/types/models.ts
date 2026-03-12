@@ -51,15 +51,75 @@ export type RejectedReason =
     | "fuera_de_ruta"
     | "otro";
 
+export type ClientSource = "manual" | "whatsapp_meta";
+export type ClientParseStatus = "empty" | "partial" | "ready";
+
+/**
+ * ✅ Nuevo: etapa del bot
+ * - collecting: todavía recolectando datos
+ * - final: ya se mandó el mensaje final / cierre
+ */
+export type ClientBotStage = "collecting" | "final";
+
+/**
+ * ✅ Nuevo: calidad del negocio detectado
+ */
+export type ClientBusinessQuality = "unknown" | "clear" | "mixed" | "review";
+
+/**
+ * ✅ Nuevo: flags automáticos detectados
+ */
+export type ClientAutoFlag =
+    | "retirement_profile"
+    | "salary_profile"
+    | "app_driver_profile";
+
+/**
+ * ✅ Nuevo: tipo de perfil detectado
+ */
+export type ClientProfileType =
+    | "business"
+    | "app_driver"
+    | "retired"
+    | "salary_worker"
+    | "mixed_restricted";
+
+/**
+ * ✅ Nuevo: calidad operativa del lead
+ */
+export type ClientLeadQuality = "unknown" | "valid" | "review" | "not_suitable";
+
+/**
+ * ✅ Nuevo: clasificación manual/operativa del admin
+ */
+export type ClientVerificationStatus =
+    | "verified"
+    | "pending_review"
+    | "incomplete"
+    | "not_suitable";
+
 export type ClientDoc = {
     id: string;
 
     name?: string;
     business?: string;
 
+    /**
+     * ✅ Nuevo: texto bruto / original del negocio detectado
+     * útil para auditoría o UI
+     */
+    businessRaw?: string;
+
     phone: string;
     mapsUrl: string;
     address?: string;
+
+    /**
+     * ✅ Nuevo: coordenadas opcionales
+     * para mapa / proximidad / rutas
+     */
+    lat?: number | null;
+    lng?: number | null;
 
     assignedTo?: string;
     assignedAt?: number;
@@ -97,6 +157,89 @@ export type ClientDoc = {
      * motivo estructurado para rejected.
      */
     rejectedReason?: RejectedReason | null;
+
+    /**
+     * ✅ Nuevo: origen del cliente
+     */
+    source?: ClientSource;
+
+    /**
+     * ✅ Nuevo: referencia al inbox/lead original
+     */
+    sourceRef?: string | null;
+
+    /**
+     * ✅ Nuevo: calidad del parseo automático
+     */
+    parseStatus?: ClientParseStatus;
+
+    /**
+     * ✅ Nuevo: marca de captura automática
+     */
+    autoCapturedAt?: number | null;
+
+    /**
+     * ✅ Nuevo: última actividad inbound
+     */
+    lastInboundMessageAt?: number | null;
+
+    /**
+     * ✅ Nuevo: id del mensaje más reciente
+     */
+    lastMessageId?: string | null;
+
+    /**
+     * ✅ Nuevo: texto del último mensaje
+     */
+    lastInboundText?: string | null;
+
+    /**
+     * ✅ Nuevo: intención detectada del último inbound
+     */
+    lastInboundIntent?: string | null;
+
+    /**
+     * ✅ Nuevo: waId / teléfono oficial desde Meta
+     */
+    waId?: string | null;
+
+    /**
+     * ✅ Nuevo: control del último reply automático del bot
+     */
+    lastBotReplyAt?: number | null;
+    lastBotReplyText?: string | null;
+    lastBotStage?: ClientBotStage | string | null;
+
+    /**
+     * ✅ Nuevo: intro inicial enviada por el bot
+     */
+    initialIntroSentAt?: number | null;
+
+    /**
+     * ✅ Nuevo: confirma que este lead actual sí mandó maps
+     * para no heredar maps viejos y dar por válido un lead nuevo
+     */
+    currentLeadMapsConfirmedAt?: number | null;
+
+    /**
+     * ✅ Nuevo: semántica automática del negocio
+     */
+    businessQuality?: ClientBusinessQuality;
+    businessFlags?: ClientAutoFlag[];
+
+    /**
+     * ✅ Nuevo: semántica automática del perfil
+     */
+    profileFlags?: ClientAutoFlag[];
+    profileType?: ClientProfileType;
+    leadQuality?: ClientLeadQuality;
+    notSuitableReason?: string | null;
+
+    /**
+     * ✅ Nuevo: clasificación manual/admin del lead
+     */
+    verificationStatus?: ClientVerificationStatus;
+    verifiedAt?: number | null;
 };
 
 // ----------------------
@@ -135,6 +278,82 @@ export type DailyEventDoc = {
 
     createdAt: number; // ms
     dayKey: string; // "YYYY-MM-DD"
+};
+
+// ----------------------
+// INCOMING LEADS / WHATSAPP
+// ----------------------
+export type IncomingLeadStatus = "processing" | "processed" | "error";
+export type IncomingLeadResult = "created" | "updated_existing" | "ignored";
+
+export type IncomingLeadDoc = {
+    id: string;
+    source: "whatsapp_meta";
+    channel: "whatsapp";
+
+    phone: string;
+    waId?: string;
+    profileName?: string;
+
+    rawText?: string;
+    messageType?: string;
+
+    parsedName?: string;
+    parsedAddress?: string;
+    parsedBusiness?: string;
+    parsedBusinessRaw?: string;
+    parseStatus?: ClientParseStatus;
+
+    /**
+     * ✅ Nuevo: calidad automática negocio/perfil
+     */
+    businessQuality?: ClientBusinessQuality;
+    businessFlags?: ClientAutoFlag[];
+    profileFlags?: ClientAutoFlag[];
+    profileType?: ClientProfileType;
+    leadQuality?: ClientLeadQuality;
+    notSuitableReason?: string | null;
+
+    /**
+     * ✅ Nuevo: si llegó ubicación de WhatsApp
+     */
+    mapsUrl?: string;
+    lat?: number | null;
+    lng?: number | null;
+    locationAddress?: string;
+    locationName?: string;
+    locationCaptured?: boolean;
+
+    clientId?: string;
+    result?: IncomingLeadResult;
+    status?: IncomingLeadStatus;
+    error?: string | null;
+
+    createdAt: number;
+    processedAt?: number;
+    dayKey: string;
+
+    /**
+     * ✅ Nuevo: control de mensajes ignorados
+     */
+    ignored?: boolean;
+    ignoreReason?: string | null;
+
+    /**
+     * ✅ Nuevo: flags del flujo
+     */
+    greetingDetected?: boolean;
+
+    /**
+     * ✅ Nuevo: estado de la respuesta automática del bot
+     */
+    botReplyStatus?: "sent" | "skipped" | "error";
+    botReplyReason?: string | null;
+    botReplyError?: string | null;
+    botReplyText?: string | null;
+    botReplyAt?: number;
+    botReplyMessageId?: string | null;
+    botReplyStage?: string | null;
 };
 
 // ----------------------

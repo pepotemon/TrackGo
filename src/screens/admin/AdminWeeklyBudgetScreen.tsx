@@ -14,6 +14,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminBackground from "../../components/admin/AdminBackground";
 
 import {
     subscribeWeeklyInvestment,
@@ -364,250 +365,252 @@ export default function AdminWeeklyBudgetScreen() {
 
     return (
         <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-            <View style={styles.header}>
-                <Pressable
-                    onPress={() => router.back()}
-                    style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}
-                >
-                    <Ionicons name="chevron-back" size={18} color={COLORS.text} />
-                </Pressable>
+            <AdminBackground>
+                <View style={styles.header}>
+                    <Pressable
+                        onPress={() => router.back()}
+                        style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}
+                    >
+                        <Ionicons name="chevron-back" size={18} color={COLORS.text} />
+                    </Pressable>
 
-                <View style={{ flex: 1 }}>
-                    <Text style={styles.headerTitle}>Presupuesto semanal</Text>
-                    <Text style={styles.headerSub} numberOfLines={1}>
-                        {weekStartKey || "—"} → {weekEndKey || "—"}
-                    </Text>
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.headerTitle}>Presupuesto semanal</Text>
+                        <Text style={styles.headerSub} numberOfLines={1}>
+                            {weekStartKey || "—"} → {weekEndKey || "—"}
+                        </Text>
+                    </View>
+
+                    <Pressable
+                        onPress={resetAll}
+                        style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}
+                    >
+                        <Ionicons name="refresh-outline" size={18} color={COLORS.text} />
+                    </Pressable>
                 </View>
 
-                <Pressable
-                    onPress={resetAll}
-                    style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}
-                >
-                    <Ionicons name="refresh-outline" size={18} color={COLORS.text} />
-                </Pressable>
-            </View>
-
-            <KeyboardAvoidingView
-                style={{ flex: 1 }}
-                behavior={Platform.OS === "ios" ? "padding" : undefined}
-            >
-                <ScrollView
+                <KeyboardAvoidingView
                     style={{ flex: 1 }}
-                    showsVerticalScrollIndicator={false}
-                    keyboardShouldPersistTaps="handled"
-                    contentContainerStyle={[
-                        styles.content,
-                        { paddingBottom: Math.max(16, insets.bottom + 16) + 84 },
-                    ]}
+                    behavior={Platform.OS === "ios" ? "padding" : undefined}
                 >
-                    <View style={styles.card}>
-                        <Text style={styles.cardTitle}>Total invertido (Meta)</Text>
-
-                        <View style={styles.inputRow}>
-                            <View style={styles.moneyPrefix}>
-                                <Text style={styles.moneyPrefixText}>R$</Text>
-                            </View>
-
-                            <TextInput
-                                value={budgetDraft}
-                                onChangeText={onChangeBudgetDraft}
-                                keyboardType="numeric"
-                                placeholder="0"
-                                placeholderTextColor="rgba(255,255,255,0.35)"
-                                style={styles.input}
-                            />
-                        </View>
-
-
-                    </View>
-
-                    <View style={styles.card}>
-                        <View style={styles.allocHeaderRow}>
-                            <Text style={styles.cardTitle}>Grupos de inversión</Text>
-
-                            <View style={styles.headerActions}>
-                                <Pressable
-                                    onPress={splitEqual}
-                                    style={({ pressed }) => [styles.miniBtn, pressed && styles.pressed]}
-                                >
-                                    <Ionicons name="git-branch-outline" size={16} color={COLORS.text} />
-                                    <Text style={styles.miniBtnText}>Individual</Text>
-                                </Pressable>
-
-                                <Pressable
-                                    onPress={addGroup}
-                                    style={({ pressed }) => [styles.miniBtn, pressed && styles.pressed]}
-                                >
-                                    <Ionicons name="add-outline" size={16} color={COLORS.text} />
-                                    <Text style={styles.miniBtnText}>Grupo</Text>
-                                </Pressable>
-                            </View>
-                        </View>
-
-                        <View style={styles.allocSummaryRow}>
-                            <View style={styles.allocPill}>
-                                <Text style={styles.allocPillLabel}>Asignado</Text>
-                                <Text style={styles.allocPillValue}>R$ {money(totalGroupsDraft)}</Text>
-                            </View>
-
-                            <View
-                                style={[
-                                    styles.allocPill,
-                                    remainingDraft < 0 ? styles.allocPillNeg : styles.allocPillNeu,
-                                ]}
-                            >
-                                <Text style={styles.allocPillLabel}>Restante</Text>
-                                <Text style={styles.allocPillValue}>R$ {money(remainingDraft)}</Text>
-                            </View>
-                        </View>
-
-                        {groupDrafts.length === 0 ? (
-                            <View style={styles.emptyBox}>
-                                <Ionicons name="layers-outline" size={20} color={COLORS.muted} />
-                                <Text style={styles.emptyText}>
-                                    Aún no hay grupos. Crea uno o usa “Individual”.
-                                </Text>
-                            </View>
-                        ) : null}
-
-                        <View style={{ gap: 12, marginTop: 8 }}>
-                            {groupDrafts.map((g, idx) => {
-                                const amountNum = parseMoney(g.amount);
-                                return (
-                                    <View key={g.id} style={styles.groupCard}>
-                                        <View style={styles.groupTopRow}>
-                                            <View style={{ flex: 1, gap: 8 }}>
-                                                <TextInput
-                                                    value={g.name}
-                                                    onChangeText={(t) => updateGroup(g.id, { name: t })}
-                                                    placeholder={`Grupo ${idx + 1}`}
-                                                    placeholderTextColor="rgba(255,255,255,0.35)"
-                                                    style={styles.groupNameInput}
-                                                />
-
-                                                <View style={styles.allocInputRow}>
-                                                    <Text style={styles.allocPrefix}>R$</Text>
-                                                    <TextInput
-                                                        value={g.amount}
-                                                        onChangeText={(t) => updateGroup(g.id, { amount: t })}
-                                                        keyboardType="numeric"
-                                                        placeholder="0"
-                                                        placeholderTextColor="rgba(255,255,255,0.35)"
-                                                        style={styles.allocInput}
-                                                    />
-                                                </View>
-                                            </View>
-
-                                            <Pressable
-                                                onPress={() => removeGroup(g.id)}
-                                                style={({ pressed }) => [styles.removeBtn, pressed && styles.pressed]}
-                                            >
-                                                <Ionicons name="trash-outline" size={16} color="#FCA5A5" />
-                                            </Pressable>
-                                        </View>
-
-                                        <Text style={styles.groupHint}>
-                                            Miembros: {g.userIds.length} · Inversión: R$ {money(amountNum)}
-                                        </Text>
-
-                                        <View style={styles.userChipsWrap}>
-                                            {users.map((u) => {
-                                                const selected = g.userIds.includes(u.id);
-                                                const label =
-                                                    u?.name?.trim() || u?.email?.trim() || "Usuario";
-
-                                                return (
-                                                    <Pressable
-                                                        key={u.id}
-                                                        onPress={() => toggleUserInGroup(g.id, u.id)}
-                                                        style={({ pressed }) => [
-                                                            styles.userChip,
-                                                            selected && styles.userChipSelected,
-                                                            pressed && styles.pressed,
-                                                        ]}
-                                                    >
-                                                        <Ionicons
-                                                            name={selected ? "checkmark-circle" : "ellipse-outline"}
-                                                            size={14}
-                                                            color={selected ? COLORS.text : COLORS.muted}
-                                                        />
-                                                        <Text
-                                                            style={[
-                                                                styles.userChipText,
-                                                                selected && styles.userChipTextSelected,
-                                                            ]}
-                                                            numberOfLines={1}
-                                                        >
-                                                            {label}
-                                                        </Text>
-                                                    </Pressable>
-                                                );
-                                            })}
-                                        </View>
-                                    </View>
-                                );
-                            })}
-                        </View>
-                    </View>
-
-
-                    {normalizedGroups.length > 0 ? (
+                    <ScrollView
+                        style={{ flex: 1 }}
+                        showsVerticalScrollIndicator={false}
+                        keyboardShouldPersistTaps="handled"
+                        contentContainerStyle={[
+                            styles.content,
+                            { paddingBottom: Math.max(16, insets.bottom + 16) + 84 },
+                        ]}
+                    >
                         <View style={styles.card}>
-                            <Text style={styles.cardTitle}>Resumen de guardado</Text>
-                            <View style={{ gap: 8 }}>
-                                {normalizedGroups.map((g) => {
-                                    const names = g.userIds
-                                        .map((uid) => usersById.get(uid)?.name?.trim() || usersById.get(uid)?.email?.trim() || uid)
-                                        .join(", ");
+                            <Text style={styles.cardTitle}>Total invertido (Meta)</Text>
 
+                            <View style={styles.inputRow}>
+                                <View style={styles.moneyPrefix}>
+                                    <Text style={styles.moneyPrefixText}>R$</Text>
+                                </View>
+
+                                <TextInput
+                                    value={budgetDraft}
+                                    onChangeText={onChangeBudgetDraft}
+                                    keyboardType="numeric"
+                                    placeholder="0"
+                                    placeholderTextColor="rgba(255,255,255,0.35)"
+                                    style={styles.input}
+                                />
+                            </View>
+
+
+                        </View>
+
+                        <View style={styles.card}>
+                            <View style={styles.allocHeaderRow}>
+                                <Text style={styles.cardTitle}>Grupos de inversión</Text>
+
+                                <View style={styles.headerActions}>
+                                    <Pressable
+                                        onPress={splitEqual}
+                                        style={({ pressed }) => [styles.miniBtn, pressed && styles.pressed]}
+                                    >
+                                        <Ionicons name="git-branch-outline" size={16} color={COLORS.text} />
+                                        <Text style={styles.miniBtnText}>Individual</Text>
+                                    </Pressable>
+
+                                    <Pressable
+                                        onPress={addGroup}
+                                        style={({ pressed }) => [styles.miniBtn, pressed && styles.pressed]}
+                                    >
+                                        <Ionicons name="add-outline" size={16} color={COLORS.text} />
+                                        <Text style={styles.miniBtnText}>Grupo</Text>
+                                    </Pressable>
+                                </View>
+                            </View>
+
+                            <View style={styles.allocSummaryRow}>
+                                <View style={styles.allocPill}>
+                                    <Text style={styles.allocPillLabel}>Asignado</Text>
+                                    <Text style={styles.allocPillValue}>R$ {money(totalGroupsDraft)}</Text>
+                                </View>
+
+                                <View
+                                    style={[
+                                        styles.allocPill,
+                                        remainingDraft < 0 ? styles.allocPillNeg : styles.allocPillNeu,
+                                    ]}
+                                >
+                                    <Text style={styles.allocPillLabel}>Restante</Text>
+                                    <Text style={styles.allocPillValue}>R$ {money(remainingDraft)}</Text>
+                                </View>
+                            </View>
+
+                            {groupDrafts.length === 0 ? (
+                                <View style={styles.emptyBox}>
+                                    <Ionicons name="layers-outline" size={20} color={COLORS.muted} />
+                                    <Text style={styles.emptyText}>
+                                        Aún no hay grupos. Crea uno o usa “Individual”.
+                                    </Text>
+                                </View>
+                            ) : null}
+
+                            <View style={{ gap: 12, marginTop: 8 }}>
+                                {groupDrafts.map((g, idx) => {
+                                    const amountNum = parseMoney(g.amount);
                                     return (
-                                        <View key={g.id} style={styles.summaryRow}>
-                                            <View style={{ flex: 1, gap: 2 }}>
-                                                <Text style={styles.summaryTitle}>{g.name}</Text>
-                                                <Text style={styles.summarySub} numberOfLines={2}>
-                                                    {names || "Sin usuarios"}
-                                                </Text>
+                                        <View key={g.id} style={styles.groupCard}>
+                                            <View style={styles.groupTopRow}>
+                                                <View style={{ flex: 1, gap: 8 }}>
+                                                    <TextInput
+                                                        value={g.name}
+                                                        onChangeText={(t) => updateGroup(g.id, { name: t })}
+                                                        placeholder={`Grupo ${idx + 1}`}
+                                                        placeholderTextColor="rgba(255,255,255,0.35)"
+                                                        style={styles.groupNameInput}
+                                                    />
+
+                                                    <View style={styles.allocInputRow}>
+                                                        <Text style={styles.allocPrefix}>R$</Text>
+                                                        <TextInput
+                                                            value={g.amount}
+                                                            onChangeText={(t) => updateGroup(g.id, { amount: t })}
+                                                            keyboardType="numeric"
+                                                            placeholder="0"
+                                                            placeholderTextColor="rgba(255,255,255,0.35)"
+                                                            style={styles.allocInput}
+                                                        />
+                                                    </View>
+                                                </View>
+
+                                                <Pressable
+                                                    onPress={() => removeGroup(g.id)}
+                                                    style={({ pressed }) => [styles.removeBtn, pressed && styles.pressed]}
+                                                >
+                                                    <Ionicons name="trash-outline" size={16} color="#FCA5A5" />
+                                                </Pressable>
                                             </View>
-                                            <Text style={styles.summaryAmount}>R$ {money(g.amount)}</Text>
+
+                                            <Text style={styles.groupHint}>
+                                                Miembros: {g.userIds.length} · Inversión: R$ {money(amountNum)}
+                                            </Text>
+
+                                            <View style={styles.userChipsWrap}>
+                                                {users.map((u) => {
+                                                    const selected = g.userIds.includes(u.id);
+                                                    const label =
+                                                        u?.name?.trim() || u?.email?.trim() || "Usuario";
+
+                                                    return (
+                                                        <Pressable
+                                                            key={u.id}
+                                                            onPress={() => toggleUserInGroup(g.id, u.id)}
+                                                            style={({ pressed }) => [
+                                                                styles.userChip,
+                                                                selected && styles.userChipSelected,
+                                                                pressed && styles.pressed,
+                                                            ]}
+                                                        >
+                                                            <Ionicons
+                                                                name={selected ? "checkmark-circle" : "ellipse-outline"}
+                                                                size={14}
+                                                                color={selected ? COLORS.text : COLORS.muted}
+                                                            />
+                                                            <Text
+                                                                style={[
+                                                                    styles.userChipText,
+                                                                    selected && styles.userChipTextSelected,
+                                                                ]}
+                                                                numberOfLines={1}
+                                                            >
+                                                                {label}
+                                                            </Text>
+                                                        </Pressable>
+                                                    );
+                                                })}
+                                            </View>
                                         </View>
                                     );
                                 })}
                             </View>
                         </View>
-                    ) : null}
-                </ScrollView>
 
-                <View
-                    style={[
-                        styles.bottomBar,
-                        { paddingBottom: Math.max(12, insets.bottom + 10) },
-                    ]}
-                >
-                    <Pressable
-                        onPress={() => router.back()}
-                        style={({ pressed }) => [styles.bottomBtn, pressed && styles.pressed]}
-                    >
-                        <Ionicons name="close-outline" size={18} color={COLORS.muted} />
-                        <Text style={styles.bottomBtnTextMuted}>Cancelar</Text>
-                    </Pressable>
 
-                    <Pressable
-                        onPress={save}
-                        disabled={!canSave}
-                        style={({ pressed }) => [
-                            styles.bottomBtn,
-                            styles.bottomBtnPrimary,
-                            (!canSave || saving) && styles.disabled,
-                            pressed && canSave && styles.pressed,
+                        {normalizedGroups.length > 0 ? (
+                            <View style={styles.card}>
+                                <Text style={styles.cardTitle}>Resumen de guardado</Text>
+                                <View style={{ gap: 8 }}>
+                                    {normalizedGroups.map((g) => {
+                                        const names = g.userIds
+                                            .map((uid) => usersById.get(uid)?.name?.trim() || usersById.get(uid)?.email?.trim() || uid)
+                                            .join(", ");
+
+                                        return (
+                                            <View key={g.id} style={styles.summaryRow}>
+                                                <View style={{ flex: 1, gap: 2 }}>
+                                                    <Text style={styles.summaryTitle}>{g.name}</Text>
+                                                    <Text style={styles.summarySub} numberOfLines={2}>
+                                                        {names || "Sin usuarios"}
+                                                    </Text>
+                                                </View>
+                                                <Text style={styles.summaryAmount}>R$ {money(g.amount)}</Text>
+                                            </View>
+                                        );
+                                    })}
+                                </View>
+                            </View>
+                        ) : null}
+                    </ScrollView>
+
+                    <View
+                        style={[
+                            styles.bottomBar,
+                            { paddingBottom: Math.max(12, insets.bottom + 10) },
                         ]}
                     >
-                        <Ionicons name="save-outline" size={18} color={COLORS.text} />
-                        <Text style={styles.bottomBtnText}>
-                            {saving ? "Guardando..." : "Guardar"}
-                        </Text>
-                    </Pressable>
-                </View>
-            </KeyboardAvoidingView>
+                        <Pressable
+                            onPress={() => router.back()}
+                            style={({ pressed }) => [styles.bottomBtn, pressed && styles.pressed]}
+                        >
+                            <Ionicons name="close-outline" size={18} color={COLORS.muted} />
+                            <Text style={styles.bottomBtnTextMuted}>Cancelar</Text>
+                        </Pressable>
+
+                        <Pressable
+                            onPress={save}
+                            disabled={!canSave}
+                            style={({ pressed }) => [
+                                styles.bottomBtn,
+                                styles.bottomBtnPrimary,
+                                (!canSave || saving) && styles.disabled,
+                                pressed && canSave && styles.pressed,
+                            ]}
+                        >
+                            <Ionicons name="save-outline" size={18} color={COLORS.text} />
+                            <Text style={styles.bottomBtnText}>
+                                {saving ? "Guardando..." : "Guardar"}
+                            </Text>
+                        </Pressable>
+                    </View>
+                </KeyboardAvoidingView>
+            </AdminBackground>
         </SafeAreaView>
     );
 }

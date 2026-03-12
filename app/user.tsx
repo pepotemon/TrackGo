@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     FlatList,
+    ImageBackground,
     Linking,
     Modal,
     Pressable,
@@ -17,6 +18,7 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import bgMap from "../assets/bg-map.png";
 import { useAuth } from "../src/auth/useAuth";
 import { subscribeUserClients, updateClientStatus } from "../src/data/repositories/clientsRepo";
 import { dayKeyFromMs, subscribeDailyEventsByRangeForUser } from "../src/data/repositories/dailyEventsRepo";
@@ -175,10 +177,19 @@ function weekRangeKeys(base = new Date()) {
     const jsDay = d.getDay();
     const diffToMonday = jsDay === 0 ? 6 : jsDay - 1;
     const start = new Date(d);
-    start.setDate(d.getDate() - diffToMonday);
+    start.setDate(start.getDate() - diffToMonday);
     const end = new Date(start);
     end.setDate(start.getDate() + 6);
     return { startKey: dayKeyFromDate(start), endKey: dayKeyFromDate(end) };
+}
+
+function formatTodayLabel(date = new Date()) {
+    const days = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+    const dayName = days[date.getDay()];
+    const dd = String(date.getDate()).padStart(2, "0");
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const yyyy = date.getFullYear();
+    return `${dayName} - ${dd}/${mm}/${yyyy}`;
 }
 
 export default function UserHome() {
@@ -215,15 +226,12 @@ export default function UserHome() {
 
     const helloName = useMemo(() => {
         const n = pickFirstName(profile?.name ?? "");
-        return n ? ` · Hola ${n}` : "";
+        return n ? n : "";
     }, [profile?.name]);
 
+    const todayLabel = useMemo(() => formatTodayLabel(new Date()), []);
     const todayDayKey = useMemo(() => dayKeyFromMs(Date.now()), []);
     const weekRange = useMemo(() => weekRangeKeys(new Date()), [todayDayKey]);
-    const weekLabel = useMemo(
-        () => `${weekRange.startKey} → ${weekRange.endKey}`,
-        [weekRange.startKey, weekRange.endKey]
-    );
 
     useEffect(() => {
         if (loading) return;
@@ -371,6 +379,18 @@ export default function UserHome() {
         [clients]
     );
 
+    const assignedTotal = useMemo(() => clients.length, [clients]);
+
+    const totalVisitedAll = useMemo(
+        () => clients.filter((c) => c.status === "visited").length,
+        [clients]
+    );
+
+    const totalRejectedAll = useMemo(
+        () => clients.filter((c) => c.status === "rejected").length,
+        [clients]
+    );
+
     const weekLatestByClient = useMemo(() => {
         const last = new Map<string, DailyEventDoc>();
 
@@ -411,6 +431,38 @@ export default function UserHome() {
         return { visited, rejected };
     }, [weekLatestByClient]);
 
+    const currentWeekUnionCount = useMemo(() => {
+        const ids = new Set<string>();
+
+        for (const c of clients) {
+            if (c.status === "pending") ids.add(c.id);
+        }
+        for (const id of weekVisitedIds) ids.add(id);
+        for (const id of weekRejectedIds) ids.add(id);
+
+        return ids.size;
+    }, [clients, weekVisitedIds, weekRejectedIds]);
+
+    const todayVisitedCount = useMemo(() => {
+        let count = 0;
+        for (const e of weekEvents) {
+            if (e.type === "visited" && e.dayKey === todayDayKey) count += 1;
+        }
+        return count;
+    }, [weekEvents, todayDayKey]);
+
+    const todayRejectedCount = useMemo(() => {
+        let count = 0;
+        for (const e of weekEvents) {
+            if (e.type === "rejected" && e.dayKey === todayDayKey) count += 1;
+        }
+        return count;
+    }, [weekEvents, todayDayKey]);
+
+    const todayHandledCount = useMemo(() => {
+        return todayVisitedCount + todayRejectedCount;
+    }, [todayVisitedCount, todayRejectedCount]);
+
     const pendingPriorityMap = useMemo(() => {
         const pendingOnly = clients
             .filter((c) => c.status === "pending")
@@ -427,12 +479,13 @@ export default function UserHome() {
     }, [clients]);
 
     const counts = useMemo(() => {
-        const pending = pendingNowCount;
-        const visited = weekCounts.visited;
-        const rejected = weekCounts.rejected;
-        const total = pending + visited + rejected;
-        return { pending, visited, rejected, total };
-    }, [pendingNowCount, weekCounts.visited, weekCounts.rejected]);
+        return {
+            pending: pendingNowCount,
+            visited: weekCounts.visited,
+            rejected: weekCounts.rejected,
+            weekVisible: currentWeekUnionCount,
+        };
+    }, [pendingNowCount, weekCounts.visited, weekCounts.rejected, currentWeekUnionCount]);
 
     const filteredClients = useMemo(() => {
         const queryText = q.trim().toLowerCase();
@@ -674,6 +727,50 @@ export default function UserHome() {
         closeNoteModal();
     };
 
+    const goHistory = () => {
+        router.push({
+            pathname: "/user-history" as any,
+            params: { startKey: weekRange.startKey, endKey: weekRange.endKey },
+        });
+    };
+
+    const TinyStat = ({
+        icon,
+        color,
+        value,
+        label,
+    }: {
+        icon: any;
+        color: string;
+        value: number;
+        label: string;
+    }) => (
+        <View style={styles.tinyStatWrap} accessibilityLabel={`${label}: ${value}`}>
+            <Ionicons name={icon} size={14} color={color} />
+            <Text style={styles.tinyStatValue}>{value}</Text>
+        </View>
+    );
+
+    const PortfolioMiniStat = ({
+        icon,
+        color,
+        value,
+        label,
+    }: {
+        icon: any;
+        color: string;
+        value: number;
+        label: string;
+    }) => (
+        <View style={styles.portfolioMiniStat}>
+            <Ionicons name={icon} size={13} color={color} />
+            <Text style={styles.portfolioMiniValue}>{value}</Text>
+            <Text style={styles.portfolioMiniLabel} numberOfLines={1}>
+                {label}
+            </Text>
+        </View>
+    );
+
     const MiniChip = ({
         active,
         onPress,
@@ -699,13 +796,13 @@ export default function UserHome() {
             onPress={onPress}
             style={({ pressed }) => [
                 styles.miniChip,
-                { backgroundColor: bg ?? "#0F172A", borderColor: border ?? COLORS.border },
+                { backgroundColor: bg ?? "rgba(255,255,255,0.05)", borderColor: border ?? COLORS.border },
                 active && styles.miniChipActive,
                 pressed && styles.miniChipPressed,
             ]}
             accessibilityLabel={label ?? "Filtro"}
         >
-            <Ionicons name={icon} size={10} color={tint ?? COLORS.text} />
+            <Ionicons name={icon} size={11} color={tint ?? COLORS.text} />
             {showLabel && label ? (
                 <Text style={[styles.miniChipText, active && styles.miniChipTextActive]}>
                     {label}
@@ -757,7 +854,7 @@ export default function UserHome() {
     }) => {
         const icon = kind === "visited" ? "checkmark" : kind === "rejected" ? "close" : "refresh";
         const tint =
-            kind === "visited" ? COLORS.visited : kind === "rejected" ? COLORS.rejected : COLORS.text;
+            kind === "visited" ? COLORS.ok : kind === "rejected" ? COLORS.bad : COLORS.text;
 
         return (
             <Pressable
@@ -776,13 +873,6 @@ export default function UserHome() {
                 <Ionicons name={icon} size={18} color={tint} />
             </Pressable>
         );
-    };
-
-    const goHistory = () => {
-        router.push({
-            pathname: "/user-history" as any,
-            params: { startKey: weekRange.startKey, endKey: weekRange.endKey },
-        });
     };
 
     const renderItem = ({ item }: { item: ClientDoc }) => {
@@ -805,7 +895,7 @@ export default function UserHome() {
             <View style={styles.card}>
                 {localNote ? (
                     <View style={styles.noteBanner}>
-                        <Ionicons name="bookmark-outline" size={16} color={COLORS.pending} />
+                        <Ionicons name="bookmark-outline" size={15} color={COLORS.warn} />
                         <Text style={styles.noteText} numberOfLines={3}>
                             {localNote}
                         </Text>
@@ -819,12 +909,7 @@ export default function UserHome() {
                                 {name}
                             </Text>
 
-                            {showPrio ? (
-                                <View style={styles.priorityPill}>
-                                    <Ionicons name="flame-outline" size={14} color={COLORS.pending} />
-                                    <Text style={styles.priorityText}>Prioridad #{prio}</Text>
-                                </View>
-                            ) : null}
+
                         </View>
 
                         {business ? (
@@ -835,27 +920,21 @@ export default function UserHome() {
                     </View>
 
                     <View style={styles.cardTopRight}>
-                        <Pressable
-                            onPress={() => openNoteModal(item.id)}
-                            disabled={isBusy}
-                            style={({ pressed }) => [
-                                styles.noteBtn,
-                                isBusy && styles.noteBtnDisabled,
-                                pressed && !isBusy && styles.noteBtnPressed,
-                            ]}
-                            accessibilityLabel="Nota del cliente"
-                        >
-                            <Ionicons
-                                name={localNote ? "create" : "create-outline"}
-                                size={16}
-                                color={COLORS.text}
-                            />
-                        </Pressable>
 
-                        <View style={[styles.pill, statusPillStyle(item.status)]}>
-                            <Text style={[styles.pillText, statusPillTextStyle(item.status)]}>
-                                {statusLabel(item.status)}
-                            </Text>
+
+                        <View style={styles.statusColumn}>
+                            <View style={[styles.pill, statusPillStyle(item.status)]}>
+                                <Text style={[styles.pillText, statusPillTextStyle(item.status)]}>
+                                    {statusLabel(item.status)}
+                                </Text>
+                            </View>
+
+                            {showPrio ? (
+                                <View style={styles.priorityPill}>
+                                    <Ionicons name="flame-outline" size={13} color={COLORS.warn} />
+                                    <Text style={styles.priorityText}>Prioridad #{prio}</Text>
+                                </View>
+                            ) : null}
                         </View>
                     </View>
                 </View>
@@ -880,6 +959,12 @@ export default function UserHome() {
 
                 <View style={styles.actionsRow}>
                     <View style={styles.actionsLeft}>
+                        <IconBtn
+                            icon={localNote ? "create" : "create-outline"}
+                            label="Nota del cliente"
+                            onPress={() => openNoteModal(item.id)}
+                            disabled={isBusy}
+                        />
                         <IconBtn
                             icon="logo-whatsapp"
                             label="Abrir WhatsApp"
@@ -943,135 +1028,216 @@ export default function UserHome() {
     };
 
     return (
-        <SafeAreaView style={styles.safe}>
+        <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
-            <View
-                pointerEvents="box-none"
-                style={[styles.toastLayer, { top: Math.max(10, insets.top + 8) }]}
+            <ImageBackground
+                source={bgMap}
+                style={styles.bg}
+                imageStyle={styles.bgImage}
+                resizeMode="cover"
             >
-                {toasts.map((t) => (
-                    <View key={t.id} style={styles.toast}>
-                        <Ionicons name="notifications-outline" size={16} color={COLORS.text} />
-                        <Text style={styles.toastText} numberOfLines={2}>
-                            {t.text}
-                        </Text>
-                        <Pressable
-                            onPress={() => setToasts((p) => p.filter((x) => x.id !== t.id))}
-                            style={styles.toastClose}
-                        >
-                            <Ionicons name="close" size={16} color={COLORS.muted} />
-                        </Pressable>
-                    </View>
-                ))}
-            </View>
-
-            <View style={[styles.header, { paddingTop: Math.max(12, insets.top + 8) }]}>
-                <View style={styles.headerLeft}>
-                    <Text style={styles.hTitle}>
-                        TrackGo<Text style={styles.hTitleSoft}>{helloName}</Text>
-                    </Text>
-
-                    <Text style={styles.hSub}>
-                        Semana ({weekLabel}): <Text style={styles.hSubStrong}>{weekCounts.visited}</Text>{" "}
-                        visitados · <Text style={styles.hSubStrong}>{weekCounts.rejected}</Text>{" "}
-                        rechazados
-                    </Text>
-
-                    {eventsErr ? <Text style={styles.hErr}>{eventsErr}</Text> : null}
-                </View>
-
-                <View style={styles.headerRight}>
-                    <Pressable
-                        onPress={goHistory}
-                        style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]}
-                        accessibilityLabel="Historial"
+                <View style={styles.overlay}>
+                    <View
+                        pointerEvents="box-none"
+                        style={[styles.toastLayer, { top: Math.max(10, insets.top + 8) }]}
                     >
-                        <Ionicons name="time-outline" size={18} color={COLORS.text} />
-                    </Pressable>
-
-                    <Pressable
-                        onPress={logout}
-                        style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]}
-                        accessibilityLabel="Salir"
-                    >
-                        <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
-                    </Pressable>
-                </View>
-            </View>
-
-            <View style={styles.searchWrap}>
-                <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                <TextInput
-                    value={q}
-                    onChangeText={setQ}
-                    placeholder="Buscar cliente, negocio, teléfono…"
-                    placeholderTextColor={COLORS.muted}
-                    style={styles.searchInput}
-                />
-                {!!q ? (
-                    <Pressable onPress={clearSearch} style={styles.clearBtn}>
-                        <Ionicons name="close" size={18} color={COLORS.text} />
-                    </Pressable>
-                ) : null}
-            </View>
-
-            <View style={styles.filtersRow}>
-                <MiniChip
-                    active={filter === "pending"}
-                    onPress={() => setFilter("pending")}
-                    icon="time-outline"
-                    label="Pendientes"
-                    showLabel
-                    badge={counts.pending}
-                    tint={COLORS.pending}
-                    bg="rgba(251,191,36,0.08)"
-                    border="rgba(251,191,36,0.30)"
-                />
-
-                <MiniChip
-                    active={filter === "visited"}
-                    onPress={() => setFilter("visited")}
-                    icon="checkmark"
-                    badge={counts.visited}
-                    tint={COLORS.visited}
-                    bg="rgba(34,197,94,0.08)"
-                    border="rgba(34,197,94,0.28)"
-                />
-
-                <MiniChip
-                    active={filter === "rejected"}
-                    onPress={() => setFilter("rejected")}
-                    icon="close"
-                    badge={counts.rejected}
-                    tint={COLORS.rejected}
-                    bg="rgba(248,113,113,0.08)"
-                    border="rgba(248,113,113,0.28)"
-                />
-
-                <MiniChip
-                    active={filter === "all"}
-                    onPress={() => setFilter("all")}
-                    icon="apps-outline"
-                    badge={counts.total}
-                    tint={COLORS.text}
-                    bg="rgba(255,255,255,0.05)"
-                    border="rgba(255,255,255,0.10)"
-                />
-            </View>
-
-            <FlatList
-                data={filteredClients}
-                keyExtractor={(item) => item.id}
-                renderItem={renderItem}
-                contentContainerStyle={styles.listContent}
-                ListEmptyComponent={
-                    <View style={styles.empty}>
-                        <Ionicons name="people-outline" size={24} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>No hay clientes con ese filtro.</Text>
+                        {toasts.map((t) => (
+                            <View key={t.id} style={styles.toast}>
+                                <Ionicons name="notifications-outline" size={16} color={COLORS.text} />
+                                <Text style={styles.toastText} numberOfLines={2}>
+                                    {t.text}
+                                </Text>
+                                <Pressable
+                                    onPress={() => setToasts((p) => p.filter((x) => x.id !== t.id))}
+                                    style={styles.toastClose}
+                                >
+                                    <Ionicons name="close" size={16} color={COLORS.muted} />
+                                </Pressable>
+                            </View>
+                        ))}
                     </View>
-                }
-            />
+
+                    <FlatList
+                        data={filteredClients}
+                        keyExtractor={(item) => item.id}
+                        renderItem={renderItem}
+                        showsVerticalScrollIndicator={false}
+                        contentContainerStyle={[
+                            styles.listContent,
+                            { paddingBottom: 24 + Math.max(insets.bottom, 10) },
+                        ]}
+                        ListHeaderComponent={
+                            <View>
+                                <View style={[styles.header, { paddingTop: 12 }]}>
+                                    <View style={styles.headerLeft}>
+                                        <Text style={styles.hSub} numberOfLines={1}>
+                                            Hola, <Text style={styles.hSubStrong}>{helloName || "Usuario"}</Text>
+                                        </Text>
+                                        <Text style={styles.hSubMuted} numberOfLines={1}>
+                                            {todayLabel}
+                                        </Text>
+                                        {eventsErr ? <Text style={styles.hErr}>{eventsErr}</Text> : null}
+                                    </View>
+
+                                    <View style={styles.headerRight}>
+                                        <Pressable
+                                            onPress={goHistory}
+                                            style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}
+                                            accessibilityLabel="Historial"
+                                        >
+                                            <Ionicons name="time-outline" size={18} color={COLORS.text} />
+                                        </Pressable>
+
+                                        <Pressable
+                                            onPress={logout}
+                                            style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}
+                                            accessibilityLabel="Salir"
+                                        >
+                                            <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
+                                        </Pressable>
+                                    </View>
+                                </View>
+
+                                <View style={styles.topCardsRow}>
+                                    <View style={[styles.topCard, styles.activityCard]}>
+                                        <View style={styles.bannerTop}>
+                                            <View style={styles.bannerIconWrap}>
+                                                <Ionicons name="today-outline" size={18} color={COLORS.text} />
+                                            </View>
+                                            <View style={[styles.badge, styles.badgeWarn]}>
+                                                <Text style={[styles.badgeText, styles.badgeTextWarn]}>HOY</Text>
+                                            </View>
+                                        </View>
+
+                                        <View style={styles.portfolioMainBlock}>
+                                            <Text style={styles.portfolioMainValue}>{todayHandledCount}</Text>
+                                            <Text style={styles.portfolioMainLabel}>Gestionados</Text>
+                                        </View>
+
+                                        <View style={styles.portfolioBottomRow}>
+                                            <PortfolioMiniStat
+                                                icon="checkmark-circle-outline"
+                                                color={COLORS.ok}
+                                                value={todayVisitedCount}
+                                                label="Visitados"
+                                            />
+                                            <PortfolioMiniStat
+                                                icon="close-circle-outline"
+                                                color={COLORS.bad}
+                                                value={todayRejectedCount}
+                                                label="Rechazados"
+                                            />
+                                        </View>
+                                    </View>
+
+                                    <View style={[styles.topCard, styles.portfolioCard]}>
+                                        <View style={styles.bannerTop}>
+                                            <View style={styles.bannerIconWrap}>
+                                                <Ionicons name="people-outline" size={18} color={COLORS.text} />
+                                            </View>
+                                            <View style={[styles.badge, styles.badgePrimarySoft]}>
+                                                <Text style={[styles.badgeText, styles.badgeTextPrimarySoft]}>
+                                                    TU CARTERA
+                                                </Text>
+                                            </View>
+                                        </View>
+
+                                        <View style={styles.portfolioMainBlock}>
+                                            <Text style={styles.portfolioMainValue}>{assignedTotal}</Text>
+                                            <Text style={styles.portfolioMainLabel}>Asignados</Text>
+                                        </View>
+
+                                        <View style={styles.portfolioBottomRow}>
+                                            <PortfolioMiniStat
+                                                icon="checkmark-circle-outline"
+                                                color={COLORS.ok}
+                                                value={totalVisitedAll}
+                                                label="Visitados"
+                                            />
+                                            <PortfolioMiniStat
+                                                icon="close-circle-outline"
+                                                color={COLORS.bad}
+                                                value={totalRejectedAll}
+                                                label="Rechazados"
+                                            />
+                                        </View>
+                                    </View>
+                                </View>
+
+                                <View style={styles.searchWrap}>
+                                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                                    <TextInput
+                                        value={q}
+                                        onChangeText={setQ}
+                                        placeholder="Buscar cliente, negocio, teléfono…"
+                                        placeholderTextColor={COLORS.muted}
+                                        style={styles.searchInput}
+                                    />
+                                    {!!q ? (
+                                        <Pressable onPress={clearSearch} style={styles.clearBtn}>
+                                            <Ionicons name="close" size={18} color={COLORS.text} />
+                                        </Pressable>
+                                    ) : null}
+                                </View>
+
+                                <View style={styles.filtersRow}>
+                                    <MiniChip
+                                        active={filter === "pending"}
+                                        onPress={() => setFilter("pending")}
+                                        icon="time-outline"
+                                        label="Pendientes"
+                                        showLabel
+                                        badge={counts.pending}
+                                        tint={COLORS.warn}
+                                        bg="rgba(251,191,36,0.08)"
+                                        border="rgba(251,191,36,0.30)"
+                                    />
+
+                                    <MiniChip
+                                        active={filter === "visited"}
+                                        onPress={() => setFilter("visited")}
+                                        icon="checkmark"
+                                        badge={counts.visited}
+                                        tint={COLORS.ok}
+                                        bg="rgba(34,197,94,0.08)"
+                                        border="rgba(34,197,94,0.28)"
+                                    />
+
+                                    <MiniChip
+                                        active={filter === "rejected"}
+                                        onPress={() => setFilter("rejected")}
+                                        icon="close"
+                                        badge={counts.rejected}
+                                        tint={COLORS.bad}
+                                        bg="rgba(248,113,113,0.08)"
+                                        border="rgba(248,113,113,0.28)"
+                                    />
+
+                                    <MiniChip
+                                        active={filter === "all"}
+                                        onPress={() => setFilter("all")}
+                                        icon="apps-outline"
+                                        label="Esta semana"
+                                        badge={counts.weekVisible}
+                                        tint={COLORS.text}
+                                        bg="rgba(255,255,255,0.05)"
+                                        border="rgba(255,255,255,0.10)"
+                                    />
+                                </View>
+                            </View>
+                        }
+                        ListEmptyComponent={
+                            <View style={styles.empty}>
+                                <Ionicons name="people-outline" size={24} color={COLORS.muted} />
+                                <Text style={styles.emptyText}>No hay clientes con ese filtro.</Text>
+                            </View>
+                        }
+                    />
+
+
+                </View>
+            </ImageBackground>
 
             <Modal visible={noteModalOpen} transparent animationType="fade" onRequestClose={closeNoteModal}>
                 <Pressable style={styles.modalBackdrop} onPress={closeNoteModal} />
@@ -1104,7 +1270,7 @@ export default function UserHome() {
                                 pressed && styles.modalBtnPressed,
                             ]}
                         >
-                            <Ionicons name="trash-outline" size={18} color={COLORS.rejected} />
+                            <Ionicons name="trash-outline" size={18} color={COLORS.bad} />
                             <Text style={styles.modalBtnTextDanger}>Borrar</Text>
                         </Pressable>
 
@@ -1121,9 +1287,7 @@ export default function UserHome() {
                         </Pressable>
                     </View>
 
-                    <Text style={styles.modalHint}>
-                        * Esta nota se guarda solo en tu teléfono. El admin no la ve.
-                    </Text>
+
                 </View>
             </Modal>
 
@@ -1177,7 +1341,7 @@ export default function UserHome() {
                                 <Ionicons
                                     name={reasonIcon(reason) as any}
                                     size={18}
-                                    color={reason === "clavo" ? COLORS.rejected : COLORS.text}
+                                    color={reason === "clavo" ? COLORS.bad : COLORS.text}
                                 />
                                 <Text style={styles.rejectOptionText}>{reasonLabel(reason)}</Text>
                             </Pressable>
@@ -1199,7 +1363,7 @@ export default function UserHome() {
                         <Ionicons
                             name={reasonIcon(selectedRejectReason) as any}
                             size={22}
-                            color={COLORS.rejected}
+                            color={COLORS.bad}
                         />
                     </View>
 
@@ -1261,7 +1425,7 @@ export default function UserHome() {
                         <Ionicons
                             name="checkmark-outline"
                             size={22}
-                            color={COLORS.visited}
+                            color={COLORS.ok}
                         />
                     </View>
 
@@ -1312,17 +1476,41 @@ export default function UserHome() {
 
 const COLORS = {
     bg: "#0B1220",
-    card: "#111827",
-    border: "#1F2937",
+    card: "rgba(17, 24, 39, 0.72)",
+    border: "rgba(255,255,255,0.08)",
     text: "#F9FAFB",
     muted: "#9CA3AF",
-    visited: "#22C55E",
-    rejected: "#F87171",
-    pending: "#FBBF24",
+    ok: "#22C55E",
+    bad: "#F87171",
+    warn: "#FBBF24",
+    info: "#60A5FA",
+    primarySoft: "#C4B5FD",
 };
 
 const styles = StyleSheet.create({
-    safe: { flex: 1, backgroundColor: COLORS.bg },
+    safe: {
+        flex: 1,
+        backgroundColor: COLORS.bg,
+    },
+
+    bg: {
+        flex: 1,
+    },
+
+    bgImage: {
+        opacity: 0.55,
+    },
+
+    overlay: {
+        flex: 1,
+        backgroundColor: "rgba(11,18,32,0.40)",
+        paddingHorizontal: 16,
+    },
+
+    pressed: {
+        transform: [{ scale: 0.99 }],
+        opacity: 0.96,
+    },
 
     toastLayer: {
         position: "absolute",
@@ -1338,9 +1526,9 @@ const styles = StyleSheet.create({
         paddingVertical: 10,
         paddingHorizontal: 12,
         borderRadius: 16,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(15, 23, 42, 0.92)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
+        borderColor: COLORS.border,
     },
     toastText: {
         flex: 1,
@@ -1358,49 +1546,205 @@ const styles = StyleSheet.create({
     },
 
     header: {
-        paddingHorizontal: 16,
-        paddingBottom: 10,
+        paddingBottom: 8,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
         gap: 12,
     },
-    headerLeft: { flex: 1, gap: 2 },
+    headerLeft: { flex: 1, gap: 3 },
     headerRight: { flexDirection: "row", alignItems: "center", gap: 10 },
 
-    hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.5 },
-    hTitleSoft: { color: COLORS.muted, fontWeight: "900" },
-    hSub: { color: COLORS.muted, fontSize: 13, fontWeight: "700", marginTop: 2 },
-    hSubStrong: { color: COLORS.text, fontWeight: "900" },
-    hErr: { marginTop: 6, color: COLORS.rejected, fontSize: 12, fontWeight: "800" },
+    hSub: {
+        color: "#D1D5DB",
+        fontSize: 14,
+        fontWeight: "800",
+    },
+    hSubStrong: {
+        color: COLORS.text,
+        fontWeight: "900",
+    },
+    hSubMuted: {
+        color: "#CBD5E1",
+        fontSize: 12,
+        fontWeight: "700",
+        opacity: 0.92,
+    },
+    hErr: {
+        marginTop: 4,
+        color: COLORS.bad,
+        fontSize: 12,
+        fontWeight: "800",
+    },
 
-    logoutBtn: {
+    headerBtn: {
         width: 42,
         height: 42,
         borderRadius: 14,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(15, 23, 42, 0.72)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
     },
-    logoutBtnPressed: { transform: [{ scale: 0.97 }], opacity: 0.95 },
+
+    topCardsRow: {
+        flexDirection: "row",
+        gap: 12,
+        marginTop: 8,
+        marginBottom: 14,
+        alignItems: "stretch",
+    },
+
+    topCard: {
+        flex: 1,
+        minHeight: 162,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: COLORS.card,
+        padding: 12,
+        overflow: "hidden",
+        justifyContent: "space-between",
+    },
+
+    activityCard: {
+        justifyContent: "space-between",
+    },
+
+    portfolioCard: {
+        justifyContent: "space-between",
+    },
+
+    badge: {
+        paddingHorizontal: 8,
+        height: 24,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+    },
+    badgeText: {
+        fontSize: 10,
+        fontWeight: "900",
+        letterSpacing: 0.4,
+    },
+    badgeWarn: {
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderColor: "rgba(251,191,36,0.35)",
+    },
+    badgeTextWarn: {
+        color: "#FDE68A",
+    },
+    badgePrimarySoft: {
+        backgroundColor: "rgba(96,165,250,0.12)",
+        borderColor: "rgba(96,165,250,0.28)",
+    },
+    badgeTextPrimarySoft: {
+        color: "#BFDBFE",
+    },
+
+    bannerTop: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
+    bannerIconWrap: {
+        width: 42,
+        height: 42,
+        borderRadius: 14,
+        backgroundColor: "rgba(15, 23, 42, 0.72)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    portfolioMainBlock: {
+        alignItems: "center",
+        justifyContent: "center",
+        marginTop: 8,
+        marginBottom: 10,
+    },
+    portfolioMainValue: {
+        color: COLORS.text,
+        fontSize: 28,
+        fontWeight: "900",
+        lineHeight: 32,
+    },
+    portfolioMainLabel: {
+        color: "#CBD5E1",
+        fontSize: 11,
+        fontWeight: "800",
+        marginTop: 2,
+    },
+
+    portfolioBottomRow: {
+        flexDirection: "row",
+        gap: 8,
+    },
+    portfolioMiniStat: {
+        flex: 1,
+        minHeight: 56,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 3,
+        paddingHorizontal: 6,
+        paddingVertical: 6,
+    },
+    portfolioMiniValue: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    portfolioMiniLabel: {
+        color: "#CBD5E1",
+        fontSize: 10,
+        fontWeight: "800",
+        textAlign: "center",
+    },
+
+    tinyStatWrap: {
+        height: 34,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        paddingHorizontal: 8,
+    },
+    tinyStatValue: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 12,
+    },
 
     searchWrap: {
-        marginHorizontal: 16,
-        marginTop: 6,
         marginBottom: 10,
         flexDirection: "row",
         alignItems: "center",
         gap: 10,
-        backgroundColor: "#0F172A",
+        backgroundColor: COLORS.card,
         borderWidth: 1,
         borderColor: COLORS.border,
         borderRadius: 16,
         paddingHorizontal: 12,
         height: 48,
     },
-    searchInput: { flex: 1, color: COLORS.text, fontSize: 14, fontWeight: "700" },
+    searchInput: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "700",
+    },
     clearBtn: {
         width: 34,
         height: 34,
@@ -1411,11 +1755,10 @@ const styles = StyleSheet.create({
     },
 
     filtersRow: {
-        paddingHorizontal: 16,
         flexDirection: "row",
         alignItems: "center",
         gap: 10,
-        marginBottom: 8,
+        marginBottom: 10,
     },
     miniChip: {
         flexDirection: "row",
@@ -1444,7 +1787,10 @@ const styles = StyleSheet.create({
     miniBadgeText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
     miniBadgeTextActive: { color: COLORS.text },
 
-    listContent: { paddingHorizontal: 16, paddingBottom: 22, paddingTop: 10, gap: 12 },
+    listContent: {
+        paddingTop: 0,
+        gap: 12,
+    },
 
     card: {
         backgroundColor: COLORS.card,
@@ -1485,6 +1831,10 @@ const styles = StyleSheet.create({
     titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
     clientName: { flex: 1, color: COLORS.text, fontSize: 16, fontWeight: "900" },
 
+    statusColumn: {
+        alignItems: "flex-end",
+        gap: 6,
+    },
     priorityPill: {
         flexDirection: "row",
         alignItems: "center",
@@ -1498,7 +1848,7 @@ const styles = StyleSheet.create({
     },
     priorityText: { color: "#FDE68A", fontSize: 12, fontWeight: "900" },
 
-    clientBusiness: { color: COLORS.muted, fontSize: 13, fontWeight: "700" },
+    clientBusiness: { color: "#D1D5DB", fontSize: 13, fontWeight: "700" },
 
     cardTopRight: { flexDirection: "row", alignItems: "center", gap: 10 },
 
@@ -1506,7 +1856,7 @@ const styles = StyleSheet.create({
         width: 38,
         height: 28,
         borderRadius: 12,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(15, 23, 42, 0.72)",
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.12)",
         alignItems: "center",
@@ -1558,7 +1908,7 @@ const styles = StyleSheet.create({
         width: 42,
         height: 42,
         borderRadius: 14,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(15, 23, 42, 0.72)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
@@ -1571,7 +1921,7 @@ const styles = StyleSheet.create({
         width: 42,
         height: 42,
         borderRadius: 14,
-        backgroundColor: "#0F172A",
+        backgroundColor: "rgba(15, 23, 42, 0.72)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
@@ -1601,6 +1951,7 @@ const styles = StyleSheet.create({
     empty: { marginTop: 40, alignItems: "center", gap: 10 },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "800" },
 
+
     modalBackdrop: {
         ...StyleSheet.absoluteFillObject,
         backgroundColor: "rgba(0,0,0,0.55)",
@@ -1610,10 +1961,10 @@ const styles = StyleSheet.create({
         left: 16,
         right: 16,
         bottom: 16,
-        backgroundColor: COLORS.card,
+        backgroundColor: "#111827",
         borderRadius: 18,
         borderWidth: 1,
-        borderColor: COLORS.border,
+        borderColor: "rgba(255,255,255,0.08)",
         padding: 14,
         gap: 12,
     },
@@ -1670,7 +2021,7 @@ const styles = StyleSheet.create({
     },
     modalBtnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     modalBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    modalBtnTextDanger: { color: COLORS.rejected, fontSize: 13, fontWeight: "900" },
+    modalBtnTextDanger: { color: COLORS.bad, fontSize: 13, fontWeight: "900" },
     modalHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.9 },
 
     rejectModalCard: {
@@ -1678,10 +2029,10 @@ const styles = StyleSheet.create({
         left: 16,
         right: 16,
         bottom: 16,
-        backgroundColor: COLORS.card,
+        backgroundColor: "#111827",
         borderRadius: 18,
         borderWidth: 1,
-        borderColor: COLORS.border,
+        borderColor: "rgba(255,255,255,0.08)",
         padding: 16,
         gap: 14,
     },
@@ -1728,10 +2079,10 @@ const styles = StyleSheet.create({
         left: 24,
         right: 24,
         top: "32%",
-        backgroundColor: COLORS.card,
+        backgroundColor: "#111827",
         borderRadius: 20,
         borderWidth: 1,
-        borderColor: COLORS.border,
+        borderColor: "rgba(255,255,255,0.08)",
         padding: 18,
         gap: 14,
         alignItems: "center",
@@ -1811,12 +2162,12 @@ const styles = StyleSheet.create({
         fontWeight: "900",
     },
     confirmBtnDangerText: {
-        color: COLORS.rejected,
+        color: COLORS.bad,
         fontSize: 13,
         fontWeight: "900",
     },
     confirmBtnVisitedText: {
-        color: COLORS.visited,
+        color: COLORS.ok,
         fontSize: 13,
         fontWeight: "900",
     },

@@ -1,14 +1,75 @@
+import { Ionicons } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
 import { Stack, useRouter } from "expo-router";
 import React, { useEffect, useRef } from "react";
-import { StatusBar } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import {
+  ImageBackground,
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import {
+  SafeAreaProvider,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+
+import bgMap from "../assets/bg-map.png";
 import { AuthProvider } from "../src/auth/AuthProvider";
+
+type RootHeaderProps = {
+  title?: string;
+  canGoBack: boolean;
+  onGoBack: () => void;
+};
+
+function RootHeader({ title, canGoBack, onGoBack }: RootHeaderProps) {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <View style={[styles.headerShell, { paddingTop: insets.top }]}>
+      <ImageBackground
+        source={bgMap}
+        style={styles.headerBg}
+        imageStyle={styles.headerBgImage}
+        resizeMode="cover"
+      >
+        <View style={styles.headerTint} />
+
+        <View style={styles.headerInner}>
+          <View style={styles.headerSide}>
+            {canGoBack ? (
+              <Pressable
+                onPress={onGoBack}
+                style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+              >
+                <Ionicons name="chevron-back" size={20} color="#FFFFFF" />
+              </Pressable>
+            ) : (
+              <View style={styles.backBtnPlaceholder} />
+            )}
+          </View>
+
+          <View style={styles.headerCenter}>
+            <View style={styles.headerTitleWrap}>
+              <Text style={styles.headerTitleTrack}>Track</Text>
+              <Text style={styles.headerTitleGo}>Go</Text>
+            </View>
+          </View>
+
+          <View style={styles.headerSide} />
+        </View>
+
+        <View style={styles.headerBottomLine} />
+      </ImageBackground>
+    </View>
+  );
+}
 
 export default function RootLayout() {
   const router = useRouter();
 
-  // ✅ evita doble navegación (getInitialURL + event, o misma url repetida)
   const lastHandledUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -49,29 +110,22 @@ export default function RootLayout() {
       const url = (urlRaw ?? "").trim();
       if (!url) return;
 
-      // ✅ idempotencia
       if (lastHandledUrlRef.current === url) return;
       lastHandledUrlRef.current = url;
 
-      // 1) Si el propio URL que llega es un maps link -> úsalo directo
       if (isLikelyMapsUrl(url)) {
         goToAdminUploadWithMaps(url);
         return;
       }
 
-      // 2) Si llega un deep link tipo trackgo://...?mapsUrl=...
       const mapsParam = extractMapsUrlFromQuery(url);
       if (mapsParam) {
-        // mapsParam puede ser un link completo o un string raro; si no es maps, igual lo pasamos
-        // porque tu screen puede decidir qué hacer.
         goToAdminUploadWithMaps(mapsParam);
       }
     };
 
-    // initial URL (cold start)
     Linking.getInitialURL().then(handleUrl).catch(() => { });
 
-    // runtime events
     const sub = Linking.addEventListener("url", (e) => handleUrl(e.url));
 
     return () => sub.remove();
@@ -85,13 +139,137 @@ export default function RootLayout() {
           translucent={false}
           backgroundColor="#0B1220"
         />
+
         <Stack
           screenOptions={{
-            headerShown: false,
+            headerShown: true,
+            header: ({ navigation, route, back, options }) => (
+              <RootHeader
+                title={
+                  typeof options.title === "string"
+                    ? options.title
+                    : route.name === "index"
+                      ? "TrackGo"
+                      : "TrackGo"
+                }
+                canGoBack={!!back}
+                onGoBack={() => navigation.goBack()}
+              />
+            ),
             contentStyle: { backgroundColor: "#0B1220" },
+            animation: "none",
+            animationDuration: 0,
           }}
-        />
+        >
+          {/* USER / ROOT */}
+          <Stack.Screen name="index" options={{ title: "TrackGo" }} />
+          <Stack.Screen name="user-history" options={{ title: "TrackGo" }} />
+
+          {/* PANTALLAS SIN HEADER PROPIO */}
+          <Stack.Screen name="login" options={{ headerShown: false }} />
+          <Stack.Screen name="no-access" options={{ headerShown: false }} />
+
+          {/* ADMIN MANEJA SU PROPIO LAYOUT Y HEADER */}
+          <Stack.Screen name="admin" options={{ headerShown: false }} />
+        </Stack>
       </AuthProvider>
     </SafeAreaProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  headerShell: {
+    backgroundColor: "#0B1220",
+  },
+
+  headerBg: {
+    height: 88,
+    justifyContent: "flex-end",
+    overflow: "hidden",
+  },
+
+  headerBgImage: {
+    opacity: 0.95,
+  },
+
+  headerTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(8, 42, 98, 0.30)",
+  },
+
+  headerInner: {
+    height: 72,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  headerSide: {
+    width: 48,
+    alignItems: "flex-start",
+    justifyContent: "center",
+  },
+
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.34)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+  },
+
+  backBtnPlaceholder: {
+    width: 40,
+    height: 40,
+  },
+
+  headerCenter: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+  },
+
+  headerTitleText: {
+    color: "#F8FAFC",
+    fontSize: 24,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+
+  headerBottomLine: {
+    height: 1.5,
+    backgroundColor: "rgba(12, 22, 34, 0.65)",
+  },
+
+  pressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.98 }],
+  },
+
+  headerTitleWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  headerTitleTrack: {
+    color: "#F8FAFC",
+    fontSize: 24,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+
+  headerTitleGo: {
+    color: "#1EA7FF",
+    fontSize: 24,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+    textShadowColor: "rgba(30,167,255,0.6)",
+    textShadowRadius: 8,
+  },
+});

@@ -1,4 +1,4 @@
-// app/admin/index.tsx (o donde tengas este Home)
+// src/screens/admin/AdminHomeScreen.tsx
 // ✅ FIX: el contador de rejected/visited (hoy y semana) ya NO se infla con:
 // - eventos de clientes ELIMINADOS
 // - eventos viejos de clientes REASIGNADOS / RESTAURADOS (porque ya no coinciden con el status actual del client)
@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+    ImageBackground,
     Pressable,
     RefreshControl,
     ScrollView,
@@ -16,6 +17,8 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+import bgMap from "../../../assets/bg-map.png";
 import { useAuth } from "../../auth/useAuth";
 import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
@@ -26,7 +29,11 @@ type AdminAction = {
     title: string;
     subtitle: string;
     icon: any;
-    route: "/admin/users" | "/admin/clients" | "/admin/accounting";
+    route:
+    | "/admin/users"
+    | "/admin/clients"
+    | "/admin/accounting"
+    | "/admin/leads";
 };
 
 function dayKeyFromDate(d: Date) {
@@ -89,6 +96,53 @@ function getRatePerVisit(u?: UserDoc | null) {
     return typeof n === "number" && isFinite(n) ? n : 0;
 }
 
+function isMetaLead(c: ClientDoc) {
+    const source = String((c as any)?.source ?? "").trim().toLowerCase();
+    return source === "whatsapp_meta";
+}
+
+function getDerivedLeadQueueStatus(c: ClientDoc): "verified" | "pending_review" | "incomplete" | "not_suitable" {
+    const verificationStatus = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
+    const leadQuality = String((c as any)?.leadQuality ?? "").trim().toLowerCase();
+    const parseStatus = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
+
+    if (verificationStatus === "verified") return "verified";
+    if (verificationStatus === "pending_review") return "pending_review";
+    if (verificationStatus === "incomplete") return "incomplete";
+    if (verificationStatus === "not_suitable") return "not_suitable";
+
+    if (leadQuality === "not_suitable") return "not_suitable";
+    if (parseStatus === "ready") return "pending_review";
+
+    return "incomplete";
+}
+
+function getLeadQueueStats(clients: ClientDoc[]) {
+    let verified = 0;
+    let incomplete = 0;
+    let notSuitable = 0;
+    let pendingReview = 0;
+
+    for (const c of clients) {
+        if (!isMetaLead(c)) continue;
+
+        const status = getDerivedLeadQueueStatus(c);
+        if (status === "verified") verified += 1;
+        else if (status === "pending_review") pendingReview += 1;
+        else if (status === "not_suitable") notSuitable += 1;
+        else incomplete += 1;
+    }
+
+    return {
+        verified,
+        incomplete,
+        notSuitable,
+        pendingReview,
+        total: verified + incomplete + notSuitable + pendingReview,
+        activeQueue: incomplete + notSuitable + pendingReview,
+    };
+}
+
 export default function AdminHomeScreen() {
     const { profile, logout } = useAuth();
     const router = useRouter();
@@ -116,6 +170,12 @@ export default function AdminHomeScreen() {
                 route: "/admin/clients",
             },
             {
+                title: "Leads Meta",
+                subtitle: "Por revisar, incompletos y no aptos",
+                icon: "funnel-outline",
+                route: "/admin/leads",
+            },
+            {
                 title: "Contabilidad",
                 subtitle: "Inversión semanal y ganancia real",
                 icon: "stats-chart-outline",
@@ -134,17 +194,11 @@ export default function AdminHomeScreen() {
         reloadUsers();
     }, [reloadUsers]);
 
-    // ✅ Clientes realtime (estado actual)
     useEffect(() => {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
         return () => unsub();
     }, []);
 
-
-
-
-
-    // ✅ Events realtime HOY
     useEffect(() => {
         const tk = todayKey();
         const unsub = subscribeDailyEventsByRange(
@@ -156,7 +210,6 @@ export default function AdminHomeScreen() {
         return () => unsub();
     }, [refreshTick]);
 
-    // ✅ Events realtime SEMANA
     useEffect(() => {
         const { startKey, endKey } = weekRangeKeys(new Date());
         const unsub = subscribeDailyEventsByRange(
@@ -180,24 +233,19 @@ export default function AdminHomeScreen() {
         return m;
     }, [clients]);
 
-    // ✅ Pendientes reales (estado actual en clients)
     const pendingNow = useMemo(() => {
         return clients.filter((c) => c.status === "pending").length;
     }, [clients]);
 
-    /**
-     * ✅ FILTRO ANTI-INFLADO
-     * Solo contamos el evento si:
-     * 1) el cliente todavía existe (no fue eliminado)
-     * 2) el estado actual del cliente COINCIDE con el type del evento más reciente dentro del rango
-     */
+    const leadQueueStats = useMemo(() => getLeadQueueStats(clients), [clients]);
+
     const shouldCountEvent = useCallback(
         (e: DailyEventDoc) => {
             const cid = (e as any)?.clientId;
             if (!cid) return false;
 
             const c = clientById.get(cid);
-            if (!c) return false; // eliminado
+            if (!c) return false;
 
             return c.status === e.type;
         },
@@ -283,7 +331,7 @@ export default function AdminHomeScreen() {
         setRefreshing(true);
         try {
             await reloadUsers();
-            setRefreshTick((t) => t + 1); // resuscribe events
+            setRefreshTick((t) => t + 1);
         } finally {
             setRefreshing(false);
         }
@@ -310,132 +358,204 @@ export default function AdminHomeScreen() {
         <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
 
-            <ScrollView
-                contentContainerStyle={styles.scrollContent}
-                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#FFFFFF" />}
-                showsVerticalScrollIndicator={false}
+            <ImageBackground
+                source={bgMap}
+                style={styles.bg}
+                imageStyle={styles.bgImage}
+                resizeMode="cover"
             >
-                <View style={styles.header}>
-                    <View style={styles.headerLeft}>
-                        <Text style={styles.hTitle}>Admin</Text>
-                        <Text style={styles.hSub} numberOfLines={1}>
-                            Hola, <Text style={styles.hSubStrong}>{profile?.name ?? "—"}</Text>
-                        </Text>
-                    </View>
-
-                    <Pressable onPress={logout} style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed]}>
-                        <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
-                    </Pressable>
-                </View>
-
-                <View style={styles.quickRow}>
-                    <Pressable
-                        onPress={() => router.push({ pathname: "/admin/report" as any })}
-                        style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
-                    >
-                        <View style={styles.quickTop}>
-                            <Ionicons name="cash-outline" size={18} color={COLORS.text} />
-                            <View style={[styles.badge, styles.badgeOk]}>
-                                <Text style={[styles.badgeText, styles.badgeTextOk]}>HOY</Text>
-                            </View>
-                        </View>
-
-                        <Text style={styles.quickTitle}>Cobranza de hoy</Text>
-                        <Text style={styles.quickMoney} numberOfLines={1}>
-                            R$ {todayStats.amountTotal.toFixed(2)}
-                        </Text>
-
-                        <View style={styles.tinyRow}>
-                            <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={todayStats.visited} label="Visitados" />
-                            <TinyStat icon="close-circle-outline" color={COLORS.bad} value={todayStats.rejected} label="Rechazados" />
-                            <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
-                        </View>
-
-                        <Text style={styles.quickSubMuted} numberOfLines={1}>
-                            Top: {topUserLabel}
-                        </Text>
-                    </Pressable>
-
-                    <Pressable
-                        onPress={() => router.push({ pathname: "/admin/history" as any })}
-                        style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
-                    >
-                        <View style={styles.quickTop}>
-                            <Ionicons name="calendar-outline" size={18} color={COLORS.text} />
-                            <View style={[styles.badge, styles.badgePrimary]}>
-                                <Text style={[styles.badgeText, styles.badgeTextPrimary]}>SEMANA</Text>
-                            </View>
-                        </View>
-
-                        <Text style={styles.quickTitle}>Cierre semanal</Text>
-                        <Text style={styles.quickMoney} numberOfLines={1}>
-                            R$ {weekStats.amountTotal.toFixed(2)}
-                        </Text>
-
-                        <View style={styles.tinyRow}>
-                            <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={weekStats.visited} label="Visitados" />
-                            <TinyStat icon="close-circle-outline" color={COLORS.bad} value={weekStats.rejected} label="Rechazados" />
-                            <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
-                        </View>
-
-                        <Text style={styles.quickSubMuted} numberOfLines={1}>
-                            Lunes → Domingo
-                        </Text>
-                    </Pressable>
-                </View>
-
-                <View style={styles.list}>
-                    {actions.map((a) => (
-                        <Pressable
-                            key={a.route}
-                            onPress={() => router.push({ pathname: a.route as any })}
-                            style={({ pressed }) => [styles.item, pressed && styles.pressed]}
+                <View style={styles.overlay}>
+                    <View style={styles.screen}>
+                        <ScrollView
+                            contentContainerStyle={styles.scrollContent}
+                            refreshControl={
+                                <RefreshControl
+                                    refreshing={refreshing}
+                                    onRefresh={onRefresh}
+                                    tintColor="#FFFFFF"
+                                />
+                            }
+                            showsVerticalScrollIndicator={false}
                         >
-                            <View style={styles.itemLeft}>
-                                <View style={styles.itemIconWrap}>
-                                    <Ionicons name={a.icon} size={20} color={COLORS.text} />
-                                </View>
-
-                                <View style={styles.itemTextWrap}>
-                                    <Text style={styles.itemTitle}>{a.title}</Text>
-                                    <Text style={styles.itemSub} numberOfLines={1}>
-                                        {a.subtitle}
+                            <View style={styles.header}>
+                                <View style={styles.headerLeft}>
+                                    <Text style={styles.hTitle}>Admin</Text>
+                                    <Text style={styles.hSub} numberOfLines={1}>
+                                        Hola, <Text style={styles.hSubStrong}>{profile?.name ?? "—"}</Text>
                                     </Text>
                                 </View>
                             </View>
 
-                            <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-                        </Pressable>
-                    ))}
-                </View>
+                            <View style={styles.topToolbar}>
+                                {actions.map((a) => (
+                                    <Pressable
+                                        key={a.route}
+                                        onPress={() => router.push({ pathname: a.route as any })}
+                                        style={({ pressed }) => [styles.topToolBtn, pressed && styles.pressed]}
+                                    >
+                                        <View style={styles.topToolIconWrap}>
+                                            <Ionicons name={a.icon} size={18} color={COLORS.text} />
+                                        </View>
+                                        <Text style={styles.topToolText} numberOfLines={1}>
+                                            {a.title}
+                                        </Text>
+                                    </Pressable>
+                                ))}
 
-                <Text style={styles.footer}>© {new Date().getFullYear()} TrackGo Admin</Text>
-            </ScrollView>
+                                <Pressable
+                                    onPress={logout}
+                                    style={({ pressed }) => [styles.topToolBtn, pressed && styles.pressed]}
+                                >
+                                    <View style={[styles.topToolIconWrap, styles.topToolLogout]}>
+                                        <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
+                                    </View>
+                                    <Text style={styles.topToolText} numberOfLines={1}>
+                                        Salir
+                                    </Text>
+                                </Pressable>
+                            </View>
+
+                            <View style={styles.quickRow}>
+                                <Pressable
+                                    onPress={() => router.push({ pathname: "/admin/report" as any })}
+                                    style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
+                                >
+                                    <View style={styles.quickTop}>
+                                        <Ionicons name="cash-outline" size={18} color={COLORS.text} />
+                                        <View style={[styles.badge, styles.badgeOk]}>
+                                            <Text style={[styles.badgeText, styles.badgeTextOk]}>HOY</Text>
+                                        </View>
+                                    </View>
+
+                                    <Text style={styles.quickTitle}>Cobranza de hoy</Text>
+                                    <Text style={styles.quickMoney} numberOfLines={1}>
+                                        R$ {todayStats.amountTotal.toFixed(2)}
+                                    </Text>
+
+                                    <View style={styles.tinyRow}>
+                                        <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={todayStats.visited} label="Visitados" />
+                                        <TinyStat icon="close-circle-outline" color={COLORS.bad} value={todayStats.rejected} label="Rechazados" />
+                                        <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
+                                    </View>
+
+                                    <Text style={styles.quickSubMuted} numberOfLines={1}>
+                                        Top: {topUserLabel}
+                                    </Text>
+                                </Pressable>
+
+                                <Pressable
+                                    onPress={() => router.push({ pathname: "/admin/history" as any })}
+                                    style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
+                                >
+                                    <View style={styles.quickTop}>
+                                        <Ionicons name="calendar-outline" size={18} color={COLORS.text} />
+                                        <View style={[styles.badge, styles.badgePrimary]}>
+                                            <Text style={[styles.badgeText, styles.badgeTextPrimary]}>SEMANA</Text>
+                                        </View>
+                                    </View>
+
+                                    <Text style={styles.quickTitle}>Cierre semanal</Text>
+                                    <Text style={styles.quickMoney} numberOfLines={1}>
+                                        R$ {weekStats.amountTotal.toFixed(2)}
+                                    </Text>
+
+                                    <View style={styles.tinyRow}>
+                                        <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={weekStats.visited} label="Visitados" />
+                                        <TinyStat icon="close-circle-outline" color={COLORS.bad} value={weekStats.rejected} label="Rechazados" />
+                                        <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
+                                    </View>
+
+                                    <Text style={styles.quickSubMuted} numberOfLines={1}>
+                                        Lunes → Domingo
+                                    </Text>
+                                </Pressable>
+                            </View>
+
+                            <Pressable
+                                onPress={() => router.push({ pathname: "/admin/leads" as any })}
+                                style={({ pressed }) => [styles.leadsBanner, pressed && styles.pressed]}
+                            >
+                                <View style={styles.leadsBannerTop}>
+                                    <View style={styles.leadsBannerIconWrap}>
+                                        <Ionicons name="funnel-outline" size={18} color={COLORS.text} />
+                                    </View>
+
+                                    <View style={[styles.badge, styles.badgePrimarySoft]}>
+                                        <Text style={[styles.badgeText, styles.badgeTextPrimarySoft]}>META LEADS</Text>
+                                    </View>
+                                </View>
+
+                                <View style={styles.leadsStatsRow}>
+                                    <TinyStat icon="help-circle-outline" color={COLORS.info} value={leadQueueStats.pendingReview} label="Revisión" />
+                                    <TinyStat icon="document-text-outline" color={COLORS.warn} value={leadQueueStats.incomplete} label="Incompletos" />
+                                    <TinyStat icon="close-circle-outline" color={COLORS.bad} value={leadQueueStats.notSuitable} label="No aptos" />
+                                    <TinyStat icon="checkmark-done-outline" color={COLORS.ok} value={leadQueueStats.verified} label="Verificados" />
+                                </View>
+
+                                <Text style={styles.quickSubMuted} numberOfLines={1}>
+                                    Cola activa: {leadQueueStats.activeQueue} · Total Meta: {leadQueueStats.total}
+                                </Text>
+                            </Pressable>
+                        </ScrollView>
+
+                        <View pointerEvents="none" style={styles.bottomFadeMask} />
+
+                        <View style={styles.bottomInfoBar}>
+                            <Text style={styles.bottomInfoText}>© {new Date().getFullYear()} TrackGo Admin</Text>
+                        </View>
+                    </View>
+                </View>
+            </ImageBackground>
         </SafeAreaView>
     );
 }
 
 const COLORS = {
     bg: "#0B1220",
-    card: "#111827",
-    border: "#1F2937",
+    card: "rgba(17, 24, 39, 0.72)",
+    border: "rgba(255,255,255,0.08)",
     text: "#F9FAFB",
     muted: "#9CA3AF",
 
     ok: "#22C55E",
     bad: "#F87171",
     warn: "#FBBF24",
+    info: "#60A5FA",
 
     primarySoft: "#C4B5FD",
 };
 
 const styles = StyleSheet.create({
-    safe: { flex: 1, backgroundColor: COLORS.bg, paddingHorizontal: 16 },
-    scrollContent: { paddingBottom: 18 },
+    safe: {
+        flex: 1,
+        backgroundColor: COLORS.bg,
+    },
+
+    bg: {
+        flex: 1,
+    },
+
+    bgImage: {
+        opacity: 0.55,
+    },
+
+    overlay: {
+        flex: 1,
+        backgroundColor: "rgba(11,18,32,0.40)",
+        paddingHorizontal: 16,
+    },
+
+    screen: {
+        flex: 1,
+    },
+
+    scrollContent: {
+        paddingBottom: 110,
+    },
 
     header: {
         paddingTop: 10,
-        paddingBottom: 8,
+        paddingBottom: 10,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
@@ -443,23 +563,46 @@ const styles = StyleSheet.create({
     },
     headerLeft: { flex: 1, gap: 3 },
     hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.5 },
-    hSub: { color: COLORS.muted, fontSize: 13, fontWeight: "700" },
+    hSub: { color: "#D1D5DB", fontSize: 13, fontWeight: "700" },
     hSubStrong: { color: COLORS.text, fontWeight: "900" },
 
-    logoutBtn: {
-        width: 42,
-        height: 42,
-        borderRadius: 14,
-        backgroundColor: "#0F172A",
+    pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
+
+    topToolbar: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 10,
+        marginBottom: 60,
+        top: 20
+    },
+    topToolBtn: {
+        width: "10.4%",
+        minWidth: 62,
+        alignItems: "center",
+        gap: 6,
+    },
+    topToolIconWrap: {
+        width: 46,
+        height: 46,
+        borderRadius: 16,
+        backgroundColor: "rgba(15, 23, 42, 0.72)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
     },
+    topToolLogout: {
+        backgroundColor: "rgba(127, 29, 29, 0.28)",
+        borderColor: "rgba(248,113,113,0.18)",
+    },
+    topToolText: {
+        color: COLORS.text,
+        fontSize: 11,
+        fontWeight: "800",
+        textAlign: "center",
+    },
 
-    pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
-
-    quickRow: { flexDirection: "row", gap: 12, marginTop: 8, marginBottom: 14 },
+    quickRow: { flexDirection: "row", gap: 12, marginTop: 2, marginBottom: 14 },
     quickCard: {
         flex: 1,
         backgroundColor: COLORS.card,
@@ -468,6 +611,7 @@ const styles = StyleSheet.create({
         borderColor: COLORS.border,
         padding: 12,
         gap: 6,
+        overflow: "hidden",
     },
 
     quickTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
@@ -485,6 +629,8 @@ const styles = StyleSheet.create({
     badgeTextOk: { color: "#86EFAC" },
     badgePrimary: { backgroundColor: "rgba(124,58,237,0.16)", borderColor: "rgba(124,58,237,0.35)" },
     badgeTextPrimary: { color: COLORS.primarySoft },
+    badgePrimarySoft: { backgroundColor: "rgba(96,165,250,0.12)", borderColor: "rgba(96,165,250,0.28)" },
+    badgeTextPrimarySoft: { color: "#BFDBFE" },
 
     quickTitle: { color: COLORS.text, fontSize: 13, fontWeight: "900", marginTop: 2 },
     quickMoney: { color: COLORS.text, fontSize: 16, fontWeight: "900", marginTop: 1 },
@@ -500,9 +646,9 @@ const styles = StyleSheet.create({
         flex: 1,
         height: 30,
         borderRadius: 12,
-        backgroundColor: "rgba(255,255,255,0.04)",
+        backgroundColor: "rgba(255,255,255,0.05)",
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.07)",
+        borderColor: "rgba(255,255,255,0.08)",
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
@@ -511,43 +657,65 @@ const styles = StyleSheet.create({
     },
     tinyStatValue: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
 
-    quickSubMuted: { color: COLORS.muted, fontSize: 11, fontWeight: "800", opacity: 0.85, marginTop: 2 },
+    quickSubMuted: { color: "#CBD5E1", fontSize: 11, fontWeight: "800", opacity: 0.9, marginTop: 2 },
 
-    list: { gap: 12 },
-
-    item: {
+    leadsBanner: {
         backgroundColor: COLORS.card,
         borderRadius: 18,
         borderWidth: 1,
         borderColor: COLORS.border,
-        paddingVertical: 14,
-        paddingHorizontal: 14,
+        padding: 14,
+        gap: 10,
+        marginBottom: 14,
+    },
+    leadsBannerTop: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
+        gap: 10,
     },
-    itemLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
-    itemIconWrap: {
-        width: 44,
-        height: 44,
-        borderRadius: 16,
-        backgroundColor: "#0F172A",
+    leadsBannerIconWrap: {
+        width: 42,
+        height: 42,
+        borderRadius: 14,
+        backgroundColor: "rgba(15, 23, 42, 0.72)",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
     },
-    itemTextWrap: { flex: 1, gap: 2 },
-    itemTitle: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
-    itemSub: { color: COLORS.muted, fontSize: 12, fontWeight: "700" },
+    leadsStatsRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+    },
 
-    footer: {
-        marginTop: 16,
-        marginBottom: 10,
-        textAlign: "center",
-        color: COLORS.muted,
+    bottomFadeMask: {
+        position: "absolute",
+        left: -16,
+        right: -16,
+        bottom: 0,
+        height: 55,
+        backgroundColor: "rgba(11,18,32,0.97)",
+    },
+
+    bottomInfoBar: {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 10,
+        height: 46,
+        borderRadius: 14,
+        backgroundColor: "rgba(15, 23, 42, 0.82)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    bottomInfoText: {
+        color: "#CBD5E1",
         fontSize: 12,
         fontWeight: "800",
-        opacity: 0.9,
     },
 });

@@ -17,6 +17,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminBackground from "../../components/admin/AdminBackground";
 
 import { db } from "../../config/firebase";
 import { listUsers, updateUserRatePerVisit, upsertUserDoc } from "../../data/repositories/usersRepo";
@@ -357,342 +358,343 @@ export default function AdminUsersScreen() {
     return (
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
-
-            {/* Header */}
-            <View style={[styles.header, { paddingTop: 10 }]}>
-                <View style={{ flex: 1 }}>
-                    <Text style={styles.hTitle}>Usuarios</Text>
-                    <Text style={styles.hSub} numberOfLines={1}>
-                        Total <Text style={styles.hStrong}>{counts.total}</Text> · Activos{" "}
-                        <Text style={styles.hStrong}>{counts.actives}</Text> · Bloq{" "}
-                        <Text style={styles.hStrong}>{counts.blocked}</Text> · Admin{" "}
-                        <Text style={styles.hStrong}>{counts.admins}</Text>
-                    </Text>
-                </View>
-
-                <IconBtn
-                    icon={loading ? "sync-outline" : "refresh-outline"}
-                    label="Refrescar"
-                    onPress={reload}
-                    disabled={loading}
-                />
-            </View>
-
-            {/* Search */}
-            <View style={styles.searchWrap}>
-                <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                <TextInput
-                    value={q}
-                    onChangeText={setQ}
-                    placeholder="Buscar por nombre, email, rol o WhatsApp…"
-                    placeholderTextColor={COLORS.muted}
-                    style={styles.searchInput}
-                />
-                {!!q ? (
-                    <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
-                        <Ionicons name="close" size={18} color={COLORS.text} />
-                    </Pressable>
-                ) : null}
-            </View>
-
-            {/* List */}
-            <FlatList
-                data={filteredUsers}
-                keyExtractor={(u) => u.id}
-                contentContainerStyle={[styles.listContent, { paddingBottom: fabBottom + 90 }]}
-                renderItem={({ item }) => {
-                    const displayEmail = (item.email ?? "").trim();
-                    const displayName = (item.name ?? "").trim() || "Usuario";
-                    const wa = normalizePhone(getWhatsappPhone(item));
-
-                    const isUser = item.role === "user";
-                    const feeDraft = feeDraftById[item.id] ?? String(getRatePerVisit(item));
-                    const feeSaving = !!feeSavingById[item.id];
-                    const blockSaving = !!blockSavingById[item.id];
-
-                    return (
-                        <View style={styles.card}>
-                            <View style={styles.cardTop}>
-                                <View style={{ flex: 1, gap: 4 }}>
-                                    <Text style={styles.userName} numberOfLines={1}>
-                                        {displayName}
-                                    </Text>
-
-                                    {displayEmail ? (
-                                        <Text style={styles.userEmail} numberOfLines={1}>
-                                            {displayEmail}
-                                        </Text>
-                                    ) : (
-                                        <Text style={styles.userEmailMuted}>Sin email</Text>
-                                    )}
-
-                                    {/* ✅ WhatsApp phone */}
-                                    {wa ? (
-                                        <View style={styles.phoneRow}>
-                                            <Ionicons name="logo-whatsapp" size={14} color={COLORS.pending} />
-                                            <Text style={styles.userPhone} numberOfLines={1}>
-                                                {wa}
-                                            </Text>
-                                        </View>
-                                    ) : (
-                                        <Text style={styles.userEmailMuted}>Sin WhatsApp</Text>
-                                    )}
-                                </View>
-
-                                <Pill role={item.role} active={!!item.active} />
-                            </View>
-
-                            <View style={styles.actionsRow}>
-                                <View style={{ flexDirection: "row", gap: 10 }}>
-                                    {/* ✅ WhatsApp */}
-                                    <IconBtn
-                                        icon="logo-whatsapp"
-                                        label="WhatsApp"
-                                        onPress={() => openWhatsApp(item)}
-                                        disabled={!wa}
-                                        tint={wa ? COLORS.pending : COLORS.muted}
-                                    />
-
-                                    {/* ✅ Edit user */}
-                                    <IconBtn
-                                        icon="create-outline"
-                                        label="Editar usuario"
-                                        onPress={() => startEditUser(item)}
-                                    />
-
-                                    {/* ✅ Block/unblock */}
-                                    <IconBtn
-                                        icon={item.active ? "lock-closed-outline" : "lock-open-outline"}
-                                        label={item.active ? "Bloquear" : "Desbloquear"}
-                                        onPress={() => toggleBlockUser(item)}
-                                        disabled={blockSaving}
-                                        danger={item.active}
-                                    />
-                                </View>
-
-                                <View style={styles.createdAtPill}>
-                                    <Ionicons name="time-outline" size={14} color={COLORS.muted} />
-                                    <Text style={styles.createdAtText}>
-                                        {item.createdAt ? new Date(item.createdAt).toLocaleDateString() : "—"}
-                                    </Text>
-                                </View>
-                            </View>
-                        </View>
-                    );
-                }}
-                ListEmptyComponent={
-                    <View style={styles.empty}>
-                        <Ionicons name="people-outline" size={24} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>
-                            {q.trim() ? "No hay resultados con ese filtro." : "Aún no hay usuarios."}
+            <AdminBackground>
+                {/* Header */}
+                <View style={[styles.header, { paddingTop: 10 }]}>
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.hTitle}>Usuarios</Text>
+                        <Text style={styles.hSub} numberOfLines={1}>
+                            Total <Text style={styles.hStrong}>{counts.total}</Text> · Activos{" "}
+                            <Text style={styles.hStrong}>{counts.actives}</Text> · Bloq{" "}
+                            <Text style={styles.hStrong}>{counts.blocked}</Text> · Admin{" "}
+                            <Text style={styles.hStrong}>{counts.admins}</Text>
                         </Text>
                     </View>
-                }
-            />
 
-            {/* FAB */}
-            <Pressable
-                onPress={() => {
-                    setOpenCreate(true);
-                    setErr(null);
-                }}
-                style={({ pressed }) => [styles.fab, { bottom: fabBottom }, pressed && styles.fabPressed]}
-                accessibilityLabel="Registrar perfil"
-            >
-                <Ionicons name="person-add" size={20} color="#fff" />
-            </Pressable>
+                    <IconBtn
+                        icon={loading ? "sync-outline" : "refresh-outline"}
+                        label="Refrescar"
+                        onPress={reload}
+                        disabled={loading}
+                    />
+                </View>
 
-            {/* Modal Create */}
-            <Modal visible={openCreate} transparent animationType="fade" onRequestClose={() => setOpenCreate(false)}>
-                <View style={styles.modalOverlay}>
-                    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                        <View style={styles.modalCard}>
-                            <View style={styles.modalHeader}>
-                                <Text style={styles.modalTitle}>Registrar perfil</Text>
-                                <Pressable
-                                    onPress={() => {
-                                        resetCreateForm();
-                                        setOpenCreate(false);
-                                    }}
-                                    style={styles.modalClose}
-                                >
-                                    <Ionicons name="close" size={18} color={COLORS.text} />
-                                </Pressable>
+                {/* Search */}
+                <View style={styles.searchWrap}>
+                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                    <TextInput
+                        value={q}
+                        onChangeText={setQ}
+                        placeholder="Buscar por nombre, email, rol o WhatsApp…"
+                        placeholderTextColor={COLORS.muted}
+                        style={styles.searchInput}
+                    />
+                    {!!q ? (
+                        <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
+                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        </Pressable>
+                    ) : null}
+                </View>
+
+                {/* List */}
+                <FlatList
+                    data={filteredUsers}
+                    keyExtractor={(u) => u.id}
+                    contentContainerStyle={[styles.listContent, { paddingBottom: fabBottom + 90 }]}
+                    renderItem={({ item }) => {
+                        const displayEmail = (item.email ?? "").trim();
+                        const displayName = (item.name ?? "").trim() || "Usuario";
+                        const wa = normalizePhone(getWhatsappPhone(item));
+
+                        const isUser = item.role === "user";
+                        const feeDraft = feeDraftById[item.id] ?? String(getRatePerVisit(item));
+                        const feeSaving = !!feeSavingById[item.id];
+                        const blockSaving = !!blockSavingById[item.id];
+
+                        return (
+                            <View style={styles.card}>
+                                <View style={styles.cardTop}>
+                                    <View style={{ flex: 1, gap: 4 }}>
+                                        <Text style={styles.userName} numberOfLines={1}>
+                                            {displayName}
+                                        </Text>
+
+                                        {displayEmail ? (
+                                            <Text style={styles.userEmail} numberOfLines={1}>
+                                                {displayEmail}
+                                            </Text>
+                                        ) : (
+                                            <Text style={styles.userEmailMuted}>Sin email</Text>
+                                        )}
+
+                                        {/* ✅ WhatsApp phone */}
+                                        {wa ? (
+                                            <View style={styles.phoneRow}>
+                                                <Ionicons name="logo-whatsapp" size={14} color={COLORS.pending} />
+                                                <Text style={styles.userPhone} numberOfLines={1}>
+                                                    {wa}
+                                                </Text>
+                                            </View>
+                                        ) : (
+                                            <Text style={styles.userEmailMuted}>Sin WhatsApp</Text>
+                                        )}
+                                    </View>
+
+                                    <Pill role={item.role} active={!!item.active} />
+                                </View>
+
+                                <View style={styles.actionsRow}>
+                                    <View style={{ flexDirection: "row", gap: 10 }}>
+                                        {/* ✅ WhatsApp */}
+                                        <IconBtn
+                                            icon="logo-whatsapp"
+                                            label="WhatsApp"
+                                            onPress={() => openWhatsApp(item)}
+                                            disabled={!wa}
+                                            tint={wa ? COLORS.pending : COLORS.muted}
+                                        />
+
+                                        {/* ✅ Edit user */}
+                                        <IconBtn
+                                            icon="create-outline"
+                                            label="Editar usuario"
+                                            onPress={() => startEditUser(item)}
+                                        />
+
+                                        {/* ✅ Block/unblock */}
+                                        <IconBtn
+                                            icon={item.active ? "lock-closed-outline" : "lock-open-outline"}
+                                            label={item.active ? "Bloquear" : "Desbloquear"}
+                                            onPress={() => toggleBlockUser(item)}
+                                            disabled={blockSaving}
+                                            danger={item.active}
+                                        />
+                                    </View>
+
+                                    <View style={styles.createdAtPill}>
+                                        <Ionicons name="time-outline" size={14} color={COLORS.muted} />
+                                        <Text style={styles.createdAtText}>
+                                            {item.createdAt ? new Date(item.createdAt).toLocaleDateString() : "—"}
+                                        </Text>
+                                    </View>
+                                </View>
                             </View>
-
-                            <Text style={styles.modalHint}>
-                                Crea el usuario en Firebase Auth (email/password) → copia su UID → regístralo aquí.
+                        );
+                    }}
+                    ListEmptyComponent={
+                        <View style={styles.empty}>
+                            <Ionicons name="people-outline" size={24} color={COLORS.muted} />
+                            <Text style={styles.emptyText}>
+                                {q.trim() ? "No hay resultados con ese filtro." : "Aún no hay usuarios."}
                             </Text>
+                        </View>
+                    }
+                />
 
-                            <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>UID *</Text>
-                                    <TextInput
-                                        placeholder="UID de Firebase Auth"
-                                        placeholderTextColor={COLORS.muted}
-                                        value={uid}
-                                        onChangeText={setUid}
-                                        autoCapitalize="none"
-                                        style={styles.input}
-                                    />
-                                </View>
+                {/* FAB */}
+                <Pressable
+                    onPress={() => {
+                        setOpenCreate(true);
+                        setErr(null);
+                    }}
+                    style={({ pressed }) => [styles.fab, { bottom: fabBottom }, pressed && styles.fabPressed]}
+                    accessibilityLabel="Registrar perfil"
+                >
+                    <Ionicons name="person-add" size={20} color="#fff" />
+                </Pressable>
 
-                                <View style={styles.grid2}>
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Nombre</Text>
-                                        <TextInput
-                                            placeholder="Opcional"
-                                            placeholderTextColor={COLORS.muted}
-                                            value={name}
-                                            onChangeText={setName}
-                                            style={styles.input}
-                                        />
-                                    </View>
-
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Email</Text>
-                                        <TextInput
-                                            placeholder="Opcional"
-                                            placeholderTextColor={COLORS.muted}
-                                            value={email}
-                                            onChangeText={setEmail}
-                                            autoCapitalize="none"
-                                            style={styles.input}
-                                        />
-                                    </View>
-                                </View>
-
-                                {/* ✅ WhatsApp */}
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>Teléfono WhatsApp</Text>
-                                    <TextInput
-                                        placeholder="Ej: +55 91 99999-9999"
-                                        placeholderTextColor={COLORS.muted}
-                                        value={whatsappPhoneNew}
-                                        onChangeText={setWhatsappPhoneNew}
-                                        keyboardType="phone-pad"
-                                        style={styles.input}
-                                    />
-                                    <Text style={styles.hintSmall}>Se guarda como solo dígitos (con código país).</Text>
-                                </View>
-
-                                {/* ✅ tarifa inicial */}
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>Tarifa por visita (R$)</Text>
-                                    <TextInput
-                                        placeholder="Ej: 50"
-                                        placeholderTextColor={COLORS.muted}
-                                        value={ratePerVisitNew}
-                                        onChangeText={(t) => setRatePerVisitNew(onlyNumberLike(t))}
-                                        keyboardType="numeric"
-                                        style={styles.input}
-                                    />
-                                </View>
-
-                                {err ? (
-                                    <View style={styles.errorBox}>
-                                        <Ionicons name="alert-circle-outline" size={16} color={COLORS.rejected} />
-                                        <Text style={styles.errorText}>{err}</Text>
-                                    </View>
-                                ) : null}
-
-                                <View style={{ flexDirection: "row", gap: 10 }}>
+                {/* Modal Create */}
+                <Modal visible={openCreate} transparent animationType="fade" onRequestClose={() => setOpenCreate(false)}>
+                    <View style={styles.modalOverlay}>
+                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
+                            <View style={styles.modalCard}>
+                                <View style={styles.modalHeader}>
+                                    <Text style={styles.modalTitle}>Registrar perfil</Text>
                                     <Pressable
                                         onPress={() => {
                                             resetCreateForm();
                                             setOpenCreate(false);
                                         }}
-                                        style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
-                                        disabled={saving}
+                                        style={styles.modalClose}
                                     >
-                                        <Ionicons name="close-outline" size={18} color={COLORS.text} />
-                                        <Text style={styles.ghostBtnText}>Cancelar</Text>
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={registerProfile}
-                                        style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, saving && styles.btnDisabled]}
-                                        disabled={saving}
-                                    >
-                                        <Ionicons name="save-outline" size={18} color="#fff" />
-                                        <Text style={styles.primaryBtnText}>{saving ? "Guardando..." : "Registrar"}</Text>
+                                        <Ionicons name="close" size={18} color={COLORS.text} />
                                     </Pressable>
                                 </View>
-                            </ScrollView>
-                        </View>
-                    </KeyboardAvoidingView>
-                </View>
-            </Modal>
 
-            {/* Modal Edit */}
-            <Modal visible={openEdit} transparent animationType="fade" onRequestClose={cancelEditUser}>
-                <View style={styles.modalOverlay}>
-                    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                        <View style={styles.modalCard}>
-                            <View style={styles.modalHeader}>
-                                <Text style={styles.modalTitle}>Editar usuario</Text>
-                                <Pressable onPress={cancelEditUser} style={styles.modalClose}>
-                                    <Ionicons name="close" size={18} color={COLORS.text} />
-                                </Pressable>
+                                <Text style={styles.modalHint}>
+                                    Crea el usuario en Firebase Auth (email/password) → copia su UID → regístralo aquí.
+                                </Text>
+
+                                <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>UID *</Text>
+                                        <TextInput
+                                            placeholder="UID de Firebase Auth"
+                                            placeholderTextColor={COLORS.muted}
+                                            value={uid}
+                                            onChangeText={setUid}
+                                            autoCapitalize="none"
+                                            style={styles.input}
+                                        />
+                                    </View>
+
+                                    <View style={styles.grid2}>
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Nombre</Text>
+                                            <TextInput
+                                                placeholder="Opcional"
+                                                placeholderTextColor={COLORS.muted}
+                                                value={name}
+                                                onChangeText={setName}
+                                                style={styles.input}
+                                            />
+                                        </View>
+
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Email</Text>
+                                            <TextInput
+                                                placeholder="Opcional"
+                                                placeholderTextColor={COLORS.muted}
+                                                value={email}
+                                                onChangeText={setEmail}
+                                                autoCapitalize="none"
+                                                style={styles.input}
+                                            />
+                                        </View>
+                                    </View>
+
+                                    {/* ✅ WhatsApp */}
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Teléfono WhatsApp</Text>
+                                        <TextInput
+                                            placeholder="Ej: +55 91 99999-9999"
+                                            placeholderTextColor={COLORS.muted}
+                                            value={whatsappPhoneNew}
+                                            onChangeText={setWhatsappPhoneNew}
+                                            keyboardType="phone-pad"
+                                            style={styles.input}
+                                        />
+                                        <Text style={styles.hintSmall}>Se guarda como solo dígitos (con código país).</Text>
+                                    </View>
+
+                                    {/* ✅ tarifa inicial */}
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Tarifa por visita (R$)</Text>
+                                        <TextInput
+                                            placeholder="Ej: 50"
+                                            placeholderTextColor={COLORS.muted}
+                                            value={ratePerVisitNew}
+                                            onChangeText={(t) => setRatePerVisitNew(onlyNumberLike(t))}
+                                            keyboardType="numeric"
+                                            style={styles.input}
+                                        />
+                                    </View>
+
+                                    {err ? (
+                                        <View style={styles.errorBox}>
+                                            <Ionicons name="alert-circle-outline" size={16} color={COLORS.rejected} />
+                                            <Text style={styles.errorText}>{err}</Text>
+                                        </View>
+                                    ) : null}
+
+                                    <View style={{ flexDirection: "row", gap: 10 }}>
+                                        <Pressable
+                                            onPress={() => {
+                                                resetCreateForm();
+                                                setOpenCreate(false);
+                                            }}
+                                            style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
+                                            disabled={saving}
+                                        >
+                                            <Ionicons name="close-outline" size={18} color={COLORS.text} />
+                                            <Text style={styles.ghostBtnText}>Cancelar</Text>
+                                        </Pressable>
+
+                                        <Pressable
+                                            onPress={registerProfile}
+                                            style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, saving && styles.btnDisabled]}
+                                            disabled={saving}
+                                        >
+                                            <Ionicons name="save-outline" size={18} color="#fff" />
+                                            <Text style={styles.primaryBtnText}>{saving ? "Guardando..." : "Registrar"}</Text>
+                                        </Pressable>
+                                    </View>
+                                </ScrollView>
                             </View>
+                        </KeyboardAvoidingView>
+                    </View>
+                </Modal>
 
-                            <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>Nombre</Text>
-                                    <TextInput
-                                        placeholder="Nombre"
-                                        placeholderTextColor={COLORS.muted}
-                                        value={editName}
-                                        onChangeText={setEditName}
-                                        style={styles.input}
-                                    />
-                                </View>
-
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>Teléfono WhatsApp</Text>
-                                    <TextInput
-                                        placeholder="Ej: +55 91 99999-9999"
-                                        placeholderTextColor={COLORS.muted}
-                                        value={editWhatsapp}
-                                        onChangeText={setEditWhatsapp}
-                                        keyboardType="phone-pad"
-                                        style={styles.input}
-                                    />
-                                    <Text style={styles.hintSmall}>Se guarda como solo dígitos (con código país).</Text>
-                                </View>
-
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>Tarifa por visita (R$)</Text>
-                                    <TextInput
-                                        placeholder="Ej: 50"
-                                        placeholderTextColor={COLORS.muted}
-                                        value={editRate}
-                                        onChangeText={(t) => setEditRate(onlyNumberLike(t))}
-                                        keyboardType="numeric"
-                                        style={styles.input}
-                                    />
-                                </View>
-
-                                <View style={{ flexDirection: "row", gap: 10 }}>
-                                    <Pressable onPress={cancelEditUser} style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]} disabled={editSaving}>
-                                        <Ionicons name="close-outline" size={18} color={COLORS.text} />
-                                        <Text style={styles.ghostBtnText}>Cancelar</Text>
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={submitEditUser}
-                                        style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, editSaving && styles.btnDisabled]}
-                                        disabled={editSaving}
-                                    >
-                                        <Ionicons name="save-outline" size={18} color="#fff" />
-                                        <Text style={styles.primaryBtnText}>{editSaving ? "Guardando..." : "Guardar"}</Text>
+                {/* Modal Edit */}
+                <Modal visible={openEdit} transparent animationType="fade" onRequestClose={cancelEditUser}>
+                    <View style={styles.modalOverlay}>
+                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
+                            <View style={styles.modalCard}>
+                                <View style={styles.modalHeader}>
+                                    <Text style={styles.modalTitle}>Editar usuario</Text>
+                                    <Pressable onPress={cancelEditUser} style={styles.modalClose}>
+                                        <Ionicons name="close" size={18} color={COLORS.text} />
                                     </Pressable>
                                 </View>
-                            </ScrollView>
-                        </View>
-                    </KeyboardAvoidingView>
-                </View>
-            </Modal>
+
+                                <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Nombre</Text>
+                                        <TextInput
+                                            placeholder="Nombre"
+                                            placeholderTextColor={COLORS.muted}
+                                            value={editName}
+                                            onChangeText={setEditName}
+                                            style={styles.input}
+                                        />
+                                    </View>
+
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Teléfono WhatsApp</Text>
+                                        <TextInput
+                                            placeholder="Ej: +55 91 99999-9999"
+                                            placeholderTextColor={COLORS.muted}
+                                            value={editWhatsapp}
+                                            onChangeText={setEditWhatsapp}
+                                            keyboardType="phone-pad"
+                                            style={styles.input}
+                                        />
+                                        <Text style={styles.hintSmall}>Se guarda como solo dígitos (con código país).</Text>
+                                    </View>
+
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Tarifa por visita (R$)</Text>
+                                        <TextInput
+                                            placeholder="Ej: 50"
+                                            placeholderTextColor={COLORS.muted}
+                                            value={editRate}
+                                            onChangeText={(t) => setEditRate(onlyNumberLike(t))}
+                                            keyboardType="numeric"
+                                            style={styles.input}
+                                        />
+                                    </View>
+
+                                    <View style={{ flexDirection: "row", gap: 10 }}>
+                                        <Pressable onPress={cancelEditUser} style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]} disabled={editSaving}>
+                                            <Ionicons name="close-outline" size={18} color={COLORS.text} />
+                                            <Text style={styles.ghostBtnText}>Cancelar</Text>
+                                        </Pressable>
+
+                                        <Pressable
+                                            onPress={submitEditUser}
+                                            style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, editSaving && styles.btnDisabled]}
+                                            disabled={editSaving}
+                                        >
+                                            <Ionicons name="save-outline" size={18} color="#fff" />
+                                            <Text style={styles.primaryBtnText}>{editSaving ? "Guardando..." : "Guardar"}</Text>
+                                        </Pressable>
+                                    </View>
+                                </ScrollView>
+                            </View>
+                        </KeyboardAvoidingView>
+                    </View>
+                </Modal>
+            </AdminBackground>
         </SafeAreaView>
     );
 }

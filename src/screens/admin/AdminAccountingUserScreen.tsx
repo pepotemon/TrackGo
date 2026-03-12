@@ -3,6 +3,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+    FlatList,
+    Modal,
+    Pressable,
     ScrollView,
     StatusBar,
     StyleSheet,
@@ -10,6 +13,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminBackground from "../../components/admin/AdminBackground";
 
 import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
@@ -31,6 +35,46 @@ const COLORS = {
     bad: "#F87171",
     warn: "#FBBF24",
     info: "#60A5FA",
+};
+
+type MetricMode = "gross" | "assigned" | "real";
+
+type RowItem = {
+    id: string;
+    title: string;
+    subtitle: string;
+    memberNames: string[];
+    memberIds: string[];
+    visits: number;
+    gross: number;
+    assigned: number;
+    avgRate: number;
+    shared: boolean;
+    real: number;
+    roi: number | null;
+};
+
+type MemberBreakdown = {
+    userId: string;
+    name: string;
+    email: string;
+    visits: number;
+    gross: number;
+    assigned: number;
+    real: number;
+    rate: number;
+};
+
+type DetailSection = {
+    id: string;
+    title: string;
+    subtitle: string;
+    visits: number;
+    gross: number;
+    assigned: number;
+    real: number;
+    roi: number | null;
+    members: MemberBreakdown[];
 };
 
 function clamp2(n: number) {
@@ -105,6 +149,10 @@ export default function AdminAccountingUserScreen() {
     const [weekAmount, setWeekAmount] = useState<number>(0);
     const [allocations, setAllocations] = useState<WeeklyInvestmentAllocations>({});
     const [groups, setGroups] = useState<WeeklyInvestmentGroup[]>([]);
+
+    const [detailOpen, setDetailOpen] = useState(false);
+    const [detailMode, setDetailMode] = useState<MetricMode>("real");
+    const [detailTargetId, setDetailTargetId] = useState<string | null>(null);
 
     useEffect(() => {
         (async () => {
@@ -218,26 +266,42 @@ export default function AdminAccountingUserScreen() {
         return out;
     }, [groups]);
 
-    const rows = useMemo(() => {
+    const visitedEventsByUser = useMemo(() => {
+        const latest = latestEventByClient(weekEvents);
+        const map = new Map<
+            string,
+            {
+                visits: number;
+                gross: number;
+                rate: number;
+            }
+        >();
+
+        for (const e of latest.values()) {
+            if (!shouldCountEvent(e)) continue;
+            if ((e as any).type !== "visited") continue;
+
+            const uid = String((e as any)?.userId ?? "").trim();
+            if (!uid) continue;
+
+            const prev = map.get(uid) ?? { visits: 0, gross: 0, rate: getRatePerVisit(userById.get(uid)) };
+            const rate = getRatePerVisit(userById.get(uid));
+
+            map.set(uid, {
+                visits: prev.visits + 1,
+                gross: clamp2(prev.gross + rate),
+                rate,
+            });
+        }
+
+        return map;
+    }, [weekEvents, shouldCountEvent, userById]);
+
+    const rows = useMemo<RowItem[]>(() => {
         const latest = latestEventByClient(weekEvents);
 
         if (normalizedGroups.length > 0) {
-            const byGroupId = new Map<
-                string,
-                {
-                    id: string;
-                    title: string;
-                    subtitle: string;
-                    memberNames: string[];
-                    memberIds: string[];
-                    visits: number;
-                    gross: number;
-                    assigned: number;
-                    avgRate: number;
-                    shared: boolean;
-                }
-            >();
-
+            const byGroupId = new Map<string, Omit<RowItem, "real" | "roi">>();
             const userToGroupId = new Map<string, string>();
 
             for (const g of normalizedGroups) {
@@ -301,51 +365,44 @@ export default function AdminAccountingUserScreen() {
                 });
         }
 
-        const base = users.map((u) => ({
-            id: u.id,
-            title: u?.name?.trim() || u?.email?.trim() || "Usuario",
-            subtitle: u?.email?.trim() || "",
-            memberNames: [u?.name?.trim() || u?.email?.trim() || "Usuario"],
-            memberIds: [u.id],
-            avgRate: getRatePerVisit(u),
-            visits: 0,
-            gross: 0,
-            assigned: clamp2(safeNumber((allocations as any)?.[u.id] ?? 0)),
-            shared: false,
-        }));
+        const base: RowItem[] = users.map((u) => {
+            const assigned = clamp2(safeNumber((allocations as any)?.[u.id] ?? 0));
+            const visits = visitedEventsByUser.get(u.id)?.visits ?? 0;
+            const gross = clamp2(visitedEventsByUser.get(u.id)?.gross ?? 0);
+            const real = clamp2(gross - assigned);
+            const roi = assigned > 0 ? (real / assigned) * 100 : null;
 
-        const byUid = new Map<string, (typeof base)[number]>();
-        for (const r of base) byUid.set(r.id, r);
+            return {
+                id: u.id,
+                title: u?.name?.trim() || u?.email?.trim() || "Usuario",
+                subtitle: u?.email?.trim() || "",
+                memberNames: [u?.name?.trim() || u?.email?.trim() || "Usuario"],
+                memberIds: [u.id],
+                avgRate: getRatePerVisit(u),
+                visits,
+                gross,
+                assigned,
+                shared: false,
+                real,
+                roi,
+            };
+        });
 
-        for (const e of latest.values()) {
-            if (!shouldCountEvent(e)) continue;
-            if ((e as any).type !== "visited") continue;
+        return base.sort((a, b) => {
+            const aScore = a.roi ?? Number.NEGATIVE_INFINITY;
+            const bScore = b.roi ?? Number.NEGATIVE_INFINITY;
+            if (bScore !== aScore) return bScore - aScore;
+            if (b.real !== a.real) return b.real - a.real;
+            if (b.gross !== a.gross) return b.gross - a.gross;
+            return b.visits - a.visits;
+        });
+    }, [weekEvents, shouldCountEvent, normalizedGroups, userById, users, allocations, visitedEventsByUser]);
 
-            const uid = String((e as any)?.userId ?? "").trim();
-            if (!uid) continue;
-
-            const row = byUid.get(uid);
-            if (!row) continue;
-
-            row.visits += 1;
-            row.gross = clamp2(row.gross + row.avgRate);
-        }
-
-        return base
-            .map((r) => {
-                const real = clamp2(r.gross - r.assigned);
-                const roi = r.assigned > 0 ? (real / r.assigned) * 100 : null;
-                return { ...r, real, roi };
-            })
-            .sort((a, b) => {
-                const aScore = a.roi ?? Number.NEGATIVE_INFINITY;
-                const bScore = b.roi ?? Number.NEGATIVE_INFINITY;
-                if (bScore !== aScore) return bScore - aScore;
-                if (b.real !== a.real) return b.real - a.real;
-                if (b.gross !== a.gross) return b.gross - a.gross;
-                return b.visits - a.visits;
-            });
-    }, [weekEvents, shouldCountEvent, normalizedGroups, userById, users, allocations]);
+    const rowsById = useMemo(() => {
+        const m = new Map<string, RowItem>();
+        for (const r of rows) m.set(r.id, r);
+        return m;
+    }, [rows]);
 
     const totals = useMemo(() => {
         const visits = rows.reduce((a, b) => a + (b.visits || 0), 0);
@@ -359,191 +416,483 @@ export default function AdminAccountingUserScreen() {
     const guardInvalid = !weekStartKey || !weekEndKey;
     const usingGroups = normalizedGroups.length > 0;
 
+    const buildMemberBreakdown = useCallback(
+        (row: RowItem): MemberBreakdown[] => {
+            const memberIds = row.memberIds ?? [];
+            const rawAssigneds = memberIds.map((uid) =>
+                clamp2(safeNumber((allocations as any)?.[uid] ?? 0))
+            );
+            const assignedKnown = rawAssigneds.some((v) => v > 0);
+            const evenSplit =
+                memberIds.length > 0 ? clamp2((row.assigned || 0) / memberIds.length) : 0;
+
+            return memberIds
+                .map((uid, idx) => {
+                    const u = userById.get(uid);
+                    const name = u?.name?.trim() || u?.email?.trim() || uid;
+                    const email = u?.email?.trim() || "";
+                    const rate = getRatePerVisit(u);
+                    const visits = visitedEventsByUser.get(uid)?.visits ?? 0;
+                    const gross = clamp2(visitedEventsByUser.get(uid)?.gross ?? 0);
+                    const assigned = assignedKnown ? rawAssigneds[idx] : evenSplit;
+                    const real = clamp2(gross - assigned);
+
+                    return {
+                        userId: uid,
+                        name,
+                        email,
+                        visits,
+                        gross,
+                        assigned,
+                        real,
+                        rate,
+                    };
+                })
+                .sort((a, b) => {
+                    if (b.real !== a.real) return b.real - a.real;
+                    if (b.gross !== a.gross) return b.gross - a.gross;
+                    return b.visits - a.visits;
+                });
+        },
+        [allocations, userById, visitedEventsByUser]
+    );
+
+    const detailSections = useMemo<DetailSection[]>(() => {
+        const sourceRows = detailTargetId ? [rowsById.get(detailTargetId)].filter(Boolean) as RowItem[] : rows;
+
+        return sourceRows.map((row) => ({
+            id: row.id,
+            title: row.title,
+            subtitle: row.subtitle,
+            visits: row.visits,
+            gross: row.gross,
+            assigned: row.assigned,
+            real: row.real,
+            roi: row.roi,
+            members: buildMemberBreakdown(row),
+        }));
+    }, [detailTargetId, rowsById, rows, buildMemberBreakdown]);
+
+    const openMetricModal = (mode: MetricMode, rowId?: string | null) => {
+        setDetailMode(mode);
+        setDetailTargetId(rowId ?? null);
+        setDetailOpen(true);
+    };
+
+    const closeMetricModal = () => {
+        setDetailOpen(false);
+        setDetailTargetId(null);
+    };
+
+    const detailTitle = useMemo(() => {
+        const target = detailTargetId ? rowsById.get(detailTargetId) : null;
+
+        if (detailMode === "real") {
+            return target ? `Ganancia real · ${target.title}` : "Ganancia real total";
+        }
+        if (detailMode === "gross") {
+            return target ? `Ganancia bruta · ${target.title}` : "Ganancia bruta total";
+        }
+        return target ? `Asignado · ${target.title}` : "Asignado total";
+    }, [detailMode, detailTargetId, rowsById]);
+
+    const detailSub = useMemo(() => {
+        const target = detailTargetId ? rowsById.get(detailTargetId) : null;
+
+        if (target) {
+            if (detailMode === "real") {
+                return `${target.visits} visitados · R$ ${money(target.real)}`;
+            }
+            if (detailMode === "gross") {
+                return `${target.visits} visitados · R$ ${money(target.gross)}`;
+            }
+            return `${target.memberIds.length} usuario${target.memberIds.length === 1 ? "" : "s"} · R$ ${money(target.assigned)}`;
+        }
+
+        if (detailMode === "real") {
+            return `${totals.visits} visitados · R$ ${money(totals.real)}`;
+        }
+        if (detailMode === "gross") {
+            return `${totals.visits} visitados · R$ ${money(totals.gross)}`;
+        }
+        return `${rows.length} ${usingGroups ? "grupo" : "usuario"}${rows.length === 1 ? "" : "s"} · R$ ${money(totals.assigned)}`;
+    }, [detailMode, detailTargetId, rowsById, totals, rows.length, usingGroups]);
+
+    const MetricMini = ({
+        label,
+        value,
+        tone,
+    }: {
+        label: string;
+        value: string;
+        tone?: "pos" | "neg" | "neu" | "info";
+    }) => (
+        <View
+            style={[
+                styles.modalMetricChip,
+                tone === "pos"
+                    ? styles.modalMetricChipPos
+                    : tone === "neg"
+                        ? styles.modalMetricChipNeg
+                        : tone === "info"
+                            ? styles.modalMetricChipInfo
+                            : null,
+            ]}
+        >
+            <Text style={styles.modalMetricLabel}>{label}</Text>
+            <Text
+                style={[
+                    styles.modalMetricValue,
+                    tone === "pos"
+                        ? styles.pos
+                        : tone === "neg"
+                            ? styles.neg
+                            : tone === "info"
+                                ? styles.infoText
+                                : null,
+                ]}
+            >
+                {value}
+            </Text>
+        </View>
+    );
+
+    const renderMemberCard = (m: MemberBreakdown) => {
+        return (
+            <View key={m.userId} style={styles.memberCard}>
+                <View style={{ flex: 1, gap: 2 }}>
+                    <Text style={styles.memberName} numberOfLines={1}>
+                        {m.name}
+                    </Text>
+                    {!!m.email ? (
+                        <Text style={styles.memberSub} numberOfLines={1}>
+                            {m.email}
+                        </Text>
+                    ) : null}
+                    <Text style={styles.memberSub}>
+                        {m.visits} visitados · tarifa R$ {money(m.rate)}
+                    </Text>
+                </View>
+
+                <View style={styles.memberRight}>
+                    {detailMode === "real" ? (
+                        <>
+                            <MetricMini label="Bruta" value={`R$ ${money(m.gross)}`} />
+                            <MetricMini label="Asign." value={`R$ ${money(m.assigned)}`} />
+                            <MetricMini
+                                label="Real"
+                                value={`R$ ${money(m.real)}`}
+                                tone={m.real > 0 ? "pos" : m.real < 0 ? "neg" : "neu"}
+                            />
+                        </>
+                    ) : detailMode === "gross" ? (
+                        <>
+                            <MetricMini label="Visitas" value={`${m.visits}`} tone="info" />
+                            <MetricMini label="Bruta" value={`R$ ${money(m.gross)}`} />
+                        </>
+                    ) : (
+                        <>
+                            <MetricMini label="Asign." value={`R$ ${money(m.assigned)}`} tone="info" />
+                            <MetricMini label="Visitas" value={`${m.visits}`} />
+                        </>
+                    )}
+                </View>
+            </View>
+        );
+    };
+
     return (
         <SafeAreaView
             style={styles.safe}
             edges={["left", "right", "bottom"]}
         >
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
-
-            <ScrollView
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{
-                    paddingTop: 6,
-                    paddingBottom: Math.max(20, insets.bottom + 12),
-                }}
-            >
-                <View style={styles.card}>
-                    <Text style={styles.title}>
-                        {usingGroups ? "Contabilidad por grupo" : "Contabilidad por usuario"}
-                    </Text>
-
-                    <Text style={styles.sub}>
-                        Semana <Text style={styles.strong}>{weekStartKey || "—"}</Text> →{" "}
-                        <Text style={styles.strong}>{weekEndKey || "—"}</Text>
-                    </Text>
-
-                    {guardInvalid ? (
-                        <Text style={styles.errText}>
-                            Falta weekStartKey/weekEndKey. Revisa el router.push params.
+            <AdminBackground>
+                <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={{
+                        paddingTop: 6,
+                        paddingBottom: Math.max(20, insets.bottom + 12),
+                    }}
+                >
+                    <View style={styles.card}>
+                        <Text style={styles.title}>
+                            {usingGroups ? "Contabilidad por grupo" : "Contabilidad por usuario"}
                         </Text>
-                    ) : null}
 
-                    {weekErr ? <Text style={styles.errText}>Eventos: {weekErr}</Text> : null}
-
-                    <View style={styles.modePill}>
-                        <Ionicons
-                            name={usingGroups ? "people-outline" : "person-outline"}
-                            size={14}
-                            color={COLORS.muted}
-                        />
-                        <Text style={styles.modePillText}>
-                            {usingGroups ? "Modo compartido por grupo" : "Modo individual por usuario"}
+                        <Text style={styles.sub}>
+                            Semana <Text style={styles.strong}>{weekStartKey || "—"}</Text> →{" "}
+                            <Text style={styles.strong}>{weekEndKey || "—"}</Text>
                         </Text>
-                    </View>
-                </View>
 
-                <View style={styles.kpiRow}>
-                    <View style={styles.kpiCard}>
-                        <Text style={styles.kpiLabel}>Bruta</Text>
-                        <Text style={styles.kpiValue}>R$ {money(totals.gross)}</Text>
-                        <Text style={styles.kpiHint}>{totals.visits} visitados</Text>
+                        {guardInvalid ? (
+                            <Text style={styles.errText}>
+                                Falta weekStartKey/weekEndKey. Revisa el router.push params.
+                            </Text>
+                        ) : null}
+
+                        {weekErr ? <Text style={styles.errText}>Eventos: {weekErr}</Text> : null}
+
+                        <View style={styles.modePill}>
+                            <Ionicons
+                                name={usingGroups ? "people-outline" : "person-outline"}
+                                size={14}
+                                color={COLORS.muted}
+                            />
+                            <Text style={styles.modePillText}>
+                                {usingGroups ? "Modo compartido por grupo" : "Modo individual por usuario"}
+                            </Text>
+                        </View>
                     </View>
 
-                    <View style={styles.kpiCard}>
-                        <Text style={styles.kpiLabel}>Asignado</Text>
-                        <Text style={styles.kpiValue}>R$ {money(totals.assigned)}</Text>
-                        <Text style={styles.kpiHint}>Total doc: R$ {money(weekAmount)}</Text>
-                    </View>
-
-                    <View style={styles.kpiCard}>
-                        <Text
-                            style={[
-                                styles.kpiLabel,
-                                totals.real > 0 ? styles.pos : totals.real < 0 ? styles.neg : null,
-                            ]}
+                    <View style={styles.kpiRow}>
+                        <Pressable
+                            onPress={() => openMetricModal("gross")}
+                            style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
                         >
-                            Real
-                        </Text>
-                        <Text
-                            style={[
-                                styles.kpiValue,
-                                totals.real > 0 ? styles.pos : totals.real < 0 ? styles.neg : null,
-                            ]}
+                            <Text style={styles.kpiLabel}>Bruta</Text>
+                            <Text style={styles.kpiValue}>R$ {money(totals.gross)}</Text>
+                            <Text style={styles.kpiHint}>{totals.visits} visitados</Text>
+                        </Pressable>
+
+                        <Pressable
+                            onPress={() => openMetricModal("assigned")}
+                            style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
                         >
-                            R$ {money(totals.real)}
-                        </Text>
-                        <Text style={styles.kpiHint}>
-                            ROI: {totals.roi == null ? "—" : `${totals.roi.toFixed(0)}%`}
-                        </Text>
+                            <Text style={styles.kpiLabel}>Asignado</Text>
+                            <Text style={styles.kpiValue}>R$ {money(totals.assigned)}</Text>
+                            <Text style={styles.kpiHint}>Total doc: R$ {money(weekAmount)}</Text>
+                        </Pressable>
+
+                        <Pressable
+                            onPress={() => openMetricModal("real")}
+                            style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
+                        >
+                            <Text
+                                style={[
+                                    styles.kpiLabel,
+                                    totals.real > 0 ? styles.pos : totals.real < 0 ? styles.neg : null,
+                                ]}
+                            >
+                                Real
+                            </Text>
+                            <Text
+                                style={[
+                                    styles.kpiValue,
+                                    totals.real > 0 ? styles.pos : totals.real < 0 ? styles.neg : null,
+                                ]}
+                            >
+                                R$ {money(totals.real)}
+                            </Text>
+                            <Text style={styles.kpiHint}>
+                                ROI: {totals.roi == null ? "—" : `${totals.roi.toFixed(0)}%`}
+                            </Text>
+                        </Pressable>
                     </View>
-                </View>
 
-                <View style={styles.card}>
-                    <View style={styles.listHeader}>
-                        <Text style={styles.cardTitle}>
-                            {usingGroups ? "Grupos / ciudades / campañas" : "Usuarios"}
-                        </Text>
-                    </View>
+                    <View style={styles.card}>
+                        <View style={styles.listHeader}>
+                            <Text style={styles.cardTitle}>
+                                {usingGroups ? "Grupos / ciudades / campañas" : "Usuarios"}
+                            </Text>
+                        </View>
 
-                    {rows.length === 0 ? (
-                        <Text style={styles.hint}>No hay datos todavía para esta semana.</Text>
-                    ) : (
-                        <View style={{ gap: 10 }}>
-                            {rows.map((r, idx) => {
-                                const tone = r.real > 0 ? "pos" : r.real < 0 ? "neg" : "neu";
-                                const isTop = idx === 0;
+                        {rows.length === 0 ? (
+                            <Text style={styles.hint}>No hay datos todavía para esta semana.</Text>
+                        ) : (
+                            <View style={{ gap: 10 }}>
+                                {rows.map((r, idx) => {
+                                    const tone = r.real > 0 ? "pos" : r.real < 0 ? "neg" : "neu";
+                                    const isTop = idx === 0;
 
-                                return (
-                                    <View
-                                        key={r.id}
-                                        style={[
-                                            styles.userRow,
-                                            isTop ? styles.userRowTop : null,
-                                        ]}
-                                    >
-                                        <View style={styles.rankBadge}>
-                                            <Text style={styles.rankBadgeText}>#{idx + 1}</Text>
-                                        </View>
+                                    return (
+                                        <View
+                                            key={r.id}
+                                            style={[
+                                                styles.userRow,
+                                                isTop ? styles.userRowTop : null,
+                                            ]}
+                                        >
+                                            <View style={styles.rankBadge}>
+                                                <Text style={styles.rankBadgeText}>#{idx + 1}</Text>
+                                            </View>
 
-                                        <View style={{ flex: 1, gap: 2 }}>
-                                            <Text style={styles.userName}>{r.title}</Text>
+                                            <View style={{ flex: 1, gap: 2 }}>
+                                                <Text style={styles.userName}>{r.title}</Text>
 
-                                            <View style={styles.badgesRow}>
-                                                {r.shared ? (
-                                                    <View style={styles.sharedBadge}>
-                                                        <Ionicons name="people-outline" size={12} color={COLORS.text} />
-                                                        <Text style={styles.sharedBadgeText}>Compartido</Text>
-                                                    </View>
-                                                ) : null}
+                                                <View style={styles.badgesRow}>
+                                                    {r.shared ? (
+                                                        <View style={styles.sharedBadge}>
+                                                            <Ionicons name="people-outline" size={12} color={COLORS.text} />
+                                                            <Text style={styles.sharedBadgeText}>Compartido</Text>
+                                                        </View>
+                                                    ) : null}
 
-                                                {isTop ? (
-                                                    <View style={styles.bestBadge}>
-                                                        <Ionicons name="trophy" size={12} color={COLORS.text} />
-                                                        <Text style={styles.bestBadgeText}>Mejor</Text>
-                                                    </View>
+                                                    {isTop ? (
+                                                        <View style={styles.bestBadge}>
+                                                            <Ionicons name="trophy" size={12} color={COLORS.text} />
+                                                            <Text style={styles.bestBadgeText}>Mejor</Text>
+                                                        </View>
+                                                    ) : null}
+                                                </View>
+
+                                                <Text style={styles.userSub} numberOfLines={2}>
+                                                    {r.subtitle || (r.memberIds[0] ?? "")}
+                                                </Text>
+
+                                                <Text style={styles.userMeta}>
+                                                    {r.visits} visitados · tarifa prom. R$ {money(r.avgRate)}
+                                                </Text>
+
+                                                {r.memberNames.length > 1 ? (
+                                                    <Text style={styles.membersText} numberOfLines={3}>
+                                                        Miembros: {r.memberNames.join(", ")}
+                                                    </Text>
                                                 ) : null}
                                             </View>
 
-                                            <Text style={styles.userSub} numberOfLines={2}>
-                                                {r.subtitle || (r.memberIds[0] ?? "")}
-                                            </Text>
+                                            <View style={styles.userPills}>
+                                                <Pressable
+                                                    onPress={() => openMetricModal("gross", r.id)}
+                                                    style={({ pressed }) => [
+                                                        styles.pill,
+                                                        pressed && styles.pressed,
+                                                    ]}
+                                                >
+                                                    <Text style={styles.pillLabel}>Bruta</Text>
+                                                    <Text style={styles.pillValue}>R$ {money(r.gross)}</Text>
+                                                </Pressable>
 
-                                            <Text style={styles.userMeta}>
-                                                {r.visits} visitados · tarifa prom. R$ {money(r.avgRate)}
-                                            </Text>
+                                                <Pressable
+                                                    onPress={() => openMetricModal("assigned", r.id)}
+                                                    style={({ pressed }) => [
+                                                        styles.pill,
+                                                        pressed && styles.pressed,
+                                                    ]}
+                                                >
+                                                    <Text style={styles.pillLabel}>Asign</Text>
+                                                    <Text style={styles.pillValue}>R$ {money(r.assigned)}</Text>
+                                                </Pressable>
 
-                                            {r.memberNames.length > 1 ? (
-                                                <Text style={styles.membersText} numberOfLines={3}>
-                                                    Miembros: {r.memberNames.join(", ")}
+                                                <View style={styles.roiPill}>
+                                                    <Text style={styles.roiLabel}>ROI</Text>
+                                                    <Text
+                                                        style={[
+                                                            styles.roiValue,
+                                                            (r.roi ?? 0) > 0 ? styles.pos : (r.roi ?? 0) < 0 ? styles.neg : null,
+                                                        ]}
+                                                    >
+                                                        {r.roi == null ? "—" : `${r.roi.toFixed(0)}%`}
+                                                    </Text>
+                                                </View>
+
+                                                <Pressable
+                                                    onPress={() => openMetricModal("real", r.id)}
+                                                    style={({ pressed }) => [
+                                                        styles.realPill,
+                                                        tone === "pos"
+                                                            ? styles.realPos
+                                                            : tone === "neg"
+                                                                ? styles.realNeg
+                                                                : styles.realNeu,
+                                                        pressed && styles.pressed,
+                                                    ]}
+                                                >
+                                                    <Text style={styles.realValue}>R$ {money(r.real)}</Text>
+                                                    <Text style={styles.realSub}>Ganancia real</Text>
+                                                </Pressable>
+                                            </View>
+                                        </View>
+                                    );
+                                })}
+                            </View>
+                        )}
+                    </View>
+                </ScrollView>
+
+                <Modal
+                    visible={detailOpen}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={closeMetricModal}
+                >
+                    <Pressable style={styles.modalBackdrop} onPress={closeMetricModal} />
+
+                    <View
+                        style={[
+                            styles.modalCard,
+                            { paddingBottom: Math.max(12, insets.bottom + 10) },
+                        ]}
+                    >
+                        <View style={styles.modalHeader}>
+                            <View style={{ flex: 1, gap: 2 }}>
+                                <Text style={styles.modalTitle}>{detailTitle}</Text>
+                                <Text style={styles.modalSub}>{detailSub}</Text>
+                            </View>
+
+                            <Pressable
+                                onPress={closeMetricModal}
+                                style={({ pressed }) => [
+                                    styles.modalClose,
+                                    pressed && styles.modalClosePressed,
+                                ]}
+                            >
+                                <Ionicons name="close" size={16} color={COLORS.text} />
+                            </Pressable>
+                        </View>
+
+                        <FlatList
+                            data={detailSections}
+                            keyExtractor={(item) => item.id}
+                            showsVerticalScrollIndicator={false}
+                            contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                            renderItem={({ item: section }) => (
+                                <View style={styles.modalSection}>
+                                    <View style={styles.modalSectionTop}>
+                                        <View style={{ flex: 1, gap: 2 }}>
+                                            <Text style={styles.modalSectionTitle} numberOfLines={1}>
+                                                {section.title}
+                                            </Text>
+                                            {!!section.subtitle ? (
+                                                <Text style={styles.modalSectionSub} numberOfLines={2}>
+                                                    {section.subtitle}
                                                 </Text>
                                             ) : null}
                                         </View>
 
-                                        <View style={styles.userPills}>
-                                            <View style={styles.pill}>
-                                                <Text style={styles.pillLabel}>Bruta</Text>
-                                                <Text style={styles.pillValue}>R$ {money(r.gross)}</Text>
-                                            </View>
-
-                                            <View style={styles.pill}>
-                                                <Text style={styles.pillLabel}>Asign</Text>
-                                                <Text style={styles.pillValue}>R$ {money(r.assigned)}</Text>
-                                            </View>
-
-                                            <View style={styles.roiPill}>
-                                                <Text style={styles.roiLabel}>ROI</Text>
-                                                <Text
-                                                    style={[
-                                                        styles.roiValue,
-                                                        (r.roi ?? 0) > 0 ? styles.pos : (r.roi ?? 0) < 0 ? styles.neg : null,
-                                                    ]}
-                                                >
-                                                    {r.roi == null ? "—" : `${r.roi.toFixed(0)}%`}
-                                                </Text>
-                                            </View>
-
-                                            <View
-                                                style={[
-                                                    styles.realPill,
-                                                    tone === "pos"
-                                                        ? styles.realPos
-                                                        : tone === "neg"
-                                                            ? styles.realNeg
-                                                            : styles.realNeu,
-                                                ]}
-                                            >
-                                                <Text style={styles.realValue}>R$ {money(r.real)}</Text>
-                                                <Text style={styles.realSub}>Ganancia real</Text>
-                                            </View>
+                                        <View style={styles.modalSectionCount}>
+                                            <Text style={styles.modalSectionCountText}>
+                                                {section.members.length}
+                                            </Text>
                                         </View>
                                     </View>
-                                );
-                            })}
-                        </View>
-                    )}
-                </View>
-            </ScrollView>
+
+                                    <View style={styles.modalSectionMetrics}>
+                                        <MetricMini label="Visitas" value={`${section.visits}`} tone="info" />
+                                        <MetricMini label="Bruta" value={`R$ ${money(section.gross)}`} />
+                                        <MetricMini label="Asign." value={`R$ ${money(section.assigned)}`} />
+                                        <MetricMini
+                                            label="Real"
+                                            value={`R$ ${money(section.real)}`}
+                                            tone={section.real > 0 ? "pos" : section.real < 0 ? "neg" : "neu"}
+                                        />
+                                    </View>
+
+                                    <View style={{ gap: 8, marginTop: 8 }}>
+                                        {section.members.map(renderMemberCard)}
+                                    </View>
+                                </View>
+                            )}
+                            ListEmptyComponent={
+                                <View style={styles.modalEmpty}>
+                                    <Ionicons name="analytics-outline" size={20} color={COLORS.muted} />
+                                    <Text style={styles.modalEmptyText}>No hay información para mostrar.</Text>
+                                </View>
+                            }
+                        />
+                    </View>
+                </Modal>
+            </AdminBackground>
         </SafeAreaView>
     );
 }
@@ -553,6 +902,11 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: COLORS.bg,
         paddingHorizontal: 16,
+    },
+
+    pressed: {
+        transform: [{ scale: 0.985 }],
+        opacity: 0.96,
     },
 
     card: {
@@ -602,6 +956,7 @@ const styles = StyleSheet.create({
 
     pos: { color: "#86EFAC" },
     neg: { color: "#FCA5A5" },
+    infoText: { color: "#93C5FD" },
 
     listHeader: {
         flexDirection: "row",
@@ -663,7 +1018,7 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
-        paddingHorizontal: 4,
+        paddingHorizontal: 6,
         height: 22,
         borderRadius: 999,
         backgroundColor: "rgba(34,197,94,0.14)",
@@ -721,5 +1076,169 @@ const styles = StyleSheet.create({
         flexWrap: "wrap",
         gap: 6,
         marginTop: 4,
+    },
+
+    modalBackdrop: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0,0,0,0.56)",
+    },
+    modalCard: {
+        position: "absolute",
+        left: 14,
+        right: 14,
+        bottom: 14,
+        backgroundColor: COLORS.card,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        padding: 12,
+        gap: 10,
+        maxHeight: "84%",
+    },
+    modalHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+    },
+    modalTitle: {
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "900",
+    },
+    modalSub: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "700",
+    },
+    modalClose: {
+        width: 34,
+        height: 34,
+        borderRadius: 12,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.09)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    modalClosePressed: {
+        transform: [{ scale: 0.97 }],
+        opacity: 0.96,
+    },
+
+    modalSection: {
+        borderRadius: 15,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
+        padding: 10,
+    },
+    modalSectionTop: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    modalSectionTitle: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+    modalSectionSub: {
+        color: COLORS.muted,
+        fontWeight: "700",
+        fontSize: 11,
+    },
+    modalSectionCount: {
+        minWidth: 30,
+        height: 24,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.09)",
+        paddingHorizontal: 8,
+    },
+    modalSectionCountText: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 11,
+    },
+    modalSectionMetrics: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 6,
+        marginTop: 8,
+    },
+
+    modalMetricChip: {
+        minHeight: 26,
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        backgroundColor: "rgba(255,255,255,0.045)",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    modalMetricChipPos: {
+        backgroundColor: "rgba(34,197,94,0.08)",
+        borderColor: "rgba(34,197,94,0.18)",
+    },
+    modalMetricChipNeg: {
+        backgroundColor: "rgba(248,113,113,0.08)",
+        borderColor: "rgba(248,113,113,0.18)",
+    },
+    modalMetricChipInfo: {
+        backgroundColor: "rgba(96,165,250,0.08)",
+        borderColor: "rgba(96,165,250,0.18)",
+    },
+    modalMetricLabel: {
+        color: COLORS.muted,
+        fontSize: 10,
+        fontWeight: "900",
+    },
+    modalMetricValue: {
+        color: COLORS.text,
+        fontSize: 10,
+        fontWeight: "900",
+    },
+
+    memberCard: {
+        flexDirection: "row",
+        gap: 10,
+        padding: 10,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.07)",
+        backgroundColor: "rgba(255,255,255,0.025)",
+        alignItems: "center",
+    },
+    memberName: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+    memberSub: {
+        color: COLORS.muted,
+        fontWeight: "700",
+        fontSize: 11,
+    },
+    memberRight: {
+        alignItems: "flex-end",
+        gap: 6,
+    },
+
+    modalEmpty: {
+        marginTop: 14,
+        alignItems: "center",
+        gap: 8,
+        paddingVertical: 8,
+    },
+    modalEmptyText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
     },
 });

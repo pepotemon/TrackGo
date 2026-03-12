@@ -1,68 +1,215 @@
-const admin = require("firebase-admin");
-const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
+const {
+    onDocumentCreated,
+    onDocumentUpdated,
+} = require("firebase-functions/v2/firestore");
+const { onRequest } = require("firebase-functions/v2/https");
 
-admin.initializeApp();
+const { db } = require("./src/core/firebase");
+const { WHATSAPP_VERIFY_TOKEN } = require("./src/config/params");
 
-async function sendExpoPush(expoPushToken, title, body, data) {
-    const message = {
-        to: expoPushToken,
-        sound: "default",
-        title,
-        body,
-        data: data || {},
-    };
+const { looksLikeSystemOrMetaMessage } = (() => {
+    const { normalizeLooseText } = require("./src/utils/text");
+    return {
+        looksLikeSystemOrMetaMessage(text, profileName, waId) {
+            const s = normalizeLooseText(text);
+            const p = normalizeLooseText(profileName);
 
-    // Node 22+ trae fetch nativo ✅
-    const res = await fetch("https://exp.host/--/api/v2/push/send", {
-        method: "POST",
-        headers: {
-            Accept: "application/json",
-            "Accept-encoding": "gzip, deflate",
-            "Content-Type": "application/json",
+            if (!s) return true;
+
+            if (p === "whatsapp business" || p === "meta") return true;
+            if (waId === "16465894168") return true;
+
+            const blockedPhrases = [
+                "continue setting up your account",
+                "setup guidance",
+                "whatsapp manager",
+                "you have a few steps left",
+                "get detailed instructions",
+                "track progress for your number",
+                "new setup guidance",
+                "learn more about",
+                "saiba mais sobre",
+                "configure sua conta",
+                "configurar sua conta",
+                "continue configurando",
+                "test whatsapp business account",
+            ];
+
+            return blockedPhrases.some((x) => s.includes(normalizeLooseText(x)));
         },
-        body: JSON.stringify(message),
-    });
+    };
+})();
 
-    const json = await res.json();
-    return json;
+const { looksLikeBrazilAddress } = require("./src/utils/geo");
+const { sendWhatsAppText } = require("./src/whatsapp/sender");
+const { notifyAssignedUser } = require("./src/push/expoPush");
+
+const business = require("./src/bot/business");
+const namesFactory = require("./src/bot/names");
+const { createLeadParser } = require("./src/bot/parser");
+const { createBotReplyBuilder } = require("./src/bot/replies");
+const leadState = require("./src/bot/leadState");
+const { createUpsertLeadAsClient } = require("./src/whatsapp/upsertLead");
+const { createProcessIncomingWhatsappMessage } = require("./src/whatsapp/processIncoming");
+
+const isBadProfileName = namesFactory.isBadProfileNameFactory({
+    isLikelyBusinessLine: business.isLikelyBusinessLine,
+});
+
+const sanitizeExplicitPersonName = namesFactory.sanitizeExplicitPersonNameFactory({
+    isLikelyBusinessLine: business.isLikelyBusinessLine,
+});
+
+const sanitizeFallbackProfileName = namesFactory.sanitizeFallbackProfileNameFactory({
+    isBadProfileName,
+});
+
+const looksLikePersonName = namesFactory.looksLikePersonNameFactory({
+    isLikelyBusinessLine: business.isLikelyBusinessLine,
+    looksLikeGreetingOrInterestText: business.looksLikeGreetingOrInterestText,
+});
+
+const resolveNextClientName = namesFactory.resolveNextClientNameFactory({
+    isBadProfileName,
+    sanitizeExplicitPersonName,
+    sanitizeFallbackProfileName,
+});
+
+const isPossibleBusinessFallbackText = business.isPossibleBusinessFallbackTextFactory({
+    looksLikePersonName,
+});
+
+function sanitizeAddress(address) {
+    const { cleanupExtractedText, normalizeLooseText } = require("./src/utils/text");
+    const v = cleanupExtractedText(address);
+    if (!v) return "";
+
+    const s = normalizeLooseText(v);
+
+    if (
+        s.includes("http://") ||
+        s.includes("https://") ||
+        s.includes("setup guidance") ||
+        s.includes("whatsapp manager")
+    ) {
+        return "";
+    }
+
+    if (!looksLikeBrazilAddress(v) && v.length < 10) return "";
+    return v;
 }
 
-async function notifyAssignedUser({ clientId, after }) {
-    const afterUid = after.assignedTo || null;
-    if (!afterUid) return;
+const parseLeadText = createLeadParser({
+    sanitizeExplicitPersonName,
+    sanitizeFallbackProfileName,
+    looksLikePersonName,
+    sanitizeAddress,
+    isLikelyBusinessLine: business.isLikelyBusinessLine,
+    normalizeBusinessLabel: business.normalizeBusinessLabel,
+    sanitizeBusiness: business.sanitizeBusiness,
+    isPossibleBusinessFallbackText,
+    classifyBusinessQuality: business.classifyBusinessQuality,
+});
 
-    const userSnap = await admin.firestore().doc(`users/${afterUid}`).get();
-    if (!userSnap.exists) return;
+const hasUsefulName = leadState.hasUsefulNameFactory({ isBadProfileName });
+const getFinalParseStatus = leadState.getFinalParseStatusFactory({ hasUsefulName });
 
-    const user = userSnap.data() || {};
-    const token = user.expoPushToken;
+const buildBotReplyPtBr = createBotReplyBuilder({
+    hasUsefulBusiness: leadState.hasUsefulBusiness,
+    hasRequiredMapsForFlow: leadState.hasRequiredMapsForFlow,
+});
 
-    if (!token) {
-        console.log("[PUSH] user has no expoPushToken", afterUid);
+async function maybeReplyToLead({
+    clientId,
+    waId,
+    messageType,
+    inboxRef,
+}) {
+    if (!clientId || !waId) return;
+
+    const clientRef = db.doc(`clients/${clientId}`);
+    const snap = await clientRef.get();
+    if (!snap.exists) return;
+
+    const client = snap.data() || {};
+
+    if (!leadState.shouldSendBotReply(client)) {
+        await inboxRef.set({
+            botReplyStatus: "skipped",
+            botReplyReason: "outside_customer_service_window",
+            botReplyAt: Date.now(),
+        }, { merge: true });
         return;
     }
 
-    const name = (after.name || "Cliente").toString();
-    const business = (after.business || "").toString().trim();
-    const label = business ? `${name} · ${business}` : name;
+    const { safeString, safeNumber } = require("./src/utils/text");
 
-    const title = "Nuevo cliente asignado";
-    const body = label;
+    const reply = buildBotReplyPtBr({ client, messageType });
+    const body = safeString(reply?.body || "");
+    const currentBotStage = safeString(reply?.stage || "");
+    const markIntroSent = !!reply?.markIntroSent;
 
-    const result = await sendExpoPush(token, title, body, {
-        type: "client_assigned",
-        clientId,
-    });
+    if (!body || !currentBotStage) return;
 
-    console.log("[PUSH] sent:", result);
+    const lastBotReplyText = safeString(client?.lastBotReplyText || "");
+    const lastBotStage = safeString(client?.lastBotStage || "");
+
+    if (
+        lastBotReplyText === body &&
+        lastBotStage === currentBotStage
+    ) {
+        await inboxRef.set({
+            botReplyStatus: "skipped",
+            botReplyReason: "same_reply_as_previous",
+            botReplyAt: Date.now(),
+        }, { merge: true });
+        return;
+    }
+
+    const sendResult = await sendWhatsAppText(waId, body);
+    const now = Date.now();
+
+    const clientPatch = {
+        lastBotReplyAt: now,
+        lastBotReplyText: body,
+        lastBotStage: currentBotStage,
+    };
+
+    if (markIntroSent && !safeNumber(client?.initialIntroSentAt, 0)) {
+        clientPatch.initialIntroSentAt = now;
+        clientPatch.currentLeadMapsConfirmedAt = 0;
+    }
+
+    await clientRef.set(clientPatch, { merge: true });
+
+    await inboxRef.set({
+        botReplyStatus: "sent",
+        botReplyText: body,
+        botReplyAt: now,
+        botReplyStage: currentBotStage,
+        botReplyMessageId: sendResult?.messages?.[0]?.id || "",
+    }, { merge: true });
 }
 
-// ✅ 1) Cliente NUEVO creado ya con assignedTo
+const upsertLeadAsClient = createUpsertLeadAsClient({
+    parseLeadText,
+    resolveNextClientName,
+    getFinalParseStatus,
+});
+
+const processIncomingWhatsappMessage = createProcessIncomingWhatsappMessage({
+    looksLikeSystemOrMetaMessage,
+    looksLikeGreetingOrInterestText: business.looksLikeGreetingOrInterestText,
+    looksLikeBrazilAddress,
+    isLikelyBusinessLine: business.isLikelyBusinessLine,
+    upsertLeadAsClient,
+    maybeReplyToLead,
+});
+
 exports.onClientCreatedAssigned = onDocumentCreated("clients/{clientId}", async (event) => {
     const clientId = event.params.clientId;
     const after = event.data?.data() || {};
 
-    // Solo si se crea ya asignado
     if (!after.assignedTo) return;
 
     try {
@@ -72,7 +219,6 @@ exports.onClientCreatedAssigned = onDocumentCreated("clients/{clientId}", async 
     }
 });
 
-// ✅ 2) Cliente REASIGNADO (cambió assignedTo)
 exports.onClientReassigned = onDocumentUpdated("clients/{clientId}", async (event) => {
     const clientId = event.params.clientId;
 
@@ -82,7 +228,6 @@ exports.onClientReassigned = onDocumentUpdated("clients/{clientId}", async (even
     const beforeUid = before.assignedTo || null;
     const afterUid = after.assignedTo || null;
 
-    // Solo cuando realmente cambió
     if (!afterUid || beforeUid === afterUid) return;
 
     try {
@@ -91,3 +236,57 @@ exports.onClientReassigned = onDocumentUpdated("clients/{clientId}", async (even
         console.log("[PUSH] update error:", e);
     }
 });
+
+exports.whatsappWebhook = onRequest(
+    {
+        region: "us-central1",
+        cors: true,
+    },
+    async (req, res) => {
+        try {
+            if (req.method === "GET") {
+                const mode = req.query["hub.mode"];
+                const token = req.query["hub.verify_token"];
+                const challenge = req.query["hub.challenge"];
+
+                const expectedToken = WHATSAPP_VERIFY_TOKEN.value();
+
+                if (mode === "subscribe" && token === expectedToken) {
+                    console.log("[WHATSAPP] webhook verified");
+                    res.status(200).send(challenge);
+                    return;
+                }
+
+                console.log("[WHATSAPP] verification failed");
+                res.status(403).send("Forbidden");
+                return;
+            }
+
+            if (req.method !== "POST") {
+                res.status(405).send("Method Not Allowed");
+                return;
+            }
+
+            const { safeString } = require("./src/utils/text");
+            const body = req.body || {};
+            const entries = Array.isArray(body?.entry) ? body.entry : [];
+
+            for (const entry of entries) {
+                const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+
+                for (const change of changes) {
+                    const field = safeString(change?.field);
+                    const value = change?.value || {};
+
+                    if (field !== "messages") continue;
+                    await processIncomingWhatsappMessage(value);
+                }
+            }
+
+            res.status(200).send("EVENT_RECEIVED");
+        } catch (error) {
+            console.error("[WHATSAPP] webhook fatal error:", error);
+            res.status(500).send("internal_error");
+        }
+    }
+);

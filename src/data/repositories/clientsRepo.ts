@@ -1,4 +1,3 @@
-// src/data/repositories/clientsRepo.ts
 import {
     addDoc,
     deleteDoc,
@@ -13,7 +12,16 @@ import {
     type Unsubscribe,
 } from "firebase/firestore";
 import { db } from "../../config/firebase";
-import type { ClientDoc, ClientStatus } from "../../types/models";
+import type {
+    ClientAutoFlag,
+    ClientBusinessQuality,
+    ClientDoc,
+    ClientLeadQuality,
+    ClientParseStatus,
+    ClientProfileType,
+    ClientStatus,
+    ClientVerificationStatus,
+} from "../../types/models";
 import { col, docRef } from "../firestore";
 import { dayKeyFromMs } from "./dailyEventsRepo";
 
@@ -28,6 +36,17 @@ function stripUndefined<T extends Record<string, any>>(obj: T): T {
         if (v !== undefined) out[k] = v;
     }
     return out;
+}
+
+function normalizeClientPhone(raw?: string | null) {
+    return String(raw ?? "").replace(/\D+/g, "");
+}
+
+function normalizeCoord(value?: number | null) {
+    if (value === null) return null;
+    if (value === undefined) return undefined;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
 }
 
 /**
@@ -106,10 +125,7 @@ function normalizeRejectReason(value?: string | null): RejectReason | null {
         return "no_estaba_cerrado";
     }
 
-    if (
-        v === "fuera_de_ruta" ||
-        v === "fuera de ruta"
-    ) {
+    if (v === "fuera_de_ruta" || v === "fuera de ruta") {
         return "fuera_de_ruta";
     }
 
@@ -118,8 +134,111 @@ function normalizeRejectReason(value?: string | null): RejectReason | null {
     return "otro";
 }
 
+function normalizeLeadQuality(value?: string | null): ClientLeadQuality | undefined {
+    if (!value) return undefined;
+    const v = String(value).trim().toLowerCase();
+
+    if (v === "valid") return "valid";
+    if (v === "review") return "review";
+    if (v === "not_suitable") return "not_suitable";
+    if (v === "unknown") return "unknown";
+
+    return undefined;
+}
+
+function normalizeProfileType(value?: string | null): ClientProfileType | undefined {
+    if (!value) return undefined;
+    const v = String(value).trim().toLowerCase();
+
+    if (v === "business") return "business";
+    if (v === "app_driver") return "app_driver";
+    if (v === "retired") return "retired";
+    if (v === "salary_worker") return "salary_worker";
+    if (v === "mixed_restricted") return "mixed_restricted";
+
+    return undefined;
+}
+
+function normalizeVerificationStatus(
+    value?: string | null
+): ClientVerificationStatus | undefined {
+    if (!value) return undefined;
+    const v = String(value).trim().toLowerCase();
+
+    if (v === "verified") return "verified";
+    if (v === "pending_review") return "pending_review";
+    if (v === "incomplete") return "incomplete";
+    if (v === "not_suitable") return "not_suitable";
+
+    return undefined;
+}
+
+function normalizeParseStatus(value?: string | null): ClientParseStatus | undefined {
+    if (!value) return undefined;
+    const v = String(value).trim().toLowerCase();
+
+    if (v === "ready") return "ready";
+    if (v === "partial") return "partial";
+    if (v === "empty") return "empty";
+
+    return undefined;
+}
+
+function normalizeBusinessQuality(value?: string | null): ClientBusinessQuality | undefined {
+    if (!value) return undefined;
+    const v = String(value).trim().toLowerCase();
+
+    if (v === "unknown") return "unknown";
+    if (v === "clear") return "clear";
+    if (v === "mixed") return "mixed";
+    if (v === "review") return "review";
+
+    return undefined;
+}
+
+function normalizeAutoFlags(value: unknown): ClientAutoFlag[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+
+    const allowed: ClientAutoFlag[] = [
+        "retirement_profile",
+        "salary_profile",
+        "app_driver_profile",
+    ];
+
+    const list = value
+        .map((x) => String(x ?? "").trim())
+        .filter((x): x is ClientAutoFlag => allowed.includes(x as ClientAutoFlag));
+
+    return Array.from(new Set(list));
+}
+
 export async function createClient(input: Omit<ClientDoc, "id">) {
-    await addDoc(col.clients, input);
+    const now = Date.now();
+
+    await addDoc(
+        col.clients,
+        stripUndefined({
+            ...input,
+            phone: normalizeClientPhone(input.phone),
+            waId: input.waId ? normalizeClientPhone(input.waId) : input.waId,
+            lat: normalizeCoord(input.lat),
+            lng: normalizeCoord(input.lng),
+
+            source: input.source ?? "manual",
+            parseStatus: normalizeParseStatus(input.parseStatus) ?? "empty",
+            verificationStatus:
+                normalizeVerificationStatus(input.verificationStatus) ?? "incomplete",
+            leadQuality: normalizeLeadQuality(input.leadQuality) ?? "unknown",
+            profileType: normalizeProfileType(input.profileType) ?? "business",
+            businessQuality: normalizeBusinessQuality(input.businessQuality) ?? "unknown",
+
+            businessFlags: normalizeAutoFlags(input.businessFlags) ?? [],
+            profileFlags: normalizeAutoFlags(input.profileFlags) ?? [],
+
+            createdAt: input.createdAt ?? now,
+            updatedAt: input.updatedAt ?? now,
+        } as any)
+    );
 }
 
 /**
@@ -170,7 +289,6 @@ export async function updateClientStatus(
 
     const batch = writeBatch(db);
 
-    // 1) update client (estado actual)
     const clientPatch: any =
         status === "pending"
             ? {
@@ -201,7 +319,6 @@ export async function updateClientStatus(
 
     batch.update(docRef.client(clientId), stripUndefined(clientPatch));
 
-    // 2) daily event (idempotente por día+cliente)
     const eventId = `${dayKey}_${clientId}`;
 
     const event: any = stripUndefined({
@@ -209,13 +326,11 @@ export async function updateClientStatus(
         userId: actorId,
         clientId,
 
-        // snapshot opcional
         phone: snapshot?.phone,
         name: snapshot?.name,
         business: snapshot?.business,
         address: snapshot?.address,
 
-        // motivo / nota solo si rejected
         rejectedReason: status === "rejected" ? normalizedRejectedReason : null,
         note: status === "rejected" ? note : null,
 
@@ -244,8 +359,8 @@ export async function assignClient(clientId: string, userId: string) {
         docRef.client(clientId),
         stripUndefined({
             assignedTo: userId,
-            assignedAt: now,
-            assignedDayKey: dayKeyFromMs(now),
+            assignedAt: userId ? now : 0,
+            assignedDayKey: userId ? dayKeyFromMs(now) : "",
 
             status: "pending",
             statusBy: null,
@@ -262,7 +377,7 @@ export async function assignClient(clientId: string, userId: string) {
  * Admin realtime subscription
  */
 export function subscribeAdminClients(callback: (clients: ClientDoc[]) => void): Unsubscribe {
-    const q = query(col.clients, orderBy("updatedAt", "desc"), limit(200));
+    const q = query(col.clients, orderBy("updatedAt", "desc"), limit(400));
 
     return onSnapshot(
         q,
@@ -280,21 +395,95 @@ export function subscribeAdminClients(callback: (clients: ClientDoc[]) => void):
 // ✅ Actualiza campos editables por admin
 export async function updateClientFields(
     clientId: string,
-    patch: {
-        name?: string;
-        business?: string;
+    patch: Partial<{
+        name: string;
+        business: string;
+        businessRaw: string;
         phone: string;
         mapsUrl: string;
-        address?: string;
-    }
+        address: string;
+        lat: number | null;
+        lng: number | null;
+        waId: string;
+        parseStatus: ClientParseStatus;
+        verificationStatus: ClientVerificationStatus;
+        leadQuality: ClientLeadQuality;
+        profileType: ClientProfileType;
+        notSuitableReason: string | null;
+        businessQuality: ClientBusinessQuality;
+        businessFlags: ClientAutoFlag[];
+        profileFlags: ClientAutoFlag[];
+        currentLeadMapsConfirmedAt: number | null;
+        verifiedAt: number | null;
+        assignedTo: string;
+        assignedAt: number;
+        assignedDayKey: string;
+        updatedAt: number;
+        source: ClientDoc["source"];
+        sourceRef: string | null;
+        autoCapturedAt: number | null;
+        initialIntroSentAt: number | null;
+        lastInboundMessageAt: number | null;
+        lastInboundText: string | null;
+        lastInboundIntent: string | null;
+        lastMessageId: string | null;
+        lastBotReplyAt: number | null;
+        lastBotReplyText: string | null;
+        lastBotStage: string | null;
+    }>
 ) {
-    await updateDoc(
-        docRef.client(clientId),
-        stripUndefined({
-            ...patch,
-            updatedAt: Date.now(),
-        })
-    );
+    const data: any = {
+        ...patch,
+        updatedAt: patch.updatedAt ?? Date.now(),
+    };
+
+    if (patch.phone !== undefined) {
+        data.phone = normalizeClientPhone(patch.phone);
+    }
+
+    if (patch.waId !== undefined) {
+        data.waId = normalizeClientPhone(patch.waId);
+    }
+
+    if ("lat" in patch) {
+        data.lat = normalizeCoord(patch.lat);
+    }
+
+    if ("lng" in patch) {
+        data.lng = normalizeCoord(patch.lng);
+    }
+
+    if ("leadQuality" in patch) {
+        data.leadQuality = normalizeLeadQuality(patch.leadQuality) ?? patch.leadQuality;
+    }
+
+    if ("profileType" in patch) {
+        data.profileType = normalizeProfileType(patch.profileType) ?? patch.profileType;
+    }
+
+    if ("verificationStatus" in patch) {
+        data.verificationStatus =
+            normalizeVerificationStatus(patch.verificationStatus) ?? patch.verificationStatus;
+    }
+
+    if ("parseStatus" in patch) {
+        data.parseStatus = normalizeParseStatus(patch.parseStatus) ?? patch.parseStatus;
+    }
+
+    if ("businessQuality" in patch) {
+        data.businessQuality =
+            normalizeBusinessQuality(patch.businessQuality) ?? patch.businessQuality;
+    }
+
+    if ("businessFlags" in patch) {
+        data.businessFlags = normalizeAutoFlags(patch.businessFlags) ?? [];
+    }
+
+    if ("profileFlags" in patch) {
+        data.profileFlags = normalizeAutoFlags(patch.profileFlags) ?? [];
+    }
+
+    await updateDoc(docRef.client(clientId), stripUndefined(data));
 }
 
 // ✅ Elimina cliente
@@ -305,8 +494,16 @@ export async function deleteClient(clientId: string) {
 /**
  * User realtime subscription
  */
-export function subscribeUserClients(userId: string, callback: (clients: ClientDoc[]) => void): Unsubscribe {
-    const q = query(col.clients, where("assignedTo", "==", userId), orderBy("updatedAt", "desc"), limit(200));
+export function subscribeUserClients(
+    userId: string,
+    callback: (clients: ClientDoc[]) => void
+): Unsubscribe {
+    const q = query(
+        col.clients,
+        where("assignedTo", "==", userId),
+        orderBy("updatedAt", "desc"),
+        limit(200)
+    );
 
     return onSnapshot(
         q,

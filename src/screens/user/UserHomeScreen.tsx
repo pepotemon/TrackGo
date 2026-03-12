@@ -99,6 +99,7 @@ export default function UserHomeScreen() {
 
     return (
         <View style={{ flex: 1, padding: 16, gap: 10 }}>
+
             <Text style={{ fontWeight: "800", fontSize: 18 }}>TrackGo</Text>
             <Text style={{ opacity: 0.75 }}>
                 Usuario: {profile.name} · Pendientes: {pendingCount} · Total: {clients.length}

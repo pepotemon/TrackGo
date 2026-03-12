@@ -12,6 +12,7 @@ import {
     type LayoutChangeEvent,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminBackground from "../../components/admin/AdminBackground";
 
 import Svg, {
     Circle,
@@ -876,187 +877,188 @@ export default function AdminAccountingScreen() {
     return (
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
+            <AdminBackground>
+                <ScrollView
+                    contentContainerStyle={[styles.content, { paddingBottom: Math.max(20, insets.bottom + 16) }]}
+                    showsVerticalScrollIndicator={false}
+                >
+                    <View style={styles.header}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={styles.title}>Contabilidad</Text>
+                            <Text style={styles.sub}>
+                                Semana <Text style={styles.strong}>{startKey}</Text> → <Text style={styles.strong}>{endKey}</Text>
+                            </Text>
+                            {weekErr ? <Text style={styles.errText}>Eventos: {weekErr}</Text> : null}
+                        </View>
 
-            <ScrollView
-                contentContainerStyle={[styles.content, { paddingBottom: Math.max(20, insets.bottom + 16) }]}
-                showsVerticalScrollIndicator={false}
-            >
-                <View style={styles.header}>
-                    <View style={{ flex: 1, gap: 2 }}>
-                        <Text style={styles.title}>Contabilidad</Text>
-                        <Text style={styles.sub}>
-                            Semana <Text style={styles.strong}>{startKey}</Text> → <Text style={styles.strong}>{endKey}</Text>
-                        </Text>
-                        {weekErr ? <Text style={styles.errText}>Eventos: {weekErr}</Text> : null}
-                    </View>
+                        <View style={styles.headerRight}>
+                            <Pressable
+                                onPress={openBudgetScreen}
+                                style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+                                accessibilityLabel="Editar presupuesto semanal"
+                            >
+                                <Ionicons name="wallet-outline" size={18} color={COLORS.text} />
+                            </Pressable>
 
-                    <View style={styles.headerRight}>
-                        <Pressable
-                            onPress={openBudgetScreen}
-                            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-                            accessibilityLabel="Editar presupuesto semanal"
-                        >
-                            <Ionicons name="wallet-outline" size={18} color={COLORS.text} />
-                        </Pressable>
-
-                        <View style={styles.weekPill}>
-                            <Ionicons name="calendar-outline" size={14} color={COLORS.muted} />
-                            <Text style={styles.weekPillText}>Lun–Sáb</Text>
+                            <View style={styles.weekPill}>
+                                <Ionicons name="calendar-outline" size={14} color={COLORS.muted} />
+                                <Text style={styles.weekPillText}>Lun–Sáb</Text>
+                            </View>
                         </View>
                     </View>
-                </View>
 
-                {/* KPIs */}
-                <View style={styles.kpiRow}>
-                    <View style={styles.kpiCard}>
-                        <Text style={styles.kpiLabel}>Ganancia bruta</Text>
-                        <Text style={styles.kpiValue}>R$ {money(weekStats.gross)}</Text>
-                        <Text style={styles.kpiHint}>
-                            {weekStats.visited} visitados · {weekStats.rejected} rechazados
-                        </Text>
-                        <Text style={styles.kpiHint2} numberOfLines={1}>
-                            Top: {topUserLabel}
-                        </Text>
-                    </View>
+                    {/* KPIs */}
+                    <View style={styles.kpiRow}>
+                        <View style={styles.kpiCard}>
+                            <Text style={styles.kpiLabel}>Ganancia bruta</Text>
+                            <Text style={styles.kpiValue}>R$ {money(weekStats.gross)}</Text>
+                            <Text style={styles.kpiHint}>
+                                {weekStats.visited} visitados · {weekStats.rejected} rechazados
+                            </Text>
+                            <Text style={styles.kpiHint2} numberOfLines={1}>
+                                Top: {topUserLabel}
+                            </Text>
+                        </View>
 
-                    <Pressable
-                        onPress={goToUserAccounting}
-                        style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
-                        accessibilityLabel="Ver contabilidad individual por usuario"
-                    >
-                        <View style={styles.kpiTopRow}>
-                            <Text style={styles.kpiLabel}>Ganancia real</Text>
-                            <View
-                                style={[
-                                    styles.perfPill,
-                                    perfTone === "pos" ? styles.perfPillPos : perfTone === "neg" ? styles.perfPillNeg : styles.perfPillNeutral,
-                                ]}
-                            >
-                                <Ionicons
-                                    name={perfTone === "pos" ? "trending-up-outline" : perfTone === "neg" ? "trending-down-outline" : "remove-outline"}
-                                    size={14}
-                                    color={perfTone === "pos" ? COLORS.ok : perfTone === "neg" ? COLORS.bad : COLORS.muted}
-                                />
-                                <Text
+                        <Pressable
+                            onPress={goToUserAccounting}
+                            style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
+                            accessibilityLabel="Ver contabilidad individual por usuario"
+                        >
+                            <View style={styles.kpiTopRow}>
+                                <Text style={styles.kpiLabel}>Ganancia real</Text>
+                                <View
                                     style={[
-                                        styles.perfPillText,
-                                        perfTone === "pos" ? styles.perfTextPos : perfTone === "neg" ? styles.perfTextNeg : styles.perfTextNeutral,
+                                        styles.perfPill,
+                                        perfTone === "pos" ? styles.perfPillPos : perfTone === "neg" ? styles.perfPillNeg : styles.perfPillNeutral,
                                     ]}
                                 >
-                                    {perfLabel}
-                                </Text>
+                                    <Ionicons
+                                        name={perfTone === "pos" ? "trending-up-outline" : perfTone === "neg" ? "trending-down-outline" : "remove-outline"}
+                                        size={14}
+                                        color={perfTone === "pos" ? COLORS.ok : perfTone === "neg" ? COLORS.bad : COLORS.muted}
+                                    />
+                                    <Text
+                                        style={[
+                                            styles.perfPillText,
+                                            perfTone === "pos" ? styles.perfTextPos : perfTone === "neg" ? styles.perfTextNeg : styles.perfTextNeutral,
+                                        ]}
+                                    >
+                                        {perfLabel}
+                                    </Text>
+                                </View>
+                            </View>
+
+                            <Text style={[styles.kpiValue, perfTone === "pos" ? styles.valuePos : perfTone === "neg" ? styles.valueNeg : null]}>
+                                R$ {money(profit)}
+                            </Text>
+                            <Text style={styles.kpiHint}>{investment <= 0 ? "ROI: — (sin inversión)" : `ROI: ${roi?.toFixed(1)}%`}</Text>
+                            <View style={styles.kpiHintRow}>
+                                <Text style={styles.kpiHint2}>Prom/día: R$ {money(avgPerDay)}</Text>
+                                <View style={styles.tapHint}>
+                                    <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.55)" />
+                                </View>
+                            </View>
+                        </Pressable>
+                    </View>
+
+                    {/* Charts PRO (diario semana actual) */}
+                    <View style={styles.card}>
+                        <View style={styles.cardTopRow}>
+                            <Text style={styles.cardTitle}>Rendimiento</Text>
+
+                            <View style={styles.miniLegend}>
+                                <View style={[styles.legendDot, styles.dotGross]} />
+                                <Text style={styles.legendText}>R$</Text>
+                                <View style={[styles.legendDot, styles.dotVisited]} />
+                                <Text style={styles.legendText}>Visitas</Text>
                             </View>
                         </View>
 
-                        <Text style={[styles.kpiValue, perfTone === "pos" ? styles.valuePos : perfTone === "neg" ? styles.valueNeg : null]}>
-                            R$ {money(profit)}
-                        </Text>
-                        <Text style={styles.kpiHint}>{investment <= 0 ? "ROI: — (sin inversión)" : `ROI: ${roi?.toFixed(1)}%`}</Text>
-                        <View style={styles.kpiHintRow}>
-                            <Text style={styles.kpiHint2}>Prom/día: R$ {money(avgPerDay)}</Text>
-                            <View style={styles.tapHint}>
-                                <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.55)" />
+                        <View style={styles.chartBlock}>
+                            <Text style={styles.cardSub}>Ganancia bruta por día</Text>
+                            <View style={styles.svgCard}>
+                                <ProBarChart values={chartValuesGross} labels={chartLabels} theme={chartTheme} barWidth={CHART_CFG.barWidth} />
                             </View>
                         </View>
-                    </Pressable>
-                </View>
 
-                {/* Charts PRO (diario semana actual) */}
-                <View style={styles.card}>
-                    <View style={styles.cardTopRow}>
-                        <Text style={styles.cardTitle}>Rendimiento</Text>
-
-                        <View style={styles.miniLegend}>
-                            <View style={[styles.legendDot, styles.dotGross]} />
-                            <Text style={styles.legendText}>R$</Text>
-                            <View style={[styles.legendDot, styles.dotVisited]} />
-                            <Text style={styles.legendText}>Visitas</Text>
-                        </View>
-                    </View>
-
-                    <View style={styles.chartBlock}>
-                        <Text style={styles.cardSub}>Ganancia bruta por día</Text>
-                        <View style={styles.svgCard}>
-                            <ProBarChart values={chartValuesGross} labels={chartLabels} theme={chartTheme} barWidth={CHART_CFG.barWidth} />
-                        </View>
-                    </View>
-
-                    <View style={styles.chartBlock}>
-                        <Text style={styles.cardSub}>Visitados por día</Text>
-                        <View style={styles.svgCard}>
-                            <ProLineChart values={chartValuesVisited} labels={chartLabels} theme={warnTheme} strokeWidth={CHART_CFG.lineStrokeWidth} dotRadius={CHART_CFG.dotRadius} showDots />
-                        </View>
-                    </View>
-                </View>
-
-                {/* ✅ HISTORIAL 12 SEMANAS */}
-                <View style={styles.card}>
-                    <Pressable onPress={toggleHistoryList} style={({ pressed }) => [styles.historyHeader, pressed && styles.pressed]}>
-                        <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={styles.cardTitle}>Historial</Text>
-                            {historyErr ? <Text style={styles.errText}>Historial: {historyErr}</Text> : null}
-                        </View>
-
-                        <View style={styles.historyRight}>
-                            <View style={styles.weekPill}>
-                                <Ionicons name="time-outline" size={14} color={COLORS.muted} />
-                                <Text style={styles.weekPillText}>{HISTORY_WEEKS}w</Text>
-                            </View>
-
-                            <View style={styles.chevBox}>
-                                <Ionicons name={historyListOpen ? "chevron-up" : "chevron-down"} size={18} color="rgba(255,255,255,0.72)" />
+                        <View style={styles.chartBlock}>
+                            <Text style={styles.cardSub}>Visitados por día</Text>
+                            <View style={styles.svgCard}>
+                                <ProLineChart values={chartValuesVisited} labels={chartLabels} theme={warnTheme} strokeWidth={CHART_CFG.lineStrokeWidth} dotRadius={CHART_CFG.dotRadius} showDots />
                             </View>
                         </View>
-                    </Pressable>
-
-                    <View style={styles.chartBlock}>
-                        <Text style={styles.cardSub}>Ganancia real por semana</Text>
-                        <View style={styles.svgCard}>
-                            <ProLineChart
-                                values={weeklyRealValues}
-                                labels={weeklyLabels}
-                                theme={realTheme}
-                                strokeWidth={CHART_CFG.lineStrokeWidth}
-                                dotRadius={CHART_CFG.dotRadius}
-                                showDots
-                                xMode="dots"
-                                tooltipItems={weeklyTooltipItems}
-                            />
-                        </View>
                     </View>
 
-                    {historyListOpen ? (
-                        <View style={{ gap: 8 }}>
-                            {weeklyHistory
-                                .slice()
-                                .reverse()
-                                .map((w) => {
-                                    const tone = w.real > 0 ? "pos" : w.real < 0 ? "neg" : "neutral";
-                                    return (
-                                        <View key={w.startKey} style={styles.weekRow}>
-                                            <View style={{ flex: 1, gap: 2 }}>
-                                                <Text style={styles.weekRowTitle}>
-                                                    {w.startKey} → {w.endKey}
-                                                </Text>
-                                                <Text style={styles.weekRowSub} numberOfLines={1}>
-                                                    {w.visited} visitados · {w.rejected} rechazados · Bruta R$ {money(w.gross)} · Inv R$ {money(w.inv)}
-                                                </Text>
+                    {/* ✅ HISTORIAL 12 SEMANAS */}
+                    <View style={styles.card}>
+                        <Pressable onPress={toggleHistoryList} style={({ pressed }) => [styles.historyHeader, pressed && styles.pressed]}>
+                            <View style={{ flex: 1, gap: 2 }}>
+                                <Text style={styles.cardTitle}>Historial</Text>
+                                {historyErr ? <Text style={styles.errText}>Historial: {historyErr}</Text> : null}
+                            </View>
+
+                            <View style={styles.historyRight}>
+                                <View style={styles.weekPill}>
+                                    <Ionicons name="time-outline" size={14} color={COLORS.muted} />
+                                    <Text style={styles.weekPillText}>{HISTORY_WEEKS}w</Text>
+                                </View>
+
+                                <View style={styles.chevBox}>
+                                    <Ionicons name={historyListOpen ? "chevron-up" : "chevron-down"} size={18} color="rgba(255,255,255,0.72)" />
+                                </View>
+                            </View>
+                        </Pressable>
+
+                        <View style={styles.chartBlock}>
+                            <Text style={styles.cardSub}>Ganancia real por semana</Text>
+                            <View style={styles.svgCard}>
+                                <ProLineChart
+                                    values={weeklyRealValues}
+                                    labels={weeklyLabels}
+                                    theme={realTheme}
+                                    strokeWidth={CHART_CFG.lineStrokeWidth}
+                                    dotRadius={CHART_CFG.dotRadius}
+                                    showDots
+                                    xMode="dots"
+                                    tooltipItems={weeklyTooltipItems}
+                                />
+                            </View>
+                        </View>
+
+                        {historyListOpen ? (
+                            <View style={{ gap: 8 }}>
+                                {weeklyHistory
+                                    .slice()
+                                    .reverse()
+                                    .map((w) => {
+                                        const tone = w.real > 0 ? "pos" : w.real < 0 ? "neg" : "neutral";
+                                        return (
+                                            <View key={w.startKey} style={styles.weekRow}>
+                                                <View style={{ flex: 1, gap: 2 }}>
+                                                    <Text style={styles.weekRowTitle}>
+                                                        {w.startKey} → {w.endKey}
+                                                    </Text>
+                                                    <Text style={styles.weekRowSub} numberOfLines={1}>
+                                                        {w.visited} visitados · {w.rejected} rechazados · Bruta R$ {money(w.gross)} · Inv R$ {money(w.inv)}
+                                                    </Text>
+                                                </View>
+
+                                                <View style={[styles.weekRealPill, tone === "pos" ? styles.weekRealPos : tone === "neg" ? styles.weekRealNeg : styles.weekRealNeu]}>
+                                                    <Text style={styles.weekRealText}>R$ {money(w.real)}</Text>
+                                                    <Text style={styles.weekRealSmall}>{w.roi == null ? "ROI —" : `${w.roi.toFixed(0)}%`}</Text>
+                                                </View>
                                             </View>
+                                        );
+                                    })}
+                            </View>
+                        ) : null}
+                    </View>
 
-                                            <View style={[styles.weekRealPill, tone === "pos" ? styles.weekRealPos : tone === "neg" ? styles.weekRealNeg : styles.weekRealNeu]}>
-                                                <Text style={styles.weekRealText}>R$ {money(w.real)}</Text>
-                                                <Text style={styles.weekRealSmall}>{w.roi == null ? "ROI —" : `${w.roi.toFixed(0)}%`}</Text>
-                                            </View>
-                                        </View>
-                                    );
-                                })}
-                        </View>
-                    ) : null}
-                </View>
-
-                {/* (debug opcional) */}
-                {/* <Text style={{ color: "#fff" }}>{JSON.stringify(allocations, null, 2)}</Text> */}
-            </ScrollView>
+                    {/* (debug opcional) */}
+                    {/* <Text style={{ color: "#fff" }}>{JSON.stringify(allocations, null, 2)}</Text> */}
+                </ScrollView>
+            </AdminBackground>
         </SafeAreaView>
     );
 }

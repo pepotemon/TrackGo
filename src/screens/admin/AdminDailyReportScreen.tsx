@@ -12,6 +12,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminBackground from "../../components/admin/AdminBackground";
 
 import { assignClient, subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
@@ -803,444 +804,445 @@ export default function AdminDailyReportScreen() {
     return (
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
-
-            <View style={[styles.header, { paddingTop: 2 }]}>
-                <View style={{ flex: 1 }}>
-                    <Text style={styles.hTitle}>Hoy</Text>
-                    <Text style={styles.hSub}>
-                        <Text style={styles.hStrong}>{doneToday}</Text>
-                        <Text style={styles.hMuted}> / {totals.assignedToday} completados</Text>
-                    </Text>
-                </View>
-
-                <Pressable
-                    onPress={() => setMoneyOpen(true)}
-                    style={({ pressed }) => [
-                        styles.moneyChip,
-                        pressed && styles.moneyChipPressed,
-                    ]}
-                    accessibilityLabel="Ver visitados e ingresos"
-                >
-                    <Ionicons name="cash-outline" size={12} color={COLORS.money} />
-                    <Text style={styles.moneyChipText}>R$ {money(totals.amountToday)}</Text>
-                </Pressable>
-
-                <IconBtn
-                    icon={usersLoading ? "sync" : "refresh-outline"}
-                    label="Refrescar usuarios"
-                    onPress={reloadUsers}
-                    disabled={usersLoading}
-                />
-            </View>
-
-            <View style={styles.statsRow}>
-                <StatIconPressable
-                    icon="checkmark-circle-outline"
-                    color={COLORS.visited}
-                    value={totals.visitedToday}
-                    label="Visitados"
-                    onPress={() => openList("visited")}
-                    disabled={totals.visitedToday <= 0}
-                />
-                <StatIconPressable
-                    icon="close-circle-outline"
-                    color={COLORS.rejected}
-                    value={totals.rejectedToday}
-                    label="Rechazados"
-                    onPress={() => openList("rejected")}
-                    disabled={totals.rejectedToday <= 0}
-                />
-                <StatIconPressable
-                    icon="time-outline"
-                    color={COLORS.pending}
-                    value={totals.pending}
-                    label="Pendientes"
-                    onPress={() => openList("pending")}
-                    disabled={totals.pending <= 0}
-                />
-                <StatIconPressable
-                    icon="people-outline"
-                    color={COLORS.muted2}
-                    value={totals.assignedToday}
-                    label="Asignados (hoy)"
-                />
-            </View>
-
-            <View style={styles.searchWrap}>
-                <Ionicons name="search-outline" size={16} color={COLORS.muted} />
-                <TextInput
-                    value={q}
-                    onChangeText={setQ}
-                    placeholder="Buscar nombre o email…"
-                    placeholderTextColor={COLORS.muted}
-                    style={styles.searchInput}
-                    autoCorrect={false}
-                    autoCapitalize="none"
-                />
-                {!!q ? (
-                    <Pressable
-                        onPress={() => setQ("")}
-                        style={styles.clearBtn}
-                        accessibilityLabel="Limpiar búsqueda"
-                    >
-                        <Ionicons name="close" size={16} color={COLORS.text} />
-                    </Pressable>
-                ) : null}
-            </View>
-
-            <FlatList
-                data={rows}
-                keyExtractor={(r) => r.userId}
-                contentContainerStyle={[
-                    styles.listContent,
-                    { paddingBottom: Math.max(26, insets.bottom + 14) },
-                ]}
-                showsVerticalScrollIndicator={false}
-                renderItem={({ item }) => {
-                    const done = item.visitedToday + item.rejectedToday;
-                    const total = item.assignedToday;
-                    const pct = total <= 0 ? 0 : Math.round((Math.min(done, total) / total) * 100);
-
-                    return (
-                        <View style={styles.card}>
-                            <View style={styles.cardTop}>
-                                <View style={{ flex: 1, gap: 1 }}>
-                                    <Text style={styles.userName} numberOfLines={1}>
-                                        {item.name}
-                                    </Text>
-
-                                    {!!item.email ? (
-                                        <Text style={styles.userEmail} numberOfLines={1}>
-                                            {item.email}
-                                        </Text>
-                                    ) : (
-                                        <Text style={styles.userEmailMuted} numberOfLines={1}>
-                                            (sin email)
-                                        </Text>
-                                    )}
-                                </View>
-
-                                <View style={{ alignItems: "flex-end", gap: 6 }}>
-                                    <View style={styles.pctPill}>
-                                        <Ionicons
-                                            name="stats-chart-outline"
-                                            size={12}
-                                            color={COLORS.primarySoft}
-                                        />
-                                        <Text style={styles.pctText}>{pct}%</Text>
-                                    </View>
-
-                                    <View style={styles.amountPill}>
-                                        <Text style={styles.amountText}>
-                                            R$ {money(item.amountToday)}
-                                        </Text>
-                                    </View>
-                                </View>
-                            </View>
-
-                            <ProgressBar done={done} total={Math.max(1, total)} />
-
-                            <View style={styles.metricsRow}>
-                                <View style={[styles.miniStat, styles.miniOk]}>
-                                    <Ionicons
-                                        name="checkmark"
-                                        size={12}
-                                        color={COLORS.visitedSoft}
-                                    />
-                                    <Text style={[styles.miniText, { color: COLORS.visitedSoft }]}>
-                                        {item.visitedToday}
-                                    </Text>
-                                </View>
-
-                                <View style={[styles.miniStat, styles.miniBad]}>
-                                    <Ionicons
-                                        name="close"
-                                        size={12}
-                                        color={COLORS.rejectedSoft}
-                                    />
-                                    <Text style={[styles.miniText, { color: COLORS.rejectedSoft }]}>
-                                        {item.rejectedToday}
-                                    </Text>
-                                </View>
-
-                                <View style={[styles.miniStat, styles.miniWarn]}>
-                                    <Ionicons
-                                        name="time"
-                                        size={12}
-                                        color={COLORS.pendingSoft}
-                                    />
-                                    <Text style={[styles.miniText, { color: COLORS.pendingSoft }]}>
-                                        {item.pending}
-                                    </Text>
-                                </View>
-
-                                <View style={[styles.miniStat, styles.miniNeutral]}>
-                                    <Ionicons name="people" size={12} color={COLORS.text} />
-                                    <Text style={[styles.miniText, { color: COLORS.text }]}>
-                                        {item.assignedToday}
-                                    </Text>
-                                </View>
-                            </View>
-
-                            <View style={styles.actionsRow}>
-                                <View style={styles.rateChip}>
-                                    <Ionicons name="cash-outline" size={12} color={COLORS.muted} />
-                                    <Text style={styles.rateText}>R$ {money(item.ratePerVisit)}</Text>
-                                    <Text style={styles.rateTextMuted}>/visita</Text>
-                                </View>
-
-                                <IconBtn
-                                    icon="mail-outline"
-                                    label="Copiar email"
-                                    disabled={!item.email}
-                                    onPress={() => copy(item.email ?? "")}
-                                />
-                            </View>
-                        </View>
-                    );
-                }}
-                ListEmptyComponent={
-                    <View style={styles.empty}>
-                        <Ionicons name="analytics-outline" size={20} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>
-                            {q.trim() ? "Sin resultados." : "Sin datos aún."}
+            <AdminBackground>
+                <View style={[styles.header, { paddingTop: 2 }]}>
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.hTitle}>Hoy</Text>
+                        <Text style={styles.hSub}>
+                            <Text style={styles.hStrong}>{doneToday}</Text>
+                            <Text style={styles.hMuted}> / {totals.assignedToday} completados</Text>
                         </Text>
                     </View>
-                }
-            />
 
-            <Modal visible={listOpen} transparent animationType="fade" onRequestClose={closeList}>
-                <Pressable style={styles.modalBackdrop} onPress={closeList} />
+                    <Pressable
+                        onPress={() => setMoneyOpen(true)}
+                        style={({ pressed }) => [
+                            styles.moneyChip,
+                            pressed && styles.moneyChipPressed,
+                        ]}
+                        accessibilityLabel="Ver visitados e ingresos"
+                    >
+                        <Ionicons name="cash-outline" size={12} color={COLORS.money} />
+                        <Text style={styles.moneyChipText}>R$ {money(totals.amountToday)}</Text>
+                    </Pressable>
 
-                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
-                    <View style={styles.modalHeader}>
-                        <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={styles.modalTitle}>
-                                {listMode === "visited"
-                                    ? "Visitados (hoy)"
-                                    : listMode === "pending"
-                                        ? "Pendientes"
-                                        : "Rechazados (hoy)"}
-                            </Text>
-                            <Text style={styles.modalSub}>
-                                {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0)} cliente
-                                {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0) === 1
-                                    ? ""
-                                    : "s"}
-                            </Text>
-                        </View>
-
-                        <Pressable
-                            onPress={closeList}
-                            style={({ pressed }) => [
-                                styles.modalClose,
-                                pressed && styles.modalClosePressed,
-                            ]}
-                        >
-                            <Ionicons name="close" size={16} color={COLORS.text} />
-                        </Pressable>
-                    </View>
-
-                    <View style={styles.modalSearch}>
-                        <Ionicons name="search-outline" size={16} color={COLORS.muted} />
-                        <TextInput
-                            value={listQ}
-                            onChangeText={setListQ}
-                            placeholder="Buscar cliente, negocio, teléfono…"
-                            placeholderTextColor={COLORS.muted}
-                            style={styles.modalSearchInput}
-                        />
-                        {!!listQ ? (
-                            <Pressable onPress={() => setListQ("")} style={styles.modalSearchClear}>
-                                <Ionicons name="close" size={16} color={COLORS.text} />
-                            </Pressable>
-                        ) : null}
-                    </View>
-
-                    <FlatList
-                        data={modalSections}
-                        keyExtractor={(s) => s.userId}
-                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
-                        showsVerticalScrollIndicator={false}
-                        renderItem={({ item: section }) => (
-                            <View style={styles.modalSectionCard}>
-                                <View style={styles.modalSectionHeader}>
-                                    <View style={{ flex: 1, gap: 1 }}>
-                                        <Text style={styles.modalSectionTitle} numberOfLines={1}>
-                                            {section.title}
-                                        </Text>
-                                        {section.subtitle ? (
-                                            <Text style={styles.modalSectionSub} numberOfLines={1}>
-                                                {section.subtitle}
-                                            </Text>
-                                        ) : null}
-                                    </View>
-                                    <View style={styles.modalCountPill}>
-                                        <Text style={styles.modalCountText}>{section.data.length}</Text>
-                                    </View>
-                                </View>
-
-                                <View style={{ gap: 8, marginTop: 8 }}>
-                                    {section.data.map((c) => (
-                                        <ClientRowModal
-                                            key={c.id}
-                                            c={c}
-                                            allowReassign={listMode === "pending" || listMode === "rejected"}
-                                        />
-                                    ))}
-                                </View>
-                            </View>
-                        )}
-                        ListEmptyComponent={
-                            <View style={styles.modalEmpty}>
-                                <Ionicons name="people-outline" size={20} color={COLORS.muted} />
-                                <Text style={styles.modalEmptyText}>No hay clientes aquí.</Text>
-                            </View>
-                        }
+                    <IconBtn
+                        icon={usersLoading ? "sync" : "refresh-outline"}
+                        label="Refrescar usuarios"
+                        onPress={reloadUsers}
+                        disabled={usersLoading}
                     />
                 </View>
-            </Modal>
 
-            <Modal visible={assignOpen} transparent animationType="fade" onRequestClose={closeAssign}>
-                <Pressable style={styles.modalBackdrop} onPress={closeAssign} />
+                <View style={styles.statsRow}>
+                    <StatIconPressable
+                        icon="checkmark-circle-outline"
+                        color={COLORS.visited}
+                        value={totals.visitedToday}
+                        label="Visitados"
+                        onPress={() => openList("visited")}
+                        disabled={totals.visitedToday <= 0}
+                    />
+                    <StatIconPressable
+                        icon="close-circle-outline"
+                        color={COLORS.rejected}
+                        value={totals.rejectedToday}
+                        label="Rechazados"
+                        onPress={() => openList("rejected")}
+                        disabled={totals.rejectedToday <= 0}
+                    />
+                    <StatIconPressable
+                        icon="time-outline"
+                        color={COLORS.pending}
+                        value={totals.pending}
+                        label="Pendientes"
+                        onPress={() => openList("pending")}
+                        disabled={totals.pending <= 0}
+                    />
+                    <StatIconPressable
+                        icon="people-outline"
+                        color={COLORS.muted2}
+                        value={totals.assignedToday}
+                        label="Asignados (hoy)"
+                    />
+                </View>
 
-                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
-                    <View style={styles.modalHeader}>
-                        <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={styles.modalTitle}>Reasignar a usuario</Text>
-                            <Text style={styles.modalSub}>Selecciona un cobrador</Text>
-                        </View>
-
+                <View style={styles.searchWrap}>
+                    <Ionicons name="search-outline" size={16} color={COLORS.muted} />
+                    <TextInput
+                        value={q}
+                        onChangeText={setQ}
+                        placeholder="Buscar nombre o email…"
+                        placeholderTextColor={COLORS.muted}
+                        style={styles.searchInput}
+                        autoCorrect={false}
+                        autoCapitalize="none"
+                    />
+                    {!!q ? (
                         <Pressable
-                            onPress={closeAssign}
-                            style={({ pressed }) => [
-                                styles.modalClose,
-                                pressed && styles.modalClosePressed,
-                            ]}
+                            onPress={() => setQ("")}
+                            style={styles.clearBtn}
+                            accessibilityLabel="Limpiar búsqueda"
                         >
                             <Ionicons name="close" size={16} color={COLORS.text} />
                         </Pressable>
-                    </View>
+                    ) : null}
+                </View>
 
-                    <View style={styles.modalSearch}>
-                        <Ionicons name="search-outline" size={16} color={COLORS.muted} />
-                        <TextInput
-                            value={assignSearch}
-                            onChangeText={setAssignSearch}
-                            placeholder="Buscar usuario (nombre / email)…"
-                            placeholderTextColor={COLORS.muted}
-                            style={styles.modalSearchInput}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                        />
-                        {!!assignSearch ? (
-                            <Pressable onPress={() => setAssignSearch("")} style={styles.modalSearchClear}>
-                                <Ionicons name="close" size={16} color={COLORS.text} />
-                            </Pressable>
-                        ) : null}
-                    </View>
+                <FlatList
+                    data={rows}
+                    keyExtractor={(r) => r.userId}
+                    contentContainerStyle={[
+                        styles.listContent,
+                        { paddingBottom: Math.max(26, insets.bottom + 14) },
+                    ]}
+                    showsVerticalScrollIndicator={false}
+                    renderItem={({ item }) => {
+                        const done = item.visitedToday + item.rejectedToday;
+                        const total = item.assignedToday;
+                        const pct = total <= 0 ? 0 : Math.round((Math.min(done, total) / total) * 100);
 
-                    <FlatList
-                        data={filteredUsersForAssign}
-                        keyExtractor={(u) => u.id}
-                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
-                        showsVerticalScrollIndicator={false}
-                        renderItem={({ item }) => (
+                        return (
+                            <View style={styles.card}>
+                                <View style={styles.cardTop}>
+                                    <View style={{ flex: 1, gap: 1 }}>
+                                        <Text style={styles.userName} numberOfLines={1}>
+                                            {item.name}
+                                        </Text>
+
+                                        {!!item.email ? (
+                                            <Text style={styles.userEmail} numberOfLines={1}>
+                                                {item.email}
+                                            </Text>
+                                        ) : (
+                                            <Text style={styles.userEmailMuted} numberOfLines={1}>
+                                                (sin email)
+                                            </Text>
+                                        )}
+                                    </View>
+
+                                    <View style={{ alignItems: "flex-end", gap: 6 }}>
+                                        <View style={styles.pctPill}>
+                                            <Ionicons
+                                                name="stats-chart-outline"
+                                                size={12}
+                                                color={COLORS.primarySoft}
+                                            />
+                                            <Text style={styles.pctText}>{pct}%</Text>
+                                        </View>
+
+                                        <View style={styles.amountPill}>
+                                            <Text style={styles.amountText}>
+                                                R$ {money(item.amountToday)}
+                                            </Text>
+                                        </View>
+                                    </View>
+                                </View>
+
+                                <ProgressBar done={done} total={Math.max(1, total)} />
+
+                                <View style={styles.metricsRow}>
+                                    <View style={[styles.miniStat, styles.miniOk]}>
+                                        <Ionicons
+                                            name="checkmark"
+                                            size={12}
+                                            color={COLORS.visitedSoft}
+                                        />
+                                        <Text style={[styles.miniText, { color: COLORS.visitedSoft }]}>
+                                            {item.visitedToday}
+                                        </Text>
+                                    </View>
+
+                                    <View style={[styles.miniStat, styles.miniBad]}>
+                                        <Ionicons
+                                            name="close"
+                                            size={12}
+                                            color={COLORS.rejectedSoft}
+                                        />
+                                        <Text style={[styles.miniText, { color: COLORS.rejectedSoft }]}>
+                                            {item.rejectedToday}
+                                        </Text>
+                                    </View>
+
+                                    <View style={[styles.miniStat, styles.miniWarn]}>
+                                        <Ionicons
+                                            name="time"
+                                            size={12}
+                                            color={COLORS.pendingSoft}
+                                        />
+                                        <Text style={[styles.miniText, { color: COLORS.pendingSoft }]}>
+                                            {item.pending}
+                                        </Text>
+                                    </View>
+
+                                    <View style={[styles.miniStat, styles.miniNeutral]}>
+                                        <Ionicons name="people" size={12} color={COLORS.text} />
+                                        <Text style={[styles.miniText, { color: COLORS.text }]}>
+                                            {item.assignedToday}
+                                        </Text>
+                                    </View>
+                                </View>
+
+                                <View style={styles.actionsRow}>
+                                    <View style={styles.rateChip}>
+                                        <Ionicons name="cash-outline" size={12} color={COLORS.muted} />
+                                        <Text style={styles.rateText}>R$ {money(item.ratePerVisit)}</Text>
+                                        <Text style={styles.rateTextMuted}>/visita</Text>
+                                    </View>
+
+                                    <IconBtn
+                                        icon="mail-outline"
+                                        label="Copiar email"
+                                        disabled={!item.email}
+                                        onPress={() => copy(item.email ?? "")}
+                                    />
+                                </View>
+                            </View>
+                        );
+                    }}
+                    ListEmptyComponent={
+                        <View style={styles.empty}>
+                            <Ionicons name="analytics-outline" size={20} color={COLORS.muted} />
+                            <Text style={styles.emptyText}>
+                                {q.trim() ? "Sin resultados." : "Sin datos aún."}
+                            </Text>
+                        </View>
+                    }
+                />
+
+                <Modal visible={listOpen} transparent animationType="fade" onRequestClose={closeList}>
+                    <Pressable style={styles.modalBackdrop} onPress={closeList} />
+
+                    <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                        <View style={styles.modalHeader}>
+                            <View style={{ flex: 1, gap: 2 }}>
+                                <Text style={styles.modalTitle}>
+                                    {listMode === "visited"
+                                        ? "Visitados (hoy)"
+                                        : listMode === "pending"
+                                            ? "Pendientes"
+                                            : "Rechazados (hoy)"}
+                                </Text>
+                                <Text style={styles.modalSub}>
+                                    {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0)} cliente
+                                    {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0) === 1
+                                        ? ""
+                                        : "s"}
+                                </Text>
+                            </View>
+
                             <Pressable
-                                onPress={() => doAssign(item.id)}
+                                onPress={closeList}
                                 style={({ pressed }) => [
-                                    styles.userPickRow,
-                                    pressed && styles.userPickRowPressed,
+                                    styles.modalClose,
+                                    pressed && styles.modalClosePressed,
                                 ]}
                             >
-                                <View style={styles.userPickAvatar}>
-                                    <Ionicons name="person-outline" size={14} color={COLORS.text} />
-                                </View>
-                                <View style={{ flex: 1, gap: 1 }}>
-                                    <Text style={styles.userPickName} numberOfLines={1}>
-                                        {item.name}
-                                    </Text>
-                                    <Text style={styles.userPickEmail} numberOfLines={1}>
-                                        {item.email || "—"}
-                                    </Text>
-                                </View>
-                                <Ionicons name="chevron-forward" size={14} color={COLORS.muted} />
+                                <Ionicons name="close" size={16} color={COLORS.text} />
                             </Pressable>
-                        )}
-                        ListEmptyComponent={
-                            <View style={styles.modalEmpty}>
-                                <Ionicons name="person-outline" size={20} color={COLORS.muted} />
-                                <Text style={styles.modalEmptyText}>No hay usuarios.</Text>
-                            </View>
-                        }
-                    />
-
-                    <Text style={styles.modalHint}>
-                        * Esto cambia el assignedTo del cliente y lo deja pending en UI.
-                    </Text>
-                </View>
-            </Modal>
-
-            <Modal visible={moneyOpen} transparent animationType="fade" onRequestClose={() => setMoneyOpen(false)}>
-                <Pressable style={styles.modalBackdrop} onPress={() => setMoneyOpen(false)} />
-
-                <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
-                    <View style={styles.modalHeader}>
-                        <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={styles.modalTitle}>Visitados e ingresos</Text>
-                            <Text style={styles.modalSub}>
-                                {totals.visitedToday} visitado{totals.visitedToday === 1 ? "" : "s"} · R$ {money(totals.amountToday)}
-                            </Text>
                         </View>
 
-                        <Pressable
-                            onPress={() => setMoneyOpen(false)}
-                            style={({ pressed }) => [
-                                styles.modalClose,
-                                pressed && styles.modalClosePressed,
-                            ]}
-                        >
-                            <Ionicons name="close" size={16} color={COLORS.text} />
-                        </Pressable>
+                        <View style={styles.modalSearch}>
+                            <Ionicons name="search-outline" size={16} color={COLORS.muted} />
+                            <TextInput
+                                value={listQ}
+                                onChangeText={setListQ}
+                                placeholder="Buscar cliente, negocio, teléfono…"
+                                placeholderTextColor={COLORS.muted}
+                                style={styles.modalSearchInput}
+                            />
+                            {!!listQ ? (
+                                <Pressable onPress={() => setListQ("")} style={styles.modalSearchClear}>
+                                    <Ionicons name="close" size={16} color={COLORS.text} />
+                                </Pressable>
+                            ) : null}
+                        </View>
+
+                        <FlatList
+                            data={modalSections}
+                            keyExtractor={(s) => s.userId}
+                            contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                            showsVerticalScrollIndicator={false}
+                            renderItem={({ item: section }) => (
+                                <View style={styles.modalSectionCard}>
+                                    <View style={styles.modalSectionHeader}>
+                                        <View style={{ flex: 1, gap: 1 }}>
+                                            <Text style={styles.modalSectionTitle} numberOfLines={1}>
+                                                {section.title}
+                                            </Text>
+                                            {section.subtitle ? (
+                                                <Text style={styles.modalSectionSub} numberOfLines={1}>
+                                                    {section.subtitle}
+                                                </Text>
+                                            ) : null}
+                                        </View>
+                                        <View style={styles.modalCountPill}>
+                                            <Text style={styles.modalCountText}>{section.data.length}</Text>
+                                        </View>
+                                    </View>
+
+                                    <View style={{ gap: 8, marginTop: 8 }}>
+                                        {section.data.map((c) => (
+                                            <ClientRowModal
+                                                key={c.id}
+                                                c={c}
+                                                allowReassign={listMode === "pending" || listMode === "rejected"}
+                                            />
+                                        ))}
+                                    </View>
+                                </View>
+                            )}
+                            ListEmptyComponent={
+                                <View style={styles.modalEmpty}>
+                                    <Ionicons name="people-outline" size={20} color={COLORS.muted} />
+                                    <Text style={styles.modalEmptyText}>No hay clientes aquí.</Text>
+                                </View>
+                            }
+                        />
                     </View>
+                </Modal>
 
-                    <FlatList
-                        data={earningRows}
-                        keyExtractor={(r) => `money-${r.userId}`}
-                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
-                        showsVerticalScrollIndicator={false}
-                        renderItem={({ item }) => (
-                            <View style={styles.moneyRowCard}>
-                                <View style={{ flex: 1, gap: 1 }}>
-                                    <Text style={styles.moneyRowName} numberOfLines={1}>
-                                        {item.name}
-                                    </Text>
-                                    <Text style={styles.moneyRowMeta} numberOfLines={1}>
-                                        {item.visitedToday} visitado{item.visitedToday === 1 ? "" : "s"} · R$ {money(item.ratePerVisit)}/visita
-                                    </Text>
+                <Modal visible={assignOpen} transparent animationType="fade" onRequestClose={closeAssign}>
+                    <Pressable style={styles.modalBackdrop} onPress={closeAssign} />
+
+                    <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                        <View style={styles.modalHeader}>
+                            <View style={{ flex: 1, gap: 2 }}>
+                                <Text style={styles.modalTitle}>Reasignar a usuario</Text>
+                                <Text style={styles.modalSub}>Selecciona un cobrador</Text>
+                            </View>
+
+                            <Pressable
+                                onPress={closeAssign}
+                                style={({ pressed }) => [
+                                    styles.modalClose,
+                                    pressed && styles.modalClosePressed,
+                                ]}
+                            >
+                                <Ionicons name="close" size={16} color={COLORS.text} />
+                            </Pressable>
+                        </View>
+
+                        <View style={styles.modalSearch}>
+                            <Ionicons name="search-outline" size={16} color={COLORS.muted} />
+                            <TextInput
+                                value={assignSearch}
+                                onChangeText={setAssignSearch}
+                                placeholder="Buscar usuario (nombre / email)…"
+                                placeholderTextColor={COLORS.muted}
+                                style={styles.modalSearchInput}
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                            />
+                            {!!assignSearch ? (
+                                <Pressable onPress={() => setAssignSearch("")} style={styles.modalSearchClear}>
+                                    <Ionicons name="close" size={16} color={COLORS.text} />
+                                </Pressable>
+                            ) : null}
+                        </View>
+
+                        <FlatList
+                            data={filteredUsersForAssign}
+                            keyExtractor={(u) => u.id}
+                            contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                            showsVerticalScrollIndicator={false}
+                            renderItem={({ item }) => (
+                                <Pressable
+                                    onPress={() => doAssign(item.id)}
+                                    style={({ pressed }) => [
+                                        styles.userPickRow,
+                                        pressed && styles.userPickRowPressed,
+                                    ]}
+                                >
+                                    <View style={styles.userPickAvatar}>
+                                        <Ionicons name="person-outline" size={14} color={COLORS.text} />
+                                    </View>
+                                    <View style={{ flex: 1, gap: 1 }}>
+                                        <Text style={styles.userPickName} numberOfLines={1}>
+                                            {item.name}
+                                        </Text>
+                                        <Text style={styles.userPickEmail} numberOfLines={1}>
+                                            {item.email || "—"}
+                                        </Text>
+                                    </View>
+                                    <Ionicons name="chevron-forward" size={14} color={COLORS.muted} />
+                                </Pressable>
+                            )}
+                            ListEmptyComponent={
+                                <View style={styles.modalEmpty}>
+                                    <Ionicons name="person-outline" size={20} color={COLORS.muted} />
+                                    <Text style={styles.modalEmptyText}>No hay usuarios.</Text>
                                 </View>
+                            }
+                        />
 
-                                <View style={styles.moneyRowRight}>
-                                    <View style={styles.moneyVisitsPill}>
-                                        <Ionicons name="checkmark" size={11} color={COLORS.visitedSoft} />
-                                        <Text style={styles.moneyVisitsText}>{item.visitedToday}</Text>
+                        <Text style={styles.modalHint}>
+                            * Esto cambia el assignedTo del cliente y lo deja pending en UI.
+                        </Text>
+                    </View>
+                </Modal>
+
+                <Modal visible={moneyOpen} transparent animationType="fade" onRequestClose={() => setMoneyOpen(false)}>
+                    <Pressable style={styles.modalBackdrop} onPress={() => setMoneyOpen(false)} />
+
+                    <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                        <View style={styles.modalHeader}>
+                            <View style={{ flex: 1, gap: 2 }}>
+                                <Text style={styles.modalTitle}>Visitados e ingresos</Text>
+                                <Text style={styles.modalSub}>
+                                    {totals.visitedToday} visitado{totals.visitedToday === 1 ? "" : "s"} · R$ {money(totals.amountToday)}
+                                </Text>
+                            </View>
+
+                            <Pressable
+                                onPress={() => setMoneyOpen(false)}
+                                style={({ pressed }) => [
+                                    styles.modalClose,
+                                    pressed && styles.modalClosePressed,
+                                ]}
+                            >
+                                <Ionicons name="close" size={16} color={COLORS.text} />
+                            </Pressable>
+                        </View>
+
+                        <FlatList
+                            data={earningRows}
+                            keyExtractor={(r) => `money-${r.userId}`}
+                            contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                            showsVerticalScrollIndicator={false}
+                            renderItem={({ item }) => (
+                                <View style={styles.moneyRowCard}>
+                                    <View style={{ flex: 1, gap: 1 }}>
+                                        <Text style={styles.moneyRowName} numberOfLines={1}>
+                                            {item.name}
+                                        </Text>
+                                        <Text style={styles.moneyRowMeta} numberOfLines={1}>
+                                            {item.visitedToday} visitado{item.visitedToday === 1 ? "" : "s"} · R$ {money(item.ratePerVisit)}/visita
+                                        </Text>
                                     </View>
 
-                                    <View style={styles.moneyAmountPill}>
-                                        <Text style={styles.moneyAmountText}>R$ {money(item.amountToday)}</Text>
+                                    <View style={styles.moneyRowRight}>
+                                        <View style={styles.moneyVisitsPill}>
+                                            <Ionicons name="checkmark" size={11} color={COLORS.visitedSoft} />
+                                            <Text style={styles.moneyVisitsText}>{item.visitedToday}</Text>
+                                        </View>
+
+                                        <View style={styles.moneyAmountPill}>
+                                            <Text style={styles.moneyAmountText}>R$ {money(item.amountToday)}</Text>
+                                        </View>
                                     </View>
                                 </View>
-                            </View>
-                        )}
-                        ListEmptyComponent={
-                            <View style={styles.modalEmpty}>
-                                <Ionicons name="cash-outline" size={20} color={COLORS.muted} />
-                                <Text style={styles.modalEmptyText}>Aún no hay ingresos hoy.</Text>
-                            </View>
-                        }
-                    />
-                </View>
-            </Modal>
+                            )}
+                            ListEmptyComponent={
+                                <View style={styles.modalEmpty}>
+                                    <Ionicons name="cash-outline" size={20} color={COLORS.muted} />
+                                    <Text style={styles.modalEmptyText}>Aún no hay ingresos hoy.</Text>
+                                </View>
+                            }
+                        />
+                    </View>
+                </Modal>
+            </AdminBackground>
         </SafeAreaView>
     );
 }

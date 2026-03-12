@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
     Alert,
@@ -17,19 +17,15 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AdminBackground from "../../components/admin/AdminBackground";
-
 import {
     assignClient,
     deleteClient,
     subscribeAdminClients,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
-import {
-    dayKeyFromMs,
-    subscribeDailyEventsByRange,
-} from "../../data/repositories/dailyEventsRepo";
+import { subscribeIncomingLeadConversation } from "../../data/repositories/incomingLeadsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, ClientStatus, DailyEventDoc, UserDoc } from "../../types/models";
+import type { ClientDoc, IncomingLeadDoc, UserDoc } from "../../types/models";
 
 function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
@@ -79,19 +75,11 @@ function extractLatLngFromMapsUrl(url: string): { lat: number | null; lng: numbe
     }
 }
 
-type FilterKey = "all" | "pending" | "visited" | "rejected";
-
-type RejectReason =
-    | "clavo"
-    | "localizacion"
-    | "zona_riesgosa"
-    | "ingresos_insuficientes"
-    | "muy_endeudado"
-    | "informacion_dudosa"
-    | "no_le_interesa"
-    | "no_estaba_cerrado"
-    | "fuera_de_ruta"
-    | "otro";
+type MetaFilterKey =
+    | "pending_review"
+    | "incomplete"
+    | "not_suitable"
+    | "all";
 
 type VerificationStatus =
     | "verified"
@@ -99,10 +87,21 @@ type VerificationStatus =
     | "incomplete"
     | "not_suitable";
 
-function isUnassignedClient(c: ClientDoc) {
-    const assigned = ((c.assignedTo ?? "") as any).toString().trim();
-    return assigned.length === 0;
-}
+type ConversationRow =
+    | {
+        id: string;
+        kind: "customer";
+        text: string;
+        at: number;
+        meta?: string;
+    }
+    | {
+        id: string;
+        kind: "bot";
+        text: string;
+        at: number;
+        meta?: string;
+    };
 
 function looksLikeMapsUrl(url: string) {
     const u = (url ?? "").trim().toLowerCase();
@@ -128,13 +127,6 @@ function waLink(phoneDigits: string, text: string) {
     return `https://wa.me/${p}?text=${encodeURIComponent(text)}`;
 }
 
-function dayKeyFromDate(d: Date) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-}
-
 function toMs(v: any): number {
     if (!v) return 0;
     if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -147,24 +139,10 @@ function toMs(v: any): number {
     return 0;
 }
 
-function formatStatusDateLabel(ms?: number) {
-    if (!ms || !Number.isFinite(ms)) return undefined;
+function formatDateLabel(ms?: number) {
+    if (!ms || !Number.isFinite(ms)) return "—";
 
     const d = new Date(ms);
-    const now = new Date();
-
-    const todayStart = new Date(now);
-    todayStart.setHours(0, 0, 0, 0);
-
-    const yesterdayStart = new Date(todayStart);
-    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-
-    const targetStart = new Date(d);
-    targetStart.setHours(0, 0, 0, 0);
-
-    if (targetStart.getTime() === todayStart.getTime()) return "Hoy";
-    if (targetStart.getTime() === yesterdayStart.getTime()) return "Ayer";
-
     const day = String(d.getDate()).padStart(2, "0");
     const months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
     const month = months[d.getMonth()];
@@ -173,128 +151,17 @@ function formatStatusDateLabel(ms?: number) {
     return `${day} ${month} ${year}`;
 }
 
-function latestEventByClient(events: DailyEventDoc[]) {
-    const map = new Map<string, DailyEventDoc>();
-    for (const e of events) {
-        const cid = (e as any)?.clientId as string | undefined;
-        if (!cid) continue;
+function formatDateTimeLabel(ms?: number) {
+    if (!ms || !Number.isFinite(ms)) return "—";
 
-        const type = (e as any)?.type;
-        if (type !== "visited" && type !== "rejected" && type !== "pending") continue;
+    const d = new Date(ms);
+    const day = String(d.getDate()).padStart(2, "0");
+    const months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+    const month = months[d.getMonth()];
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
 
-        const prev = map.get(cid);
-        const eMs = toMs((e as any)?.createdAt);
-        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
-
-        if (!prev || eMs >= pMs) map.set(cid, e);
-    }
-    return map;
-}
-
-function latestEventByClientAndType(events: DailyEventDoc[]) {
-    const map = new Map<string, DailyEventDoc>();
-
-    for (const e of events) {
-        const cid = (e as any)?.clientId as string | undefined;
-        const type = (e as any)?.type as string | undefined;
-        if (!cid || !type) continue;
-        if (type !== "visited" && type !== "rejected" && type !== "pending") continue;
-
-        const key = `${cid}:${type}`;
-        const prev = map.get(key);
-        const eMs = toMs((e as any)?.createdAt);
-        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
-
-        if (!prev || eMs >= pMs) map.set(key, e);
-    }
-
-    return map;
-}
-
-function extractRejectReasonFromEvent(ev?: DailyEventDoc | null): RejectReason | undefined {
-    if (!ev) return undefined;
-    const anyEv: any = ev as any;
-
-    const raw =
-        (anyEv?.reason ??
-            anyEv?.rejectReason ??
-            anyEv?.rejectedReason ??
-            anyEv?.meta?.reason) as string | undefined;
-
-    if (!raw) return undefined;
-
-    const r = String(raw).toLowerCase().trim();
-
-    if (r === "clavo") return "clavo";
-    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
-        return "localizacion";
-    if (r === "zona_riesgosa") return "zona_riesgosa";
-    if (r === "ingresos_insuficientes") return "ingresos_insuficientes";
-    if (r === "muy_endeudado") return "muy_endeudado";
-    if (r === "informacion_dudosa") return "informacion_dudosa";
-    if (r === "no_le_interesa") return "no_le_interesa";
-    if (r === "no_estaba_cerrado") return "no_estaba_cerrado";
-    if (r === "fuera_de_ruta") return "fuera_de_ruta";
-    if (r === "otro" || r === "outro") return "otro";
-
-    return undefined;
-}
-
-function extractRejectReasonFromClient(c: ClientDoc): RejectReason | undefined {
-    const anyC: any = c as any;
-
-    const raw =
-        (anyC?.rejectReason ??
-            anyC?.rejectedReason ??
-            anyC?.statusReason ??
-            anyC?.rejectedMeta?.reason ??
-            anyC?.statusMeta?.reason) as string | undefined;
-
-    if (!raw) return undefined;
-
-    const r = String(raw).toLowerCase().trim();
-
-    if (r === "clavo") return "clavo";
-    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
-        return "localizacion";
-    if (r === "zona_riesgosa") return "zona_riesgosa";
-    if (r === "ingresos_insuficientes") return "ingresos_insuficientes";
-    if (r === "muy_endeudado") return "muy_endeudado";
-    if (r === "informacion_dudosa") return "informacion_dudosa";
-    if (r === "no_le_interesa") return "no_le_interesa";
-    if (r === "no_estaba_cerrado") return "no_estaba_cerrado";
-    if (r === "fuera_de_ruta") return "fuera_de_ruta";
-    if (r === "otro" || r === "outro") return "otro";
-
-    return undefined;
-}
-
-function reasonLabel(r?: RejectReason) {
-    if (r === "clavo") return "Clavo";
-    if (r === "localizacion") return "Localización";
-    if (r === "zona_riesgosa") return "Zona riesgosa";
-    if (r === "ingresos_insuficientes") return "Ingresos insuficientes";
-    if (r === "muy_endeudado") return "Muy endeudado";
-    if (r === "informacion_dudosa") return "Información dudosa";
-    if (r === "no_le_interesa") return "No le interesa";
-    if (r === "no_estaba_cerrado") return "No estaba / cerrado";
-    if (r === "fuera_de_ruta") return "Fuera de ruta";
-    if (r === "otro") return "Otro";
-    return "—";
-}
-
-function reasonIcon(r?: RejectReason) {
-    if (r === "clavo") return "alert-circle-outline";
-    if (r === "localizacion") return "navigate-outline";
-    if (r === "zona_riesgosa") return "warning-outline";
-    if (r === "ingresos_insuficientes") return "cash-outline";
-    if (r === "muy_endeudado") return "trending-down-outline";
-    if (r === "informacion_dudosa") return "help-circle-outline";
-    if (r === "no_le_interesa") return "close-circle-outline";
-    if (r === "no_estaba_cerrado") return "storefront-outline";
-    if (r === "fuera_de_ruta") return "map-outline";
-    if (r === "otro") return "help-circle-outline";
-    return "information-circle-outline";
+    return `${day} ${month} · ${hh}:${mm}`;
 }
 
 function getClientSourceLabel(c: ClientDoc) {
@@ -310,54 +177,139 @@ function getClientParseStatus(c: ClientDoc): "ready" | "partial" | "empty" {
     return "empty";
 }
 
-function getClientParseStatusLabel(c: ClientDoc) {
-    const s = getClientParseStatus(c);
-    if (s === "ready") return "Completo";
-    if (s === "partial") return "Parcial";
-    return "Vacío";
+function hasUsefulBusiness(c: ClientDoc) {
+    return !!String((c as any)?.business ?? (c as any)?.businessRaw ?? "").trim();
 }
 
-function getVerificationStatus(c: ClientDoc): VerificationStatus {
-    const raw = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
+function hasUsefulMaps(c: ClientDoc) {
+    return !!String(c.mapsUrl ?? "").trim();
+}
 
+function getMissingFields(c: ClientDoc) {
+    const missing: string[] = [];
+
+    if (!hasUsefulBusiness(c)) missing.push("negocio");
+    if (!hasUsefulMaps(c)) missing.push("maps");
+
+    return missing;
+}
+
+function getDerivedVerificationStatus(c: ClientDoc): VerificationStatus {
+    const raw = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
     if (raw === "verified") return "verified";
-    if (raw === "not_suitable") return "not_suitable";
     if (raw === "pending_review") return "pending_review";
+    if (raw === "incomplete") return "incomplete";
+    if (raw === "not_suitable") return "not_suitable";
+
+    const leadQuality = String((c as any)?.leadQuality ?? "").trim().toLowerCase();
+    if (leadQuality === "not_suitable") return "not_suitable";
+    if (getClientParseStatus(c) === "ready") return "pending_review";
     return "incomplete";
 }
 
-function getVerificationStatusLabel(c: ClientDoc) {
-    const s = getVerificationStatus(c);
-    if (s === "verified") return "Verificado";
-    if (s === "pending_review") return "Por revisar";
-    if (s === "not_suitable") return "No apto";
+function getVerificationStatusLabel(status: VerificationStatus) {
+    if (status === "verified") return "Verificado";
+    if (status === "pending_review") return "Por revisar";
+    if (status === "not_suitable") return "No apto";
     return "Incompleto";
+}
+
+function getVerificationStatusFilterLabel(status: VerificationStatus | "all") {
+    if (status === "verified") return "Verificados";
+    if (status === "pending_review") return "Por revisar";
+    if (status === "not_suitable") return "No aptos";
+    if (status === "incomplete") return "Incompletos";
+    return "Todos";
 }
 
 function getNotSuitableReason(c: ClientDoc) {
     return String((c as any)?.notSuitableReason ?? "").trim();
 }
 
-function getBusinessRaw(c: ClientDoc) {
-    return String((c as any)?.businessRaw ?? "").trim();
+function isMetaUnassignedLead(c: ClientDoc) {
+    const source = String((c as any)?.source ?? "").trim().toLowerCase();
+    const assigned = String((c as any)?.assignedTo ?? "").trim();
+    return source === "whatsapp_meta" && assigned.length === 0;
 }
 
-export default function AdminUserClientsScreen() {
+function getPrimarySubtitle(c: ClientDoc) {
+    const business = String((c as any)?.business ?? "").trim();
+    const businessRaw = String((c as any)?.businessRaw ?? "").trim();
+
+    if (business) return business;
+    if (businessRaw) return businessRaw;
+    return "";
+}
+
+function getQuickStatusText(c: ClientDoc) {
+    const status = getDerivedVerificationStatus(c);
+
+    if (status === "not_suitable") {
+        return getNotSuitableReason(c) || "Perfil no apto";
+    }
+
+    if (status === "incomplete") {
+        const missing = getMissingFields(c);
+        if (!missing.length) return "Faltan datos por revisar";
+        if (missing.length === 2) return "Faltan negocio y Maps";
+        return `Falta ${missing[0]}`;
+    }
+
+    if (status === "verified") return "Lead validado";
+    return "Listo para revisión";
+}
+
+function buildConversationRows(items: IncomingLeadDoc[]): ConversationRow[] {
+    const rows: ConversationRow[] = [];
+
+    for (const item of items) {
+        const inboundText = String(item?.rawText ?? "").trim();
+        const inboundAt = toMs(item?.createdAt);
+        const botText = String(item?.botReplyText ?? "").trim();
+        const botAt = toMs(item?.botReplyAt);
+        const botStage = String(item?.botReplyStage ?? "").trim();
+        const botStatus = String(item?.botReplyStatus ?? "").trim();
+        const messageType = String(item?.messageType ?? "").trim();
+
+        if (inboundText) {
+            rows.push({
+                id: `${item.id}_customer`,
+                kind: "customer",
+                text: inboundText,
+                at: inboundAt,
+                meta: messageType ? `Cliente · ${messageType}` : "Cliente",
+            });
+        }
+
+        if (botText) {
+            rows.push({
+                id: `${item.id}_bot`,
+                kind: "bot",
+                text: botText,
+                at: botAt || inboundAt,
+                meta: botStage
+                    ? `Bot · ${botStage}${botStatus ? ` · ${botStatus}` : ""}`
+                    : botStatus
+                        ? `Bot · ${botStatus}`
+                        : "Bot",
+            });
+        }
+    }
+
+    return rows.sort((a, b) => a.at - b.at);
+}
+
+export default function AdminLeadQueueScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
-    const params = useLocalSearchParams<{ userId?: string }>();
-    const userId = (params?.userId ?? "").toString().trim();
-    const isUnassignedView = userId === "UNASSIGNED";
 
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
 
     const [q, setQ] = useState("");
-    const [filter, setFilter] = useState<FilterKey>("all");
+    const [filter, setFilter] = useState<MetaFilterKey>("pending_review");
     const [busyId, setBusyId] = useState<string | null>(null);
-
-    const [events, setEvents] = useState<DailyEventDoc[]>([]);
 
     const [editOpen, setEditOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -369,35 +321,20 @@ export default function AdminUserClientsScreen() {
     const [eAddress, setEAddress] = useState("");
     const [eVerificationStatus, setEVerificationStatus] = useState<VerificationStatus>("pending_review");
     const [eNotSuitableReason, setENotSuitableReason] = useState("");
-    const [eAssigneeId, setEAssigneeId] = useState<string | null>(null);
     const [eSaving, setESaving] = useState(false);
 
     const [userPickerOpen, setUserPickerOpen] = useState(false);
     const [pickerQuery, setPickerQuery] = useState("");
     const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(null);
 
+    const [conversationOpen, setConversationOpen] = useState(false);
+    const [conversationClientId, setConversationClientId] = useState<string | null>(null);
+    const [conversationClientName, setConversationClientName] = useState("");
+    const [conversationItems, setConversationItems] = useState<IncomingLeadDoc[]>([]);
+    const [conversationLoading, setConversationLoading] = useState(false);
+
     useEffect(() => {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
-        return () => unsub();
-    }, []);
-
-    useEffect(() => {
-        const end = new Date();
-        end.setHours(0, 0, 0, 0);
-
-        const start = new Date(end);
-        start.setDate(start.getDate() - 180);
-
-        const startKey = dayKeyFromDate(start);
-        const endKey = dayKeyFromDate(end);
-
-        const unsub = subscribeDailyEventsByRange(
-            startKey,
-            endKey,
-            (list) => setEvents(list ?? []),
-            (err) => console.log("[AdminUserClients] events err:", err?.code, err?.message)
-        );
-
         return () => unsub();
     }, []);
 
@@ -417,104 +354,63 @@ export default function AdminUserClientsScreen() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const userById = useMemo(() => {
-        const m = new Map<string, UserDoc>();
-        for (const u of users) m.set(u.id, u);
-        return m;
-    }, [users]);
-
-    const user = useMemo(() => {
-        if (isUnassignedView) return null;
-        return users.find((u) => u.id === userId) ?? null;
-    }, [users, userId, isUnassignedView]);
-
-    const belongsToThisView = (c: ClientDoc) => {
-        const assignedTo = String((c.assignedTo ?? "") as any).trim();
-
-        if (isUnassignedView) return assignedTo.length === 0;
-
-        return assignedTo === userId;
-    };
-
-    const assignedClients = useMemo(() => {
-        return clients.filter(belongsToThisView);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [clients, userId, isUnassignedView]);
-
-    const assignedTotal = useMemo(() => {
-        return assignedClients.length;
-    }, [assignedClients]);
-
-    const totalVisitedAll = useMemo(() => {
-        return assignedClients.filter((c) => c.status === "visited").length;
-    }, [assignedClients]);
-
-    const totalRejectedAll = useMemo(() => {
-        return assignedClients.filter((c) => c.status === "rejected").length;
-    }, [assignedClients]);
-
-    const pendingNowCount = useMemo(() => {
-        return assignedClients.filter((c) => c.status === "pending").length;
-    }, [assignedClients]);
-
-    const lastEventByClient = useMemo(() => latestEventByClient(events), [events]);
-    const lastEventByClientType = useMemo(() => latestEventByClientAndType(events), [events]);
-
-    const rejectReasonByClientId = useMemo(() => {
-        const m = new Map<string, RejectReason>();
-
-        for (const [cid, ev] of lastEventByClient.entries()) {
-            if ((ev as any)?.type !== "rejected") continue;
-            const r = extractRejectReasonFromEvent(ev);
-            if (r) m.set(cid, r);
+    useEffect(() => {
+        if (!conversationOpen || !conversationClientId) {
+            setConversationItems([]);
+            setConversationLoading(false);
+            return;
         }
 
-        return m;
-    }, [lastEventByClient]);
+        setConversationLoading(true);
 
-    const statusDateLabelByClientId = useMemo(() => {
-        const m = new Map<string, string>();
+        const unsub = subscribeIncomingLeadConversation(conversationClientId, (items) => {
+            setConversationItems(items ?? []);
+            setConversationLoading(false);
+        });
 
-        for (const c of clients) {
-            let ms = 0;
+        return () => {
+            unsub?.();
+        };
+    }, [conversationOpen, conversationClientId]);
 
-            if (c.status === "visited") {
-                const ev = lastEventByClientType.get(`${c.id}:visited`);
-                ms = toMs((ev as any)?.createdAt) || toMs((c as any)?.updatedAt);
-            } else if (c.status === "rejected") {
-                const ev = lastEventByClientType.get(`${c.id}:rejected`);
-                ms = toMs((ev as any)?.createdAt) || toMs((c as any)?.updatedAt);
-            } else {
-                const ev = lastEventByClientType.get(`${c.id}:pending`);
-                ms =
-                    toMs((ev as any)?.createdAt) ||
-                    toMs((c as any)?.updatedAt) ||
-                    toMs((c as any)?.assignedAt);
-            }
-
-            const label = formatStatusDateLabel(ms);
-            if (label) m.set(c.id, label);
-        }
-
-        return m;
-    }, [clients, lastEventByClientType]);
+    const metaUnassignedClients = useMemo(
+        () => clients.filter(isMetaUnassignedLead),
+        [clients]
+    );
 
     const totals = useMemo(() => {
-        return {
-            total: assignedTotal,
-            pending: pendingNowCount,
-            visited: totalVisitedAll,
-            rejected: totalRejectedAll,
-        };
-    }, [assignedTotal, pendingNowCount, totalVisitedAll, totalRejectedAll]);
+        let verified = 0;
+        let pendingReview = 0;
+        let incomplete = 0;
+        let notSuitable = 0;
 
-    const userClients = useMemo(() => {
+        for (const c of metaUnassignedClients) {
+            const s = getDerivedVerificationStatus(c);
+            if (s === "verified") verified++;
+            else if (s === "pending_review") pendingReview++;
+            else if (s === "not_suitable") notSuitable++;
+            else incomplete++;
+        }
+
+        return {
+            total: verified + pendingReview + incomplete + notSuitable,
+            verified,
+            pendingReview,
+            incomplete,
+            notSuitable,
+        };
+    }, [metaUnassignedClients]);
+
+    const filteredClients = useMemo(() => {
         const qtText = q.trim().toLowerCase();
         const qtDigits = normalizePhone(q);
 
-        return assignedClients
+        return metaUnassignedClients
             .filter((c) => {
-                if (filter !== "all" && c.status !== filter) return false;
+                const verification = getDerivedVerificationStatus(c);
+
+                if (verification === "verified") return false;
+                if (filter !== "all" && verification !== filter) return false;
 
                 if (!qtText && !qtDigits) return true;
 
@@ -532,9 +428,9 @@ export default function AdminUserClientsScreen() {
                         ${safeText(c.mapsUrl)}
                         ${safeText(c.phone)}
                         ${safeText(getClientSourceLabel(c))}
-                        ${safeText(getClientParseStatusLabel(c))}
-                        ${safeText(getVerificationStatusLabel(c))}
+                        ${safeText(getVerificationStatusLabel(verification))}
                         ${safeText(getNotSuitableReason(c))}
+                        ${safeText(getQuickStatusText(c))}
                     `;
                     return hay.includes(qtText);
                 }
@@ -542,51 +438,25 @@ export default function AdminUserClientsScreen() {
                 return true;
             })
             .sort((a, b) => {
-                const aUpdated = Number(a.updatedAt ?? 0);
-                const bUpdated = Number(b.updatedAt ?? 0);
-                return bUpdated - aUpdated;
+                const aMs = toMs((a as any)?.updatedAt) || toMs((a as any)?.createdAt);
+                const bMs = toMs((b as any)?.updatedAt) || toMs((b as any)?.createdAt);
+                return bMs - aMs;
             });
-    }, [assignedClients, q, filter]);
+    }, [metaUnassignedClients, q, filter]);
 
-    const pill = (status?: ClientStatus) => {
-        if (status === "visited") return [styles.pill, styles.pillVisited];
-        if (status === "rejected") return [styles.pill, styles.pillRejected];
-        return [styles.pill, styles.pillPending];
-    };
+    const visibleTotal = useMemo(() => {
+        return totals.pendingReview + totals.incomplete + totals.notSuitable;
+    }, [totals]);
 
-    const pillText = (status?: ClientStatus) => {
-        if (status === "visited") return [styles.pillText, styles.pillTextVisited];
-        if (status === "rejected") return [styles.pillText, styles.pillTextRejected];
-        return [styles.pillText, styles.pillTextPending];
-    };
+    const conversationRows = useMemo(() => buildConversationRows(conversationItems), [conversationItems]);
 
-    const datePill = (status?: ClientStatus) => {
-        if (status === "visited") return [styles.datePill, styles.datePillVisited];
-        if (status === "rejected") return [styles.datePill, styles.datePillRejected];
-        return [styles.datePill, styles.datePillPending];
-    };
-
-    const datePillText = (status?: ClientStatus) => {
-        if (status === "visited") return [styles.datePillText, styles.datePillTextVisited];
-        if (status === "rejected") return [styles.datePillText, styles.datePillTextRejected];
-        return [styles.datePillText, styles.datePillTextPending];
-    };
-
-    const confirmDelete = (id: string) => {
-        Alert.alert("Eliminar cliente", "¿Seguro que quieres eliminar este cliente?", [
-            { text: "Cancelar", style: "cancel" },
-            {
-                text: "Eliminar",
-                style: "destructive",
-                onPress: async () => {
-                    try {
-                        await deleteClient(id);
-                    } catch (e: any) {
-                        Alert.alert("Error", e?.message ?? "No se pudo eliminar");
-                    }
-                },
-            },
-        ]);
+    const phoneExists = (phoneDigits: string, excludeId?: string | null) => {
+        const p = normalizePhone(phoneDigits);
+        if (!p) return false;
+        return clients.some((c) => {
+            if (excludeId && c.id === excludeId) return false;
+            return normalizePhone(c.phone ?? "") === p;
+        });
     };
 
     const openMaps = async (url?: string) => {
@@ -606,7 +476,7 @@ export default function AdminUserClientsScreen() {
             return;
         }
 
-        const msg = "Olá! Estou entrando em contato sobre a visita 🙌";
+        const msg = "Olá! Estou entrando em contato sobre seu cadastro 🙌";
         const url = waLink(p, msg);
 
         try {
@@ -614,6 +484,43 @@ export default function AdminUserClientsScreen() {
         } catch {
             Alert.alert("Error", "No se pudo abrir WhatsApp.");
         }
+    };
+
+    const openConversation = (client: ClientDoc) => {
+        setConversationClientId(client.id);
+        setConversationClientName(
+            String((client as any)?.name ?? "").trim() ||
+            String((client as any)?.phone ?? "").trim() ||
+            "Lead"
+        );
+        setConversationItems([]);
+        setConversationLoading(true);
+        setConversationOpen(true);
+    };
+
+    const closeConversation = () => {
+        setConversationOpen(false);
+        setConversationClientId(null);
+        setConversationClientName("");
+        setConversationItems([]);
+        setConversationLoading(false);
+    };
+
+    const confirmDelete = (id: string) => {
+        Alert.alert("Eliminar lead", "¿Seguro que quieres eliminar este lead?", [
+            { text: "Cancelar", style: "cancel" },
+            {
+                text: "Eliminar",
+                style: "destructive",
+                onPress: async () => {
+                    try {
+                        await deleteClient(id);
+                    } catch (e: any) {
+                        Alert.alert("Error", e?.message ?? "No se pudo eliminar");
+                    }
+                },
+            },
+        ]);
     };
 
     const openAssignPicker = async (clientId: string) => {
@@ -628,31 +535,101 @@ export default function AdminUserClientsScreen() {
         setUserPickerOpen(false);
         if (!clientId) return;
 
+        Alert.alert(
+            "Confirmar asignación",
+            `¿Asignar este lead a ${u.name || u.email || "este usuario"}?\n\nAl asignarlo, pasará automáticamente a verificado.`,
+            [
+                { text: "Cancelar", style: "cancel", onPress: () => setPickerTargetClientId(null) },
+                {
+                    text: "Asignar",
+                    onPress: async () => {
+                        try {
+                            setBusyId(clientId);
+
+                            await updateClientFields(clientId, {
+                                verificationStatus: "verified",
+                                leadQuality: "valid",
+                                notSuitableReason: "",
+                                verifiedAt: Date.now(),
+                                updatedAt: Date.now(),
+                            } as any);
+
+                            await assignClient(clientId, u.id);
+                        } catch (e: any) {
+                            Alert.alert("Error", e?.message ?? "No se pudo asignar");
+                        } finally {
+                            setBusyId(null);
+                            setPickerTargetClientId(null);
+                        }
+                    },
+                },
+            ]
+        );
+    };
+
+    const applyVerificationStatus = async (
+        clientId: string,
+        nextStatus: Exclude<VerificationStatus, "verified">,
+        reason?: string
+    ) => {
         try {
             setBusyId(clientId);
-            await assignClient(clientId, u.id);
+
+            const patch: any = {
+                verificationStatus: nextStatus,
+                updatedAt: Date.now(),
+            };
+
+            if (nextStatus === "not_suitable") {
+                patch.leadQuality = "not_suitable";
+                patch.notSuitableReason = reason?.trim() || "Perfil no apto";
+            } else if (nextStatus === "pending_review") {
+                patch.leadQuality = "review";
+                patch.notSuitableReason = "";
+            } else {
+                patch.leadQuality = "review";
+                patch.notSuitableReason = "";
+            }
+
+            await updateClientFields(clientId, patch);
         } catch (e: any) {
-            Alert.alert("Error", e?.message ?? "No se pudo reasignar");
+            Alert.alert("Error", e?.message ?? "No se pudo actualizar");
         } finally {
             setBusyId(null);
-            setPickerTargetClientId(null);
         }
     };
 
-    const clearAssign = async (clientId: string) => {
-        try {
-            setBusyId(clientId);
-            await assignClient(clientId, "" as any);
-        } catch (e: any) {
-            Alert.alert("Error", e?.message ?? "No se pudo desasignar");
-        } finally {
-            setBusyId(null);
-        }
+    const confirmVerificationStatusChange = (
+        clientId: string,
+        nextStatus: Exclude<VerificationStatus, "verified">,
+        reason?: string
+    ) => {
+        const title =
+            nextStatus === "pending_review"
+                ? "Marcar por revisar"
+                : nextStatus === "incomplete"
+                    ? "Marcar incompleto"
+                    : "Marcar no apto";
+
+        const description =
+            nextStatus === "pending_review"
+                ? "¿Seguro que quieres mover este lead a Por revisar?"
+                : nextStatus === "incomplete"
+                    ? "¿Seguro que quieres mover este lead a Incompleto?"
+                    : `¿Seguro que quieres mover este lead a No apto${reason ? `?\n\nMotivo: ${reason}` : "?"}`;
+
+        Alert.alert(title, description, [
+            { text: "Cancelar", style: "cancel" },
+            {
+                text: "Confirmar",
+                onPress: () => {
+                    void applyVerificationStatus(clientId, nextStatus, reason);
+                },
+            },
+        ]);
     };
 
-    const startEdit = async (c: ClientDoc) => {
-        if (!users.length && !usersLoading) await reloadUsers();
-
+    const startEdit = (c: ClientDoc) => {
         setEditingId(c.id);
         setEName(((c as any).name ?? "").toString());
         setEBusiness(((c as any).business ?? "").toString());
@@ -660,12 +637,10 @@ export default function AdminUserClientsScreen() {
         setEPhone((c.phone ?? "").toString());
         setEMapsUrl((c.mapsUrl ?? "").toString());
         setEAddress((c.address ?? "").toString());
-        setEVerificationStatus(getVerificationStatus(c));
+
+        const derivedStatus = getDerivedVerificationStatus(c);
+        setEVerificationStatus(derivedStatus === "verified" ? "pending_review" : derivedStatus);
         setENotSuitableReason(getNotSuitableReason(c));
-
-        const a = ((c.assignedTo ?? "") as any).toString().trim();
-        setEAssigneeId(a ? a : null);
-
         setEditOpen(true);
     };
 
@@ -680,16 +655,6 @@ export default function AdminUserClientsScreen() {
         setEAddress("");
         setEVerificationStatus("pending_review");
         setENotSuitableReason("");
-        setEAssigneeId(null);
-    };
-
-    const phoneExists = (phoneDigits: string, excludeId?: string | null) => {
-        const p = normalizePhone(phoneDigits);
-        if (!p) return false;
-        return clients.some((c) => {
-            if (excludeId && c.id === excludeId) return false;
-            return normalizePhone(c.phone ?? "") === p;
-        });
     };
 
     const submitEdit = async () => {
@@ -707,14 +672,17 @@ export default function AdminUserClientsScreen() {
             Alert.alert("Error", "Teléfono es obligatorio.");
             return;
         }
+
         if (phoneExists(cleanPhone, editingId)) {
             Alert.alert("Duplicado", "Ese teléfono ya existe. No se puede guardar duplicado.");
             return;
         }
+
         if (!cleanMaps) {
             Alert.alert("Error", "Link de Google Maps es obligatorio.");
             return;
         }
+
         if (!looksLikeMapsUrl(cleanMaps)) {
             Alert.alert("Error", "El link no parece ser de Google Maps.");
             return;
@@ -730,49 +698,29 @@ export default function AdminUserClientsScreen() {
         setESaving(true);
         try {
             const now = Date.now();
+            const finalBusiness = cleanBusiness || cleanBusinessRaw;
 
             const patch: any = {
-                phone: cleanPhone,
-                mapsUrl: cleanMaps,
                 updatedAt: now,
                 name: cleanName ? cleanName : "",
                 business: cleanBusiness ? cleanBusiness : "",
-                businessRaw: cleanBusinessRaw ? cleanBusinessRaw : cleanBusiness ? cleanBusiness : "",
-                address: cleanAddress ? cleanAddress : "",
+                businessRaw: cleanBusinessRaw ? cleanBusinessRaw : finalBusiness,
+                phone: cleanPhone,
                 waId: cleanPhone,
+                mapsUrl: cleanMaps,
+                address: cleanAddress ? cleanAddress : "",
                 lat,
                 lng,
+                currentLeadMapsConfirmedAt: now,
+                parseStatus: finalBusiness && cleanMaps ? "ready" : "partial",
                 verificationStatus: eVerificationStatus,
                 notSuitableReason: eVerificationStatus === "not_suitable" ? cleanNotSuitableReason : "",
                 leadQuality:
-                    eVerificationStatus === "verified"
-                        ? "valid"
-                        : eVerificationStatus === "not_suitable"
-                            ? "not_suitable"
-                            : "review",
-                profileType:
                     eVerificationStatus === "not_suitable"
-                        ? (((clients.find((x) => x.id === editingId) as any)?.profileType ?? "business").toString() || "business")
-                        : "business",
-                currentLeadMapsConfirmedAt: now,
-                parseStatus: cleanBusiness && cleanMaps ? "ready" : "partial",
+                        ? "not_suitable"
+                        : "review",
+                verifiedAt: null,
             };
-
-            if (eVerificationStatus === "verified") {
-                patch.verifiedAt = now;
-            }
-
-            const ass = (eAssigneeId ?? "").toString().trim();
-
-            if (ass) {
-                patch.assignedTo = ass;
-                patch.assignedAt = now;
-                patch.assignedDayKey = dayKeyFromMs(now);
-            } else {
-                patch.assignedTo = "";
-                patch.assignedAt = 0;
-                patch.assignedDayKey = "";
-            }
 
             await updateClientFields(editingId, cleanUndefined(patch) as any);
             cancelEdit();
@@ -782,34 +730,6 @@ export default function AdminUserClientsScreen() {
             setESaving(false);
         }
     };
-
-    const FilterPill = ({ k, label, value }: { k: FilterKey; label: string; value: number }) => {
-        const active = filter === k;
-        return (
-            <Pressable
-                onPress={() => setFilter(k)}
-                style={({ pressed }) => [styles.filterPill, active && styles.filterPillActive, pressed && styles.pressed]}
-            >
-                <Text style={[styles.filterText, active && styles.filterTextActive]}>{label}</Text>
-                <View style={[styles.filterBadge, active && styles.filterBadgeActive]}>
-                    <Text style={[styles.filterBadgeText, active && styles.filterBadgeTextActive]}>{value}</Text>
-                </View>
-            </Pressable>
-        );
-    };
-
-    const RejectTag = ({ reason }: { reason?: RejectReason }) => {
-        if (!reason) return null;
-        return (
-            <View style={styles.rejectTag}>
-                <Ionicons name={reasonIcon(reason) as any} size={14} color={COLORS.rejected} />
-                <Text style={styles.rejectTagText}>{reasonLabel(reason)}</Text>
-            </View>
-        );
-    };
-
-    const title = isUnassignedView ? "Sin asignar" : user?.name?.trim() || "Usuario";
-    const subtitle = isUnassignedView ? "Clientes sin asignación" : user?.email?.trim() || "—";
 
     const pickerUsers = useMemo(() => {
         const qt = pickerQuery.trim().toLowerCase();
@@ -823,6 +743,33 @@ export default function AdminUserClientsScreen() {
 
     const modalBottomPad = Math.max(10, insets.bottom + 10);
 
+    const FilterPill = ({
+        k,
+        label,
+        value,
+    }: {
+        k: MetaFilterKey;
+        label: string;
+        value: number;
+    }) => {
+        const active = filter === k;
+        return (
+            <Pressable
+                onPress={() => setFilter(k)}
+                style={({ pressed }) => [
+                    styles.filterPill,
+                    active && styles.filterPillActive,
+                    pressed && styles.pressed,
+                ]}
+            >
+                <Text style={[styles.filterText, active && styles.filterTextActive]}>{label}</Text>
+                <View style={[styles.filterBadge, active && styles.filterBadgeActive]}>
+                    <Text style={[styles.filterBadgeText, active && styles.filterBadgeTextActive]}>{value}</Text>
+                </View>
+            </Pressable>
+        );
+    };
+
     return (
         <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
@@ -834,16 +781,20 @@ export default function AdminUserClientsScreen() {
 
                     <View style={{ flex: 1, gap: 2 }}>
                         <Text style={styles.hTitle} numberOfLines={1}>
-                            {title}
+                            Leads Meta
                         </Text>
                         <Text style={styles.hSub} numberOfLines={1}>
-                            {subtitle} · Asignados <Text style={styles.hStrong}>{assignedTotal}</Text>
+                            Cola activa · T <Text style={styles.hStrong}>{visibleTotal}</Text>
                         </Text>
                     </View>
 
                     <Pressable
                         onPress={reloadUsers}
-                        style={({ pressed }) => [styles.headerBadge, pressed && styles.pressed, usersLoading && styles.headerBadgeDisabled]}
+                        style={({ pressed }) => [
+                            styles.headerBadge,
+                            pressed && styles.pressed,
+                            usersLoading && styles.headerBadgeDisabled,
+                        ]}
                         disabled={usersLoading}
                         accessibilityLabel="Refrescar usuarios"
                     >
@@ -851,12 +802,35 @@ export default function AdminUserClientsScreen() {
                     </Pressable>
                 </View>
 
+                <View style={styles.summaryRow}>
+                    <View style={[styles.summaryBadge, styles.summaryBadgeBlue]}>
+                        <Ionicons name="shield-checkmark-outline" size={13} color="#93C5FD" />
+                        <Text style={[styles.summaryBadgeText, styles.summaryBadgeTextBlue]}>
+                            {totals.pendingReview}
+                        </Text>
+                    </View>
+
+                    <View style={[styles.summaryBadge, styles.summaryBadgeYellow]}>
+                        <Ionicons name="alert-circle-outline" size={13} color="#FDE68A" />
+                        <Text style={[styles.summaryBadgeText, styles.summaryBadgeTextYellow]}>
+                            {totals.incomplete}
+                        </Text>
+                    </View>
+
+                    <View style={[styles.summaryBadge, styles.summaryBadgeRed]}>
+                        <Ionicons name="close-circle-outline" size={13} color="#FCA5A5" />
+                        <Text style={[styles.summaryBadgeText, styles.summaryBadgeTextRed]}>
+                            {totals.notSuitable}
+                        </Text>
+                    </View>
+                </View>
+
                 <View style={styles.searchWrap}>
                     <Ionicons name="search-outline" size={18} color={COLORS.muted} />
                     <TextInput
                         value={q}
                         onChangeText={setQ}
-                        placeholder="Buscar cliente"
+                        placeholder="Buscar lead"
                         placeholderTextColor={COLORS.muted}
                         style={styles.searchInput}
                     />
@@ -868,42 +842,25 @@ export default function AdminUserClientsScreen() {
                 </View>
 
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersRow}>
-                    <FilterPill k="pending" label="Pendientes" value={totals.pending} />
-                    <FilterPill k="visited" label="Visitados" value={totals.visited} />
-                    <FilterPill k="rejected" label="Rechazados" value={totals.rejected} />
-                    <FilterPill k="all" label="Todos" value={totals.total} />
+                    <FilterPill k="pending_review" label="Por revisar" value={totals.pendingReview} />
+                    <FilterPill k="incomplete" label="Incompletos" value={totals.incomplete} />
+                    <FilterPill k="not_suitable" label="No aptos" value={totals.notSuitable} />
+                    <FilterPill k="all" label="Todos" value={visibleTotal} />
                 </ScrollView>
 
                 <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-                    {userClients.map((c) => {
+                    {filteredClients.map((c) => {
                         const name = ((c as any).name ?? "").trim();
-                        const biz = ((c as any).business ?? "").trim();
-                        const bizRaw = getBusinessRaw(c);
-                        const isBusy = busyId === c.id;
-
-                        const assignedLabel = (() => {
-                            const a = ((c.assignedTo ?? "") as any).toString().trim();
-                            if (!a) return "Sin asignar";
-                            const u = userById.get(a);
-                            if (!u) return "Asignado (cargando…)";
-                            return (u.name ?? "").trim() || (u.email ?? "").trim() || "Usuario";
-                        })();
-
-                        const fromClient = c.status === "rejected" ? extractRejectReasonFromClient(c) : undefined;
-                        const fromEvents = c.status === "rejected" ? rejectReasonByClientId.get(c.id) : undefined;
-                        const rejectReason = fromClient ?? fromEvents;
-
-                        const statusDateLabel = statusDateLabelByClientId.get(c.id);
+                        const subtitle = getPrimarySubtitle(c);
+                        const verificationStatus = getDerivedVerificationStatus(c);
+                        const verificationLabel = getVerificationStatusLabel(verificationStatus);
                         const sourceLabel = getClientSourceLabel(c);
-                        const parseLabel = getClientParseStatusLabel(c);
-                        const verificationLabel = getVerificationStatusLabel(c);
-                        const notSuitableReason = getNotSuitableReason(c);
-
+                        const createdAt = toMs((c as any)?.createdAt);
                         const lastInboundAt = toMs((c as any)?.lastInboundMessageAt);
+                        const isBusy = busyId === c.id;
                         const lastInboundText = String((c as any)?.lastInboundText ?? "").trim();
-
-                        const verificationStatus = getVerificationStatus(c);
-                        const parseStatus = getClientParseStatus(c);
+                        const notSuitableReason = getNotSuitableReason(c);
+                        const quickStatus = getQuickStatusText(c);
 
                         return (
                             <View key={c.id} style={styles.card}>
@@ -913,86 +870,41 @@ export default function AdminUserClientsScreen() {
                                             {c.phone}
                                         </Text>
 
-                                        {!!name ? <Text style={styles.meta} numberOfLines={1}>{name}</Text> : null}
-                                        {!!biz ? <Text style={styles.meta} numberOfLines={1}>{biz}</Text> : null}
-                                        {!!bizRaw && bizRaw !== biz ? (
-                                            <Text style={styles.metaSoft} numberOfLines={1}>
-                                                Original: {bizRaw}
+                                        {!!name ? (
+                                            <Text style={styles.metaPrimary} numberOfLines={1}>
+                                                {name}
                                             </Text>
                                         ) : null}
 
-                                        <View style={styles.topBadgesRow}>
-                                            <View style={pill(c.status)}>
-                                                <Text style={pillText(c.status)} numberOfLines={1}>
-                                                    {c.status}
-                                                </Text>
-                                            </View>
-
-                                            {statusDateLabel ? (
-                                                <View style={datePill(c.status)}>
-                                                    <Text style={datePillText(c.status)} numberOfLines={1}>
-                                                        {statusDateLabel}
-                                                    </Text>
-                                                </View>
-                                            ) : null}
-                                        </View>
+                                        {!!subtitle ? (
+                                            <Text style={styles.meta} numberOfLines={1}>
+                                                {subtitle}
+                                            </Text>
+                                        ) : null}
 
                                         <View style={styles.infoBadgeRow}>
-                                            <View
-                                                style={[
-                                                    styles.infoBadge,
-                                                    String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
-                                                        ? styles.infoBadgeBlue
-                                                        : styles.infoBadgeNeutral,
-                                                ]}
-                                            >
-                                                <Ionicons
-                                                    name={
-                                                        String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
-                                                            ? "logo-whatsapp"
-                                                            : "create-outline"
-                                                    }
-                                                    size={12}
-                                                    color={COLORS.text}
-                                                />
+                                            <View style={[styles.infoBadge, styles.infoBadgeBlue]}>
+                                                <Ionicons name="logo-whatsapp" size={12} color={COLORS.text} />
                                                 <Text style={styles.infoBadgeText}>{sourceLabel}</Text>
                                             </View>
 
                                             <View
                                                 style={[
                                                     styles.infoBadge,
-                                                    parseStatus === "ready"
-                                                        ? styles.infoBadgeGreen
-                                                        : parseStatus === "partial"
-                                                            ? styles.infoBadgeYellow
-                                                            : styles.infoBadgeNeutral,
-                                                ]}
-                                            >
-                                                <Ionicons name="document-text-outline" size={12} color={COLORS.text} />
-                                                <Text style={styles.infoBadgeText}>{parseLabel}</Text>
-                                            </View>
-
-                                            <View
-                                                style={[
-                                                    styles.infoBadge,
-                                                    verificationStatus === "verified"
-                                                        ? styles.infoBadgeGreen
-                                                        : verificationStatus === "pending_review"
-                                                            ? styles.infoBadgeBlue
-                                                            : verificationStatus === "not_suitable"
-                                                                ? styles.infoBadgeRed
-                                                                : styles.infoBadgeYellow,
+                                                    verificationStatus === "pending_review"
+                                                        ? styles.infoBadgeBlue
+                                                        : verificationStatus === "not_suitable"
+                                                            ? styles.infoBadgeRed
+                                                            : styles.infoBadgeYellow,
                                                 ]}
                                             >
                                                 <Ionicons
                                                     name={
-                                                        verificationStatus === "verified"
-                                                            ? "checkmark-done-outline"
+                                                        verificationStatus === "pending_review"
+                                                            ? "shield-checkmark-outline"
                                                             : verificationStatus === "not_suitable"
                                                                 ? "close-circle-outline"
-                                                                : verificationStatus === "pending_review"
-                                                                    ? "shield-checkmark-outline"
-                                                                    : "alert-circle-outline"
+                                                                : "alert-circle-outline"
                                                     }
                                                     size={12}
                                                     color={COLORS.text}
@@ -1001,24 +913,52 @@ export default function AdminUserClientsScreen() {
                                             </View>
                                         </View>
 
-                                        {verificationStatus === "not_suitable" ? (
-                                            <View style={styles.notSuitableTag}>
-                                                <Ionicons name="ban-outline" size={14} color={COLORS.rejected} />
-                                                <Text style={styles.notSuitableTagText}>
-                                                    {notSuitableReason || "Perfil no apto"}
-                                                </Text>
-                                            </View>
-                                        ) : null}
+                                        <View
+                                            style={[
+                                                styles.statusBox,
+                                                verificationStatus === "pending_review"
+                                                    ? styles.statusBoxBlue
+                                                    : verificationStatus === "not_suitable"
+                                                        ? styles.statusBoxRed
+                                                        : styles.statusBoxYellow,
+                                            ]}
+                                        >
+                                            <Ionicons
+                                                name={
+                                                    verificationStatus === "pending_review"
+                                                        ? "search-outline"
+                                                        : verificationStatus === "not_suitable"
+                                                            ? "ban-outline"
+                                                            : "warning-outline"
+                                                }
+                                                size={15}
+                                                color={
+                                                    verificationStatus === "pending_review"
+                                                        ? "#93C5FD"
+                                                        : verificationStatus === "not_suitable"
+                                                            ? "#FCA5A5"
+                                                            : "#FDE68A"
+                                                }
+                                            />
+                                            <Text
+                                                style={[
+                                                    styles.statusBoxText,
+                                                    verificationStatus === "pending_review"
+                                                        ? styles.statusBoxTextBlue
+                                                        : verificationStatus === "not_suitable"
+                                                            ? styles.statusBoxTextRed
+                                                            : styles.statusBoxTextYellow,
+                                                ]}
+                                            >
+                                                {quickStatus}
+                                            </Text>
+                                        </View>
 
-                                        {c.status === "rejected" ? (
-                                            rejectReason ? (
-                                                <RejectTag reason={rejectReason} />
-                                            ) : (
-                                                <View style={styles.rejectTagMuted}>
-                                                    <Ionicons name="information-circle-outline" size={14} color={COLORS.muted} />
-                                                    <Text style={styles.rejectTagTextMuted}>Rechazo: sin motivo guardado</Text>
-                                                </View>
-                                            )
+                                        {verificationStatus === "not_suitable" && !!notSuitableReason ? (
+                                            <View style={styles.reasonRow}>
+                                                <Ionicons name="information-circle-outline" size={14} color={COLORS.muted} />
+                                                <Text style={styles.reasonText}>{notSuitableReason}</Text>
+                                            </View>
                                         ) : null}
                                     </View>
                                 </View>
@@ -1033,32 +973,83 @@ export default function AdminUserClientsScreen() {
                                 ) : null}
 
                                 <View style={styles.assignedRow}>
-                                    <Ionicons name="person-outline" size={16} color={COLORS.muted} />
+                                    <Ionicons name="time-outline" size={16} color={COLORS.muted} />
                                     <Text style={styles.assignedText} numberOfLines={1}>
-                                        {assignedLabel}
+                                        Creado: {formatDateLabel(createdAt)} · Último: {formatDateLabel(lastInboundAt || createdAt)}
                                     </Text>
                                 </View>
 
-                                {lastInboundAt > 0 ? (
-                                    <View style={styles.inboundBox}>
+                                {lastInboundText ? (
+                                    <Pressable
+                                        onPress={() => openConversation(c)}
+                                        style={({ pressed }) => [
+                                            styles.inboundBox,
+                                            pressed && styles.pressed,
+                                        ]}
+                                    >
                                         <View style={styles.inboundHeader}>
                                             <Ionicons name="chatbubble-ellipses-outline" size={14} color={COLORS.muted} />
-                                            <Text style={styles.inboundTitle}>
-                                                Última entrada automática · {formatStatusDateLabel(lastInboundAt) ?? "—"}
-                                            </Text>
+                                            <Text style={styles.inboundTitle}>Último mensaje recibido</Text>
+                                            <View style={styles.inboundOpenPill}>
+                                                <Text style={styles.inboundOpenPillText}>Abrir</Text>
+                                            </View>
                                         </View>
 
-                                        {!!lastInboundText ? (
-                                            <Text style={styles.inboundText} numberOfLines={3}>
-                                                {lastInboundText}
-                                            </Text>
-                                        ) : (
-                                            <Text style={styles.inboundTextMuted}>
-                                                Sin texto guardado.
-                                            </Text>
-                                        )}
-                                    </View>
+                                        <Text style={styles.inboundText} numberOfLines={3}>
+                                            {lastInboundText}
+                                        </Text>
+                                    </Pressable>
                                 ) : null}
+
+                                <View style={styles.quickRow}>
+                                    <Pressable
+                                        onPress={() => confirmVerificationStatusChange(c.id, "pending_review")}
+                                        disabled={isBusy}
+                                        style={({ pressed }) => [
+                                            styles.quickBtn,
+                                            styles.quickBtnBlue,
+                                            pressed && styles.pressed,
+                                            isBusy && styles.btnDisabled,
+                                        ]}
+                                    >
+                                        <Ionicons name="shield-checkmark-outline" size={16} color="#93C5FD" />
+                                        <Text style={[styles.quickBtnText, styles.quickBtnTextBlue]}>Revisar</Text>
+                                    </Pressable>
+
+                                    <Pressable
+                                        onPress={() => confirmVerificationStatusChange(c.id, "incomplete")}
+                                        disabled={isBusy}
+                                        style={({ pressed }) => [
+                                            styles.quickBtn,
+                                            styles.quickBtnYellow,
+                                            pressed && styles.pressed,
+                                            isBusy && styles.btnDisabled,
+                                        ]}
+                                    >
+                                        <Ionicons name="alert-circle-outline" size={16} color="#FDE68A" />
+                                        <Text style={[styles.quickBtnText, styles.quickBtnTextYellow]}>Incompleto</Text>
+                                    </Pressable>
+
+                                    <Pressable
+                                        onPress={() =>
+                                            confirmVerificationStatusChange(
+                                                c.id,
+                                                "not_suitable",
+                                                getNotSuitableReason(c) || "Perfil no apto"
+                                            )
+                                        }
+                                        disabled={isBusy}
+                                        style={({ pressed }) => [
+                                            styles.quickBtn,
+                                            styles.quickBtnRed,
+                                            pressed && styles.pressed,
+                                            isBusy && styles.btnDisabled,
+                                        ]}
+                                    >
+                                        <Ionicons name="close-outline" size={16} color="#FCA5A5" />
+                                        <Text style={[styles.quickBtnText, styles.quickBtnTextRed]}>No apto</Text>
+                                    </Pressable>
+                                </View>
 
                                 <View style={styles.actionsRow}>
                                     <Pressable onPress={() => openMaps(c.mapsUrl)} style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
@@ -1086,14 +1077,6 @@ export default function AdminUserClientsScreen() {
                                     </Pressable>
 
                                     <Pressable
-                                        onPress={() => clearAssign(c.id)}
-                                        disabled={isBusy}
-                                        style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
-                                    >
-                                        <Ionicons name="remove-circle-outline" size={18} color={COLORS.text} />
-                                    </Pressable>
-
-                                    <Pressable
                                         onPress={() => confirmDelete(c.id)}
                                         disabled={isBusy}
                                         style={({ pressed }) => [styles.iconBtn, styles.iconBtnDanger, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
@@ -1107,15 +1090,11 @@ export default function AdminUserClientsScreen() {
                         );
                     })}
 
-                    {!userClients.length ? (
+                    {!filteredClients.length ? (
                         <View style={styles.empty}>
-                            <Ionicons name="briefcase-outline" size={24} color={COLORS.muted} />
+                            <Ionicons name="file-tray-outline" size={24} color={COLORS.muted} />
                             <Text style={styles.emptyText}>
-                                {q.trim()
-                                    ? "No hay resultados."
-                                    : isUnassignedView
-                                        ? "No hay clientes sin asignar."
-                                        : "Este usuario no tiene clientes."}
+                                {q.trim() ? "No hay resultados." : "No hay leads Meta pendientes en la cola."}
                             </Text>
                         </View>
                     ) : null}
@@ -1126,12 +1105,11 @@ export default function AdminUserClientsScreen() {
                         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
                             <View style={[styles.modalCardBig, { paddingBottom: 14 + modalBottomPad }]}>
                                 <View style={styles.modalHeader}>
-                                    <Text style={styles.modalTitle}>Editar</Text>
+                                    <Text style={styles.modalTitle}>Editar lead Meta</Text>
                                     <Pressable onPress={cancelEdit} style={styles.modalClose}>
                                         <Ionicons name="close" size={18} color={COLORS.text} />
                                     </Pressable>
                                 </View>
-
                                 <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
                                     <View style={styles.grid2}>
                                         <View style={[styles.field, { flex: 1 }]}>
@@ -1175,18 +1153,11 @@ export default function AdminUserClientsScreen() {
                                     </View>
 
                                     <View style={styles.field}>
-                                        <Text style={styles.label}>Clasificación manual</Text>
+                                        <Text style={styles.label}>Estado en cola</Text>
                                         <View style={styles.segmentRow}>
-                                            {(["pending_review", "verified", "incomplete", "not_suitable"] as VerificationStatus[]).map((s) => {
+                                            {(["pending_review", "incomplete", "not_suitable"] as Exclude<VerificationStatus, "verified">[]).map((s) => {
                                                 const active = eVerificationStatus === s;
-                                                const label =
-                                                    s === "pending_review"
-                                                        ? "Por revisar"
-                                                        : s === "verified"
-                                                            ? "Verificado"
-                                                            : s === "incomplete"
-                                                                ? "Incompleto"
-                                                                : "No apto";
+                                                const label = getVerificationStatusFilterLabel(s);
 
                                                 return (
                                                     <Pressable
@@ -1246,7 +1217,7 @@ export default function AdminUserClientsScreen() {
                         <View style={styles.pickerWrap}>
                             <View style={styles.pickerCard}>
                                 <View style={styles.modalHeader}>
-                                    <Text style={styles.modalTitle}>Reasignar a</Text>
+                                    <Text style={styles.modalTitle}>Asignar lead a</Text>
                                     <Pressable onPress={() => setUserPickerOpen(false)} style={styles.modalClose}>
                                         <Ionicons name="close" size={18} color={COLORS.text} />
                                     </Pressable>
@@ -1263,32 +1234,6 @@ export default function AdminUserClientsScreen() {
                                 </View>
 
                                 <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                    <Pressable
-                                        onPress={async () => {
-                                            const clientId = pickerTargetClientId;
-                                            setUserPickerOpen(false);
-                                            if (!clientId) return;
-                                            try {
-                                                setBusyId(clientId);
-                                                await assignClient(clientId, "" as any);
-                                            } catch (e: any) {
-                                                Alert.alert("Error", e?.message ?? "No se pudo desasignar");
-                                            } finally {
-                                                setBusyId(null);
-                                                setPickerTargetClientId(null);
-                                            }
-                                        }}
-                                        style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
-                                    >
-                                        <View style={styles.userAvatar}>
-                                            <Ionicons name="remove-outline" size={18} color={COLORS.text} />
-                                        </View>
-                                        <View style={{ flex: 1 }}>
-                                            <Text style={styles.userName}>Sin asignar</Text>
-                                            <Text style={styles.userEmail}>Quitar asignación</Text>
-                                        </View>
-                                    </Pressable>
-
                                     {pickerUsers.map((u) => (
                                         <Pressable key={u.id} onPress={() => onPickUser(u)} style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}>
                                             <View style={styles.userAvatar}>
@@ -1299,6 +1244,8 @@ export default function AdminUserClientsScreen() {
                                                 <Text style={styles.userName} numberOfLines={1}>{u.name}</Text>
                                                 <Text style={styles.userEmail} numberOfLines={1}>{u.email}</Text>
                                             </View>
+
+                                            <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
                                         </Pressable>
                                     ))}
 
@@ -1310,6 +1257,75 @@ export default function AdminUserClientsScreen() {
                                 </ScrollView>
                             </View>
                         </View>
+                    </View>
+                </Modal>
+
+                <Modal visible={conversationOpen} transparent animationType="fade" onRequestClose={closeConversation}>
+                    <View style={styles.modalOverlay}>
+                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
+                            <View style={[styles.modalCardBig, { paddingBottom: 14 + modalBottomPad }]}>
+                                <View style={styles.modalHeader}>
+                                    <View style={{ flex: 1, gap: 2 }}>
+                                        <Text style={styles.modalTitle} numberOfLines={1}>
+                                            Conversación
+                                        </Text>
+                                        <Text style={styles.modalSub} numberOfLines={1}>
+                                            {conversationClientName || "Lead"}
+                                        </Text>
+                                    </View>
+
+                                    <Pressable onPress={closeConversation} style={styles.modalClose}>
+                                        <Ionicons name="close" size={18} color={COLORS.text} />
+                                    </Pressable>
+                                </View>
+
+                                <ScrollView contentContainerStyle={styles.conversationList} showsVerticalScrollIndicator={false}>
+                                    {conversationLoading ? (
+                                        <View style={styles.emptySmall}>
+                                            <Text style={styles.emptyText}>Cargando conversación…</Text>
+                                        </View>
+                                    ) : conversationRows.length ? (
+                                        conversationRows.map((row) => (
+                                            <View
+                                                key={row.id}
+                                                style={[
+                                                    styles.chatBubbleWrap,
+                                                    row.kind === "customer"
+                                                        ? styles.chatBubbleWrapLeft
+                                                        : styles.chatBubbleWrapRight,
+                                                ]}
+                                            >
+                                                <View
+                                                    style={[
+                                                        styles.chatBubble,
+                                                        row.kind === "customer"
+                                                            ? styles.chatBubbleCustomer
+                                                            : styles.chatBubbleBot,
+                                                    ]}
+                                                >
+                                                    <Text
+                                                        style={[
+                                                            styles.chatMeta,
+                                                            row.kind === "customer"
+                                                                ? styles.chatMetaCustomer
+                                                                : styles.chatMetaBot,
+                                                        ]}
+                                                    >
+                                                        {row.meta || (row.kind === "customer" ? "Cliente" : "Bot")} · {formatDateTimeLabel(row.at)}
+                                                    </Text>
+
+                                                    <Text style={styles.chatText}>{row.text}</Text>
+                                                </View>
+                                            </View>
+                                        ))
+                                    ) : (
+                                        <View style={styles.emptySmall}>
+                                            <Text style={styles.emptyText}>No hay historial guardado para este lead.</Text>
+                                        </View>
+                                    )}
+                                </ScrollView>
+                            </View>
+                        </KeyboardAvoidingView>
                     </View>
                 </Modal>
             </AdminBackground>
@@ -1324,9 +1340,7 @@ const COLORS = {
     text: "#F9FAFB",
     muted: "#9CA3AF",
 
-    visited: "#22C55E",
     rejected: "#F87171",
-    pending: "#FBBF24",
     primary: "#2563EB",
 };
 
@@ -1367,6 +1381,42 @@ const styles = StyleSheet.create({
         justifyContent: "center",
     },
     headerBadgeDisabled: { opacity: 0.55 },
+
+    summaryRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+        paddingHorizontal: 16,
+        paddingBottom: 10,
+    },
+    summaryBadge: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 10,
+        height: 28,
+        borderRadius: 999,
+        borderWidth: 1,
+    },
+    summaryBadgeText: {
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    summaryBadgeBlue: {
+        backgroundColor: "rgba(37,99,235,0.12)",
+        borderColor: "rgba(37,99,235,0.26)",
+    },
+    summaryBadgeTextBlue: { color: "#93C5FD" },
+    summaryBadgeYellow: {
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderColor: "rgba(251,191,36,0.24)",
+    },
+    summaryBadgeTextYellow: { color: "#FDE68A" },
+    summaryBadgeRed: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.24)",
+    },
+    summaryBadgeTextRed: { color: "#FCA5A5" },
 
     searchWrap: {
         marginHorizontal: 16,
@@ -1457,16 +1507,8 @@ const styles = StyleSheet.create({
         gap: 10,
     },
     phone: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
+    metaPrimary: { color: "#D7DCE5", fontSize: 13, fontWeight: "900" },
     meta: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-    metaSoft: { color: "#7D8AA6", fontSize: 11, fontWeight: "800" },
-
-    topBadgesRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: 8,
-        marginTop: 2,
-    },
 
     infoBadgeRow: {
         flexDirection: "row",
@@ -1489,17 +1531,9 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: "900",
     },
-    infoBadgeNeutral: {
-        backgroundColor: "rgba(255,255,255,0.05)",
-        borderColor: "rgba(255,255,255,0.10)",
-    },
     infoBadgeBlue: {
         backgroundColor: "rgba(37,99,235,0.12)",
         borderColor: "rgba(37,99,235,0.26)",
-    },
-    infoBadgeGreen: {
-        backgroundColor: "rgba(34,197,94,0.10)",
-        borderColor: "rgba(34,197,94,0.24)",
     },
     infoBadgeYellow: {
         backgroundColor: "rgba(251,191,36,0.10)",
@@ -1510,102 +1544,46 @@ const styles = StyleSheet.create({
         borderColor: "rgba(248,113,113,0.24)",
     },
 
-    pill: {
-        paddingHorizontal: 10,
-        height: 28,
-        borderRadius: 999,
-        alignItems: "center",
-        justifyContent: "center",
+    statusBox: {
+        borderRadius: 14,
         borderWidth: 1,
-        maxWidth: 140,
-    },
-    pillText: { fontSize: 12, fontWeight: "900", textTransform: "lowercase" },
-    pillPending: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.35)" },
-    pillTextPending: { color: "#FDE68A" },
-    pillVisited: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.35)" },
-    pillTextVisited: { color: "#86EFAC" },
-    pillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.35)" },
-    pillTextRejected: { color: "#FCA5A5" },
-
-    datePill: {
-        paddingHorizontal: 10,
-        height: 28,
-        borderRadius: 999,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        flexDirection: "row",
         alignItems: "center",
-        justifyContent: "center",
-        borderWidth: 1,
+        gap: 8,
     },
-    datePillText: {
-        fontSize: 12,
-        fontWeight: "900",
+    statusBoxBlue: {
+        backgroundColor: "rgba(37,99,235,0.08)",
+        borderColor: "rgba(37,99,235,0.22)",
     },
-    datePillPending: {
+    statusBoxYellow: {
         backgroundColor: "rgba(251,191,36,0.08)",
         borderColor: "rgba(251,191,36,0.22)",
     },
-    datePillTextPending: {
-        color: "#FDE68A",
-    },
-    datePillVisited: {
-        backgroundColor: "rgba(34,197,94,0.08)",
-        borderColor: "rgba(34,197,94,0.22)",
-    },
-    datePillTextVisited: {
-        color: "#86EFAC",
-    },
-    datePillRejected: {
+    statusBoxRed: {
         backgroundColor: "rgba(248,113,113,0.08)",
         borderColor: "rgba(248,113,113,0.22)",
     },
-    datePillTextRejected: {
-        color: "#FCA5A5",
-    },
-
-    rejectTag: {
-        alignSelf: "flex-start",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 10,
-        height: 28,
-        borderRadius: 999,
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderWidth: 1,
-        borderColor: "rgba(248,113,113,0.30)",
-    },
-    rejectTagText: { color: "#FCA5A5", fontSize: 12, fontWeight: "900" },
-
-    rejectTagMuted: {
-        alignSelf: "flex-start",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 10,
-        height: 28,
-        borderRadius: 999,
-        backgroundColor: "rgba(255,255,255,0.05)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
-    },
-    rejectTagTextMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
-
-    notSuitableTag: {
-        alignSelf: "flex-start",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 10,
-        minHeight: 30,
-        paddingVertical: 6,
-        borderRadius: 999,
-        backgroundColor: "rgba(248,113,113,0.12)",
-        borderWidth: 1,
-        borderColor: "rgba(248,113,113,0.34)",
-    },
-    notSuitableTagText: {
-        color: "#FCA5A5",
+    statusBoxText: {
+        flex: 1,
         fontSize: 12,
         fontWeight: "900",
+    },
+    statusBoxTextBlue: { color: "#93C5FD" },
+    statusBoxTextYellow: { color: "#FDE68A" },
+    statusBoxTextRed: { color: "#FCA5A5" },
+
+    reasonRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    reasonText: {
+        flex: 1,
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
     },
 
     infoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
@@ -1628,6 +1606,7 @@ const styles = StyleSheet.create({
         gap: 6,
     },
     inboundTitle: {
+        flex: 1,
         color: COLORS.muted,
         fontSize: 11,
         fontWeight: "900",
@@ -1639,11 +1618,56 @@ const styles = StyleSheet.create({
         fontWeight: "700",
         lineHeight: 18,
     },
-    inboundTextMuted: {
-        color: COLORS.muted,
-        fontSize: 12,
-        fontWeight: "700",
+    inboundOpenPill: {
+        paddingHorizontal: 8,
+        height: 22,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(37,99,235,0.12)",
+        borderWidth: 1,
+        borderColor: "rgba(37,99,235,0.26)",
     },
+    inboundOpenPillText: {
+        color: "#93C5FD",
+        fontSize: 10,
+        fontWeight: "900",
+    },
+
+    quickRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+    },
+    quickBtn: {
+        minHeight: 36,
+        paddingHorizontal: 12,
+        borderRadius: 999,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        flexDirection: "row",
+        gap: 6,
+    },
+    quickBtnText: {
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    quickBtnBlue: {
+        backgroundColor: "rgba(37,99,235,0.10)",
+        borderColor: "rgba(37,99,235,0.24)",
+    },
+    quickBtnTextBlue: { color: "#93C5FD" },
+    quickBtnYellow: {
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderColor: "rgba(251,191,36,0.24)",
+    },
+    quickBtnTextYellow: { color: "#FDE68A" },
+    quickBtnRed: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.24)",
+    },
+    quickBtnTextRed: { color: "#FCA5A5" },
 
     actionsRow: {
         flexDirection: "row",
@@ -1662,7 +1686,10 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
-    iconBtnDanger: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.30)" },
+    iconBtnDanger: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.30)",
+    },
     iconBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
     iconBtnDisabled: { opacity: 0.5 },
 
@@ -1682,8 +1709,15 @@ const styles = StyleSheet.create({
         padding: 14,
         maxHeight: "92%",
     },
-    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 },
+    modalHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 10,
+        gap: 10,
+    },
     modalTitle: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
+    modalSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
     modalClose: {
         width: 40,
         height: 40,
@@ -1803,4 +1837,50 @@ const styles = StyleSheet.create({
     primaryBtnText: { color: "#fff", fontWeight: "900", fontSize: 14 },
     btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     btnDisabled: { opacity: 0.55 },
+
+    conversationList: {
+        gap: 10,
+        paddingBottom: 6,
+    },
+    chatBubbleWrap: {
+        width: "100%",
+    },
+    chatBubbleWrapLeft: {
+        alignItems: "flex-start",
+    },
+    chatBubbleWrapRight: {
+        alignItems: "flex-end",
+    },
+    chatBubble: {
+        maxWidth: "88%",
+        borderRadius: 16,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        borderWidth: 1,
+        gap: 6,
+    },
+    chatBubbleCustomer: {
+        backgroundColor: "#0F172A",
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+    chatBubbleBot: {
+        backgroundColor: "rgba(37,99,235,0.10)",
+        borderColor: "rgba(37,99,235,0.26)",
+    },
+    chatMeta: {
+        fontSize: 10,
+        fontWeight: "900",
+    },
+    chatMetaCustomer: {
+        color: COLORS.muted,
+    },
+    chatMetaBot: {
+        color: "#93C5FD",
+    },
+    chatText: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "700",
+        lineHeight: 19,
+    },
 });

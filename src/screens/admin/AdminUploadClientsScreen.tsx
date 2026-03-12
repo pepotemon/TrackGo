@@ -1,4 +1,3 @@
-// src/screens/admin/AdminUploadClientsScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -18,6 +17,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminBackground from "../../components/admin/AdminBackground";
 
 import {
     assignClient,
@@ -46,6 +46,54 @@ function safeText(x?: string) {
     return (x ?? "").toLowerCase();
 }
 
+function safeNumber(v: any): number | null {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function roundCoord(v: any): number | null {
+    const n = safeNumber(v);
+    if (n == null) return null;
+    return Math.round(n * 1000000) / 1000000;
+}
+
+/**
+ * ✅ intenta sacar lat/lng desde links comunes de Google Maps
+ * soporta casos como:
+ * - https://www.google.com/maps?q=-1.39,-48.47
+ * - https://maps.google.com/?q=-1.39,-48.47
+ * - https://www.google.com/maps/search/?api=1&query=-1.39,-48.47
+ * - .../@-1.39,-48.47,17z
+ */
+function extractLatLngFromMapsUrl(url: string): { lat: number | null; lng: number | null } {
+    const raw = (url ?? "").trim();
+    if (!raw) return { lat: null, lng: null };
+
+    try {
+        const decoded = decodeURIComponent(raw);
+
+        const patterns = [
+            /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+            /[?&]query=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+            /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+            /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/i,
+        ];
+
+        for (const p of patterns) {
+            const m = decoded.match(p);
+            if (m?.[1] && m?.[2]) {
+                const lat = roundCoord(m[1]);
+                const lng = roundCoord(m[2]);
+                if (lat != null && lng != null) return { lat, lng };
+            }
+        }
+
+        return { lat: null, lng: null };
+    } catch {
+        return { lat: null, lng: null };
+    }
+}
+
 /** ✅ elimina keys con undefined (Firestore no las acepta) */
 function cleanUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
     const out: any = {};
@@ -60,22 +108,43 @@ type PickerMode = "create" | "assignExisting" | "edit";
 
 type Section = {
     key: string; // userId o "UNASSIGNED"
-    title: string; // nombre (sin UID)
-    subtitle?: string; // email
+    title: string;
+    subtitle?: string;
     totals: { total: number; pending: number; visited: number; rejected: number };
+    autoCount: number;
+    manualCount: number;
     data: ClientDoc[];
 };
 
-function getRejectReason(c: ClientDoc): string | null {
-    const anyC: any = c as any;
-    const rr = (anyC.rejectedReason ?? "").toString().trim().toLowerCase();
-    const note = (c.note ?? "").toString().trim().toLowerCase();
+function getClientSourceLabel(c: ClientDoc) {
+    const source = String((c as any)?.source ?? "manual").trim().toLowerCase();
+    if (source === "whatsapp_meta") return "Meta / WhatsApp";
+    return "Manual";
+}
 
-    const val = rr || note;
-    if (!val) return null;
+function getClientParseStatus(c: ClientDoc): "ready" | "partial" | "empty" {
+    const raw = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
+    if (raw === "ready") return "ready";
+    if (raw === "partial") return "partial";
+    return "empty";
+}
 
-    if (val === "localización") return "localizacion";
-    return val;
+function getClientParseStatusLabel(c: ClientDoc) {
+    const s = getClientParseStatus(c);
+    if (s === "ready") return "Completo";
+    if (s === "partial") return "Parcial";
+    return "Vacío";
+}
+
+function getClientIdentityLabel(c: ClientDoc) {
+    const name = ((c as any)?.name ?? "").toString().trim();
+    const business = ((c as any)?.business ?? "").toString().trim();
+    const phone = (c.phone ?? "").toString().trim();
+
+    if (business && name) return `${name} · ${business}`;
+    if (business) return business;
+    if (name) return name;
+    return phone || "Cliente";
 }
 
 export default function AdminUploadClientsScreen() {
@@ -97,13 +166,11 @@ export default function AdminUploadClientsScreen() {
     const [createOpen, setCreateOpen] = useState(false);
     const [editOpen, setEditOpen] = useState(false);
 
-    // User picker modal (reusable)
+    // User picker modal
     const [userPickerOpen, setUserPickerOpen] = useState(false);
     const [pickerQuery, setPickerQuery] = useState("");
     const [pickerMode, setPickerMode] = useState<PickerMode>("create");
-    const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(
-        null
-    );
+    const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(null);
 
     // -------------------------
     // Create form state
@@ -129,23 +196,20 @@ export default function AdminUploadClientsScreen() {
     const [eAssigneeId, setEAssigneeId] = useState<string | null>(null);
     const [eSaving, setESaving] = useState(false);
 
-    // ✅ Share receiver (tu DeviceEventEmitter nativo)
+    // ✅ Share receiver
     const { sharedMapsUrl, sharedText, clear } = useShareText();
     const lastShareRef = useRef<string>("");
 
-    // ✅ Cuando llega share: copia al portapapeles + opción rápida para abrir crear
+    // ✅ Cuando llega share
     useEffect(() => {
         const incoming = (sharedMapsUrl || sharedText || "").trim();
         if (!incoming) return;
 
-        // evita repetir (Android re-dispara a veces)
         if (lastShareRef.current === incoming) return;
         lastShareRef.current = incoming;
 
-        // copia al portapapeles (aunque no sea maps, igual útil)
         Clipboard.setStringAsync(incoming).catch(() => { });
 
-        // si parece maps, ofrécele ir directo a crear
         if (looksLikeMapsUrl(incoming)) {
             Alert.alert(
                 "Link copiado ✅",
@@ -155,23 +219,20 @@ export default function AdminUploadClientsScreen() {
                     {
                         text: "Ir a crear",
                         onPress: async () => {
-                            // asegurar que estés en esta pantalla (por si entraste en otra)
                             try {
                                 router.replace("/admin/upload-clients" as any);
                             } catch { }
 
-                            // abre modal + prefill (opcional, te ahorra 1 pegado)
                             await ensureUsers();
                             setCMapsUrl(incoming);
                             setCreateOpen(true);
-
                             clear();
                         },
                     },
                 ]
             );
         } else {
-            Alert.alert("Copiado ✅", "Pégálo en el campo de Google Maps.", [
+            Alert.alert("Copiado ✅", "Pégalo en el campo de Google Maps.", [
                 { text: "OK", onPress: () => clear() },
             ]);
         }
@@ -181,21 +242,21 @@ export default function AdminUploadClientsScreen() {
     // realtime clients
     // -------------------------
     useEffect(() => {
-        const unsub = subscribeAdminClients(setClients);
+        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
         return () => unsub();
     }, []);
 
     // -------------------------
-    // users list (eager)
+    // users list
     // -------------------------
     const reloadUsers = async () => {
         if (usersLoading) return;
         setUsersLoading(true);
         try {
             const u = await listUsers("user");
-            setUsers(u);
-            if (!cAssigneeId && u[0]) setCAssigneeId(u[0].id);
-            if (!eAssigneeId && u[0]) setEAssigneeId(u[0].id);
+            setUsers(u ?? []);
+            if (!cAssigneeId && u?.[0]) setCAssigneeId(u[0].id);
+            if (!eAssigneeId && u?.[0]) setEAssigneeId(u[0].id);
         } finally {
             setUsersLoading(false);
         }
@@ -222,20 +283,27 @@ export default function AdminUploadClientsScreen() {
         for (const u of users) {
             const name = (u.name ?? "").trim();
             const email = (u.email ?? "").trim();
-            const label = name && email ? `${name} · ${email}` : name ? name : email ? email : "Usuario";
+            const label = name && email
+                ? `${name} · ${email}`
+                : name
+                    ? name
+                    : email
+                        ? email
+                        : "Usuario";
             m.set(u.id, label);
         }
         return m;
     }, [users]);
 
     // -------------------------
-    // ✅ Prefill desde params (si algún día te llega mapsUrl)
+    // Prefill desde params
     // -------------------------
     const lastHandledMapsUrlRef = useRef<string>("");
 
     useEffect(() => {
         const raw = (params?.mapsUrl ?? params?.maps ?? "") as any;
-        const incoming = (typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "").trim();
+        const incoming =
+            (typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "").trim();
 
         if (!incoming) return;
         if (lastHandledMapsUrlRef.current === incoming) return;
@@ -250,7 +318,7 @@ export default function AdminUploadClientsScreen() {
     }, [params?.mapsUrl, params?.maps]);
 
     // -------------------------
-    // pending count por usuario (para badges)
+    // counts
     // -------------------------
     const pendingByUser = useMemo(() => {
         const m = new Map<string, number>();
@@ -266,7 +334,9 @@ export default function AdminUploadClientsScreen() {
         const pending = clients.filter((c) => c.status === "pending").length;
         const visited = clients.filter((c) => c.status === "visited").length;
         const rejected = clients.filter((c) => c.status === "rejected").length;
-        return { pending, visited, rejected, total: clients.length };
+        const auto = clients.filter((c) => String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta").length;
+        const manual = clients.length - auto;
+        return { pending, visited, rejected, total: clients.length, auto, manual };
     }, [clients]);
 
     // -------------------------
@@ -300,8 +370,10 @@ export default function AdminUploadClientsScreen() {
                 const assigneeLabel = c.assignedTo
                     ? safeText(userLabelById.get(c.assignedTo) ?? "")
                     : "sin asignar";
+                const sourceLabel = safeText(getClientSourceLabel(c));
+                const parseLabel = safeText(getClientParseStatusLabel(c));
 
-                const hay = `${safeText(c.address)} ${safeText(c.mapsUrl)} ${name} ${business} ${assigneeLabel}`;
+                const hay = `${safeText(c.address)} ${safeText(c.mapsUrl)} ${name} ${business} ${assigneeLabel} ${sourceLabel} ${parseLabel}`;
                 return hay.includes(qtText);
             }
 
@@ -310,8 +382,7 @@ export default function AdminUploadClientsScreen() {
     }, [clients, q, users, userLabelById]);
 
     // -------------------------
-    // Group by user (SectionList) — SOLO cabeceras (sin items)
-    // Ahora al tocar un usuario: navega a /admin/user-clients?userId=...
+    // Group by user
     // -------------------------
     const sections: Section[] = useMemo(() => {
         const byKey: Record<string, ClientDoc[]> = {};
@@ -323,14 +394,16 @@ export default function AdminUploadClientsScreen() {
         }
 
         const makeTotals = (arr: ClientDoc[]) => {
-            let pending = 0,
-                visited = 0,
-                rejected = 0;
+            let pending = 0;
+            let visited = 0;
+            let rejected = 0;
+
             for (const c of arr) {
                 if (c.status === "visited") visited++;
                 else if (c.status === "rejected") rejected++;
                 else pending++;
             }
+
             return { total: arr.length, pending, visited, rejected };
         };
 
@@ -340,11 +413,11 @@ export default function AdminUploadClientsScreen() {
             if (!u) return "Asignado (cargando…)";
             const name = (u.name ?? "").trim();
             const email = (u.email ?? "").trim();
-            return name && email ? `${name}` : name ? name : email ? email : "Usuario";
+            return name && email ? name : name ? name : email ? email : "Usuario";
         };
 
         const makeSubtitle = (key: string) => {
-            if (key === "UNASSIGNED") return "—";
+            if (key === "UNASSIGNED") return "Clientes aún no asignados";
             const u = userById.get(key);
             if (!u) return undefined;
             const email = (u.email ?? "").trim();
@@ -362,13 +435,20 @@ export default function AdminUploadClientsScreen() {
         });
 
         return keys.map((key) => {
-            const data = byKey[key] ?? [];
+            const group = byKey[key] ?? [];
+            const autoCount = group.filter(
+                (c) => String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
+            ).length;
+            const manualCount = group.length - autoCount;
+
             return {
                 key,
                 title: makeTitle(key),
                 subtitle: makeSubtitle(key),
-                totals: makeTotals(data),
-                data: [], // ✅ ya NO renderizamos clientes aquí
+                totals: makeTotals(group),
+                autoCount,
+                manualCount,
+                data: [],
             };
         });
     }, [filteredClients, userById, userLabelById]);
@@ -406,18 +486,23 @@ export default function AdminUploadClientsScreen() {
             setCErr("Teléfono es obligatorio.");
             return;
         }
+
         if (phoneExists(cleanPhone)) {
             setCErr("Ese teléfono ya existe en la base de datos. No se puede crear duplicado.");
             return;
         }
+
         if (!cleanMaps) {
             setCErr("Link de Google Maps es obligatorio.");
             return;
         }
+
         if (!looksLikeMapsUrl(cleanMaps)) {
             setCErr("El link no parece ser de Google Maps.");
             return;
         }
+
+        const { lat, lng } = extractLatLngFromMapsUrl(cleanMaps);
 
         setCSaving(true);
         try {
@@ -426,14 +511,25 @@ export default function AdminUploadClientsScreen() {
             const payload: any = {
                 phone: cleanPhone,
                 mapsUrl: cleanMaps,
+                address: cleanAddress || undefined,
+                lat,
+                lng,
                 status: "pending",
                 createdAt: now,
                 updatedAt: now,
+
+                source: "manual",
+                sourceRef: null,
+                autoCapturedAt: null,
+                lastInboundMessageAt: null,
+                lastInboundText: null,
+                lastMessageId: null,
+                waId: cleanPhone,
+                parseStatus: cleanAddress || cleanName || cleanBusiness ? "ready" : "partial",
             };
 
             if (cleanName) payload.name = cleanName;
             if (cleanBusiness) payload.business = cleanBusiness;
-            if (cleanAddress) payload.address = cleanAddress;
 
             if (cAssigneeId) {
                 payload.assignedTo = cAssigneeId;
@@ -444,6 +540,7 @@ export default function AdminUploadClientsScreen() {
                 payload.statusBy = null;
                 payload.statusAt = null;
                 payload.note = null;
+                payload.rejectedReason = null;
             }
 
             await createClient(cleanUndefined(payload) as any);
@@ -458,7 +555,7 @@ export default function AdminUploadClientsScreen() {
     };
 
     // -------------------------
-    // Edit flow (se mantiene, aunque ahora no editas desde lista principal)
+    // Edit flow
     // -------------------------
     const startEdit = async (c: ClientDoc) => {
         await ensureUsers();
@@ -498,18 +595,23 @@ export default function AdminUploadClientsScreen() {
             Alert.alert("Error", "Teléfono es obligatorio.");
             return;
         }
+
         if (phoneExists(cleanPhone, editingId)) {
             Alert.alert("Duplicado", "Ese teléfono ya existe. No se puede guardar duplicado.");
             return;
         }
+
         if (!cleanMaps) {
             Alert.alert("Error", "Link de Google Maps es obligatorio.");
             return;
         }
+
         if (!looksLikeMapsUrl(cleanMaps)) {
             Alert.alert("Error", "El link no parece ser de Google Maps.");
             return;
         }
+
+        const { lat, lng } = extractLatLngFromMapsUrl(cleanMaps);
 
         setESaving(true);
         try {
@@ -518,10 +620,13 @@ export default function AdminUploadClientsScreen() {
             const patch: any = {
                 phone: cleanPhone,
                 mapsUrl: cleanMaps,
+                address: cleanAddress ? cleanAddress : "",
                 updatedAt: now,
                 name: cleanName ? cleanName : "",
                 business: cleanBusiness ? cleanBusiness : "",
-                address: cleanAddress ? cleanAddress : "",
+                waId: cleanPhone,
+                lat,
+                lng,
             };
 
             if (eAssigneeId) {
@@ -535,7 +640,6 @@ export default function AdminUploadClientsScreen() {
             }
 
             await updateClientFields(editingId, cleanUndefined(patch) as any);
-
             cancelEdit();
         } catch (e: any) {
             Alert.alert("Error", e?.message ?? "No se pudo guardar");
@@ -563,7 +667,7 @@ export default function AdminUploadClientsScreen() {
     };
 
     // -------------------------
-    // User picker data (+ badge pending)
+    // User picker data
     // -------------------------
     const pickerUsers = useMemo(() => {
         const qt = pickerQuery.trim().toLowerCase();
@@ -575,7 +679,6 @@ export default function AdminUploadClientsScreen() {
         });
     }, [users, pickerQuery]);
 
-    // FAB: subir un poco + respetar home indicator
     const fabBottom = Math.max(18, insets.bottom + 18) + 14;
 
     const AssigneeRowValue = (userId: string | null) => {
@@ -630,6 +733,7 @@ export default function AdminUploadClientsScreen() {
             setUserPickerOpen(false);
             return;
         }
+
         if (pickerMode === "edit") {
             setEAssigneeId(u.id);
             setUserPickerOpen(false);
@@ -652,407 +756,503 @@ export default function AdminUploadClientsScreen() {
     };
 
     const goUserClients = (key: string) => {
-        // ✅ key puede ser "UNASSIGNED" también (lo soportamos en la pantalla nueva si quieres)
         router.push({ pathname: "/admin/user-clients" as any, params: { userId: key } });
     };
 
     return (
         <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
+            <AdminBackground>
+                <View style={styles.header}>
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.hTitle}>Clientes</Text>
 
-            {/* Header */}
-            <View style={styles.header}>
-                <View style={{ flex: 1 }}>
-                    <Text style={styles.hTitle}>Clientes</Text>
-                    <Text style={styles.hSub} numberOfLines={1}>
-                        T <Text style={styles.hStrong}>{counts.total}</Text> · P{" "}
-                        <Text style={styles.hStrong}>{counts.pending}</Text> · V{" "}
-                        <Text style={styles.hStrong}>{counts.visited}</Text> · R{" "}
-                        <Text style={styles.hStrong}>{counts.rejected}</Text>
-                    </Text>
+                        <Text style={styles.hSub} numberOfLines={1}>
+                            T <Text style={styles.hStrong}>{counts.total}</Text> · P{" "}
+                            <Text style={styles.hStrong}>{counts.pending}</Text> · V{" "}
+                            <Text style={styles.hStrong}>{counts.visited}</Text> · R{" "}
+                            <Text style={styles.hStrong}>{counts.rejected}</Text>
+                        </Text>
+
+                        <Text style={styles.hSubAlt} numberOfLines={1}>
+                            Manual <Text style={styles.hStrong}>{counts.manual}</Text> · Auto{" "}
+                            <Text style={styles.hStrong}>{counts.auto}</Text>
+                        </Text>
+                    </View>
+
+                    <Pressable
+                        onPress={reloadUsers}
+                        style={({ pressed }) => [
+                            styles.headerBadge,
+                            pressed && styles.pressed,
+                            usersLoading && styles.headerBadgeDisabled,
+                        ]}
+                        disabled={usersLoading}
+                        accessibilityLabel="Refrescar usuarios"
+                    >
+                        <Ionicons
+                            name={usersLoading ? "sync" : "people-outline"}
+                            size={18}
+                            color={COLORS.text}
+                        />
+                    </Pressable>
                 </View>
 
-                <Pressable
-                    onPress={reloadUsers}
-                    style={({ pressed }) => [
-                        styles.headerBadge,
-                        pressed && styles.pressed,
-                        usersLoading && styles.headerBadgeDisabled,
-                    ]}
-                    disabled={usersLoading}
-                    accessibilityLabel="Refrescar usuarios"
-                >
-                    <Ionicons
-                        name={usersLoading ? "sync" : "people-outline"}
-                        size={18}
-                        color={COLORS.text}
+                <View style={styles.searchWrap}>
+                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                    <TextInput
+                        value={q}
+                        onChangeText={setQ}
+                        placeholder="Buscar usuario, cliente, fuente o teléfono"
+                        placeholderTextColor={COLORS.muted}
+                        style={styles.searchInput}
                     />
-                </Pressable>
-            </View>
+                    {!!q ? (
+                        <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
+                            <Ionicons name="close" size={18} color={COLORS.text} />
+                        </Pressable>
+                    ) : null}
+                </View>
 
-            {/* Search */}
-            <View style={styles.searchWrap}>
-                <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                <TextInput
-                    value={q}
-                    onChangeText={setQ}
-                    placeholder="Buscar usuario o cliente"
-                    placeholderTextColor={COLORS.muted}
-                    style={styles.searchInput}
+                <SectionList
+                    sections={sections}
+                    keyExtractor={(c, i) => `${c.id}_${i}`}
+                    contentContainerStyle={styles.listContent}
+                    stickySectionHeadersEnabled={false}
+                    renderSectionHeader={({ section }) => {
+                        return (
+                            <Pressable
+                                onPress={() => goUserClients(section.key)}
+                                style={({ pressed }) => [
+                                    styles.sectionCard,
+                                    pressed && styles.sectionHeaderPressed,
+                                ]}
+                                accessibilityLabel={`Abrir ${section.title}`}
+                            >
+                                <View style={styles.sectionHeaderRow}>
+                                    <View style={{ flex: 1, gap: 4 }}>
+                                        <View style={styles.sectionTitleRow}>
+                                            <Ionicons name="person-outline" size={16} color={COLORS.muted} />
+                                            <Text style={styles.sectionTitle} numberOfLines={1}>
+                                                {section.title}
+                                            </Text>
+                                        </View>
+
+                                        {section.subtitle ? (
+                                            <Text style={styles.sectionSub} numberOfLines={1}>
+                                                {section.subtitle}
+                                            </Text>
+                                        ) : null}
+
+                                        <View style={styles.sectionSourceRow}>
+                                            <View style={styles.sourceBadgeManual}>
+                                                <Ionicons name="create-outline" size={11} color={COLORS.text} />
+                                                <Text style={styles.sourceBadgeText}>Manual {section.manualCount}</Text>
+                                            </View>
+
+                                            <View style={styles.sourceBadgeAuto}>
+                                                <Ionicons name="logo-whatsapp" size={11} color={COLORS.text} />
+                                                <Text style={styles.sourceBadgeText}>Auto {section.autoCount}</Text>
+                                            </View>
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.sectionPills}>
+                                        <View style={[styles.miniPill, styles.miniPillPending]}>
+                                            <Text style={[styles.miniPillText, styles.miniTextPending]}>
+                                                {section.totals.pending}
+                                            </Text>
+                                        </View>
+                                        <View style={[styles.miniPill, styles.miniPillVisited]}>
+                                            <Text style={[styles.miniPillText, styles.miniTextVisited]}>
+                                                {section.totals.visited}
+                                            </Text>
+                                        </View>
+                                        <View style={[styles.miniPill, styles.miniPillRejected]}>
+                                            <Text style={[styles.miniPillText, styles.miniTextRejected]}>
+                                                {section.totals.rejected}
+                                            </Text>
+                                        </View>
+
+                                        <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
+                                    </View>
+                                </View>
+                            </Pressable>
+                        );
+                    }}
+                    renderItem={() => null}
+                    ListEmptyComponent={
+                        <View style={styles.empty}>
+                            <Ionicons name="people-outline" size={24} color={COLORS.muted} />
+                            <Text style={styles.emptyText}>
+                                {q.trim() ? "No hay resultados." : "Aún no hay clientes."}
+                            </Text>
+                        </View>
+                    }
                 />
-                {!!q ? (
-                    <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
-                        <Ionicons name="close" size={18} color={COLORS.text} />
-                    </Pressable>
-                ) : null}
-            </View>
 
-            {/* Grouped list by user (ahora NAVEGA a pantalla) */}
-            <SectionList
-                sections={sections}
-                keyExtractor={(c, i) => `${c.id}_${i}`}
-                contentContainerStyle={styles.listContent}
-                stickySectionHeadersEnabled={false}
-                renderSectionHeader={({ section }) => {
-                    return (
-                        <Pressable
-                            onPress={() => goUserClients(section.key)}
-                            style={({ pressed }) => [
-                                styles.sectionCard,
-                                pressed && styles.sectionHeaderPressed,
-                            ]}
-                            accessibilityLabel={`Abrir ${section.title}`}
-                        >
-                            <View style={styles.sectionHeaderRow}>
-                                <View style={{ flex: 1, gap: 2 }}>
-                                    <View style={styles.sectionTitleRow}>
-                                        <Ionicons name="person-outline" size={16} color={COLORS.muted} />
-                                        <Text style={styles.sectionTitle} numberOfLines={1}>
-                                            {section.title}
+                <Pressable
+                    onPress={async () => {
+                        await ensureUsers();
+                        setCreateOpen(true);
+                    }}
+                    style={({ pressed }) => [styles.fab, { bottom: fabBottom }, pressed && styles.fabPressed]}
+                    accessibilityLabel="Crear cliente"
+                >
+                    <Ionicons name="add" size={22} color="#fff" />
+                </Pressable>
+
+                <Modal visible={createOpen} transparent animationType="fade" onRequestClose={() => setCreateOpen(false)}>
+                    <View style={styles.modalOverlay}>
+                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
+                            <View style={styles.modalCardBig}>
+                                <View style={styles.modalHeader}>
+                                    <View style={{ flex: 1, gap: 2 }}>
+                                        <Text style={styles.modalTitle}>Crear cliente</Text>
+                                        <Text style={styles.modalSub}>Carga manual coherente con el nuevo flujo automático</Text>
+                                    </View>
+
+                                    <Pressable onPress={() => setCreateOpen(false)} style={styles.modalClose}>
+                                        <Ionicons name="close" size={18} color={COLORS.text} />
+                                    </Pressable>
+                                </View>
+
+                                <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                    <View style={styles.infoBanner}>
+                                        <Ionicons name="information-circle-outline" size={16} color={COLORS.info} />
+                                        <Text style={styles.infoBannerText}>
+                                            Este cliente se guardará como <Text style={styles.infoBannerStrong}>Manual</Text>.
                                         </Text>
                                     </View>
 
-                                    {section.subtitle ? (
-                                        <Text style={styles.sectionSub} numberOfLines={1}>
-                                            {section.subtitle}
-                                        </Text>
+                                    <Pressable onPress={openUserPickerForCreate} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
+                                        <View style={{ flex: 1, gap: 2 }}>
+                                            <Text style={styles.selectLabel}>Asignar a</Text>
+                                            {typeof cAssigneeId === "string" ? (
+                                                AssigneeRowValue(cAssigneeId)
+                                            ) : (
+                                                <Text style={styles.selectValue} numberOfLines={1}>
+                                                    Sin asignar
+                                                </Text>
+                                            )}
+                                        </View>
+                                        <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
+                                    </Pressable>
+
+                                    <View style={styles.grid2}>
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Nombre</Text>
+                                            <TextInput
+                                                value={cName}
+                                                onChangeText={setCName}
+                                                placeholder="Opcional"
+                                                placeholderTextColor={COLORS.muted}
+                                                style={styles.input}
+                                            />
+                                        </View>
+
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Negocio</Text>
+                                            <TextInput
+                                                value={cBusiness}
+                                                onChangeText={setCBusiness}
+                                                placeholder="Opcional"
+                                                placeholderTextColor={COLORS.muted}
+                                                style={styles.input}
+                                            />
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.grid2}>
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Teléfono *</Text>
+                                            <TextInput
+                                                value={cPhone}
+                                                onChangeText={setCPhone}
+                                                keyboardType="phone-pad"
+                                                placeholder="+55 91 954 23 232"
+                                                placeholderTextColor={COLORS.muted}
+                                                style={styles.input}
+                                            />
+                                        </View>
+
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Dirección</Text>
+                                            <TextInput
+                                                value={cAddress}
+                                                onChangeText={setCAddress}
+                                                placeholder="Opcional"
+                                                placeholderTextColor={COLORS.muted}
+                                                style={styles.input}
+                                            />
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Google Maps *</Text>
+                                        <TextInput
+                                            value={cMapsUrl}
+                                            onChangeText={setCMapsUrl}
+                                            autoCapitalize="none"
+                                            placeholder="https://maps.google.com/..."
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
+                                    </View>
+
+                                    {cErr ? (
+                                        <View style={styles.errorBox}>
+                                            <Ionicons name="alert-circle-outline" size={16} color={COLORS.rejected} />
+                                            <Text style={styles.errorText}>{cErr}</Text>
+                                        </View>
+                                    ) : null}
+
+                                    <View style={{ flexDirection: "row", gap: 10 }}>
+                                        <Pressable
+                                            onPress={() => {
+                                                resetCreate();
+                                                setCreateOpen(false);
+                                            }}
+                                            style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
+                                            disabled={cSaving}
+                                        >
+                                            <Ionicons name="close-outline" size={18} color={COLORS.text} />
+                                            <Text style={styles.ghostBtnText}>Cancelar</Text>
+                                        </Pressable>
+
+                                        <Pressable
+                                            onPress={submitCreate}
+                                            style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, cSaving && styles.btnDisabled]}
+                                            disabled={cSaving}
+                                        >
+                                            <Ionicons name="add-outline" size={18} color="#fff" />
+                                            <Text style={styles.primaryBtnText}>{cSaving ? "Creando..." : "Crear"}</Text>
+                                        </Pressable>
+                                    </View>
+                                </ScrollView>
+                            </View>
+                        </KeyboardAvoidingView>
+                    </View>
+                </Modal>
+
+                <Modal visible={editOpen} transparent animationType="fade" onRequestClose={cancelEdit}>
+                    <View style={styles.modalOverlay}>
+                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
+                            <View style={styles.modalCardBig}>
+                                <View style={styles.modalHeader}>
+                                    <View style={{ flex: 1, gap: 2 }}>
+                                        <Text style={styles.modalTitle}>Editar cliente</Text>
+                                        <Text style={styles.modalSub}>Ajusta datos sin perder coherencia del flujo</Text>
+                                    </View>
+
+                                    <Pressable onPress={cancelEdit} style={styles.modalClose}>
+                                        <Ionicons name="close" size={18} color={COLORS.text} />
+                                    </Pressable>
+                                </View>
+
+                                <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                    <Pressable onPress={openUserPickerForEdit} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
+                                        <View style={{ flex: 1, gap: 2 }}>
+                                            <Text style={styles.selectLabel}>Asignado a</Text>
+                                            {typeof eAssigneeId === "string" ? (
+                                                AssigneeRowValue(eAssigneeId)
+                                            ) : (
+                                                <Text style={styles.selectValue} numberOfLines={1}>
+                                                    Sin asignar
+                                                </Text>
+                                            )}
+                                        </View>
+                                        <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
+                                    </Pressable>
+
+                                    <View style={styles.grid2}>
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Nombre</Text>
+                                            <TextInput
+                                                value={eName}
+                                                onChangeText={setEName}
+                                                placeholder="Opcional"
+                                                placeholderTextColor={COLORS.muted}
+                                                style={styles.input}
+                                            />
+                                        </View>
+
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Negocio</Text>
+                                            <TextInput
+                                                value={eBusiness}
+                                                onChangeText={setEBusiness}
+                                                placeholder="Opcional"
+                                                placeholderTextColor={COLORS.muted}
+                                                style={styles.input}
+                                            />
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.grid2}>
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Teléfono *</Text>
+                                            <TextInput
+                                                value={ePhone}
+                                                onChangeText={setEPhone}
+                                                keyboardType="phone-pad"
+                                                placeholder="+55 91 954 23 232"
+                                                placeholderTextColor={COLORS.muted}
+                                                style={styles.input}
+                                            />
+                                        </View>
+
+                                        <View style={[styles.field, { flex: 1 }]}>
+                                            <Text style={styles.label}>Dirección</Text>
+                                            <TextInput
+                                                value={eAddress}
+                                                onChangeText={setEAddress}
+                                                placeholder="Opcional"
+                                                placeholderTextColor={COLORS.muted}
+                                                style={styles.input}
+                                            />
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Google Maps *</Text>
+                                        <TextInput
+                                            value={eMapsUrl}
+                                            onChangeText={setEMapsUrl}
+                                            autoCapitalize="none"
+                                            placeholder="https://maps.google.com/..."
+                                            placeholderTextColor={COLORS.muted}
+                                            style={styles.input}
+                                        />
+                                    </View>
+
+                                    <View style={{ flexDirection: "row", gap: 10 }}>
+                                        <Pressable
+                                            onPress={cancelEdit}
+                                            style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
+                                            disabled={eSaving}
+                                        >
+                                            <Ionicons name="close-outline" size={18} color={COLORS.text} />
+                                            <Text style={styles.ghostBtnText}>Cancelar</Text>
+                                        </Pressable>
+
+                                        <Pressable
+                                            onPress={submitEdit}
+                                            style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, eSaving && styles.btnDisabled]}
+                                            disabled={eSaving}
+                                        >
+                                            <Ionicons name="save-outline" size={18} color="#fff" />
+                                            <Text style={styles.primaryBtnText}>{eSaving ? "Guardando..." : "Guardar"}</Text>
+                                        </Pressable>
+                                    </View>
+
+                                    {editingId ? (
+                                        <Pressable
+                                            onPress={() => confirmDelete(editingId)}
+                                            style={({ pressed }) => [styles.deleteWideBtn, pressed && styles.btnPressed]}
+                                            disabled={eSaving}
+                                        >
+                                            <Ionicons name="trash-outline" size={18} color={COLORS.rejected} />
+                                            <Text style={styles.deleteWideBtnText}>Eliminar cliente</Text>
+                                        </Pressable>
+                                    ) : null}
+                                </ScrollView>
+                            </View>
+                        </KeyboardAvoidingView>
+                    </View>
+                </Modal>
+
+                <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={() => setUserPickerOpen(false)}>
+                    <View style={styles.modalOverlay}>
+                        <View style={styles.pickerWrap}>
+                            <View style={styles.pickerCard}>
+                                <View style={styles.modalHeader}>
+                                    <Text style={styles.modalTitle}>Seleccionar usuario</Text>
+                                    <Pressable onPress={() => setUserPickerOpen(false)} style={styles.modalClose}>
+                                        <Ionicons name="close" size={18} color={COLORS.text} />
+                                    </Pressable>
+                                </View>
+
+                                <View style={styles.searchWrapModal}>
+                                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                                    <TextInput
+                                        value={pickerQuery}
+                                        onChangeText={setPickerQuery}
+                                        placeholder="Buscar…"
+                                        placeholderTextColor={COLORS.muted}
+                                        style={styles.searchInput}
+                                    />
+                                    {!!pickerQuery ? (
+                                        <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
+                                            <Ionicons name="close" size={18} color={COLORS.text} />
+                                        </Pressable>
                                     ) : null}
                                 </View>
 
-                                <View style={styles.sectionPills}>
-                                    <View style={[styles.miniPill, styles.miniPillPending]}>
-                                        <Text style={[styles.miniPillText, styles.miniTextPending]}>
-                                            {section.totals.pending}
-                                        </Text>
-                                    </View>
-                                    <View style={[styles.miniPill, styles.miniPillVisited]}>
-                                        <Text style={[styles.miniPillText, styles.miniTextVisited]}>
-                                            {section.totals.visited}
-                                        </Text>
-                                    </View>
-                                    <View style={[styles.miniPill, styles.miniPillRejected]}>
-                                        <Text style={[styles.miniPillText, styles.miniTextRejected]}>
-                                            {section.totals.rejected}
-                                        </Text>
-                                    </View>
-
-                                    <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-                                </View>
-                            </View>
-                        </Pressable>
-                    );
-                }}
-                // ✅ ya no renderizamos items aquí
-                renderItem={() => null}
-                ListEmptyComponent={
-                    <View style={styles.empty}>
-                        <Ionicons name="people-outline" size={24} color={COLORS.muted} />
-                        <Text style={styles.emptyText}>
-                            {q.trim() ? "No hay resultados." : "Aún no hay clientes."}
-                        </Text>
-                    </View>
-                }
-            />
-
-            {/* FAB Create */}
-            <Pressable
-                onPress={async () => {
-                    await ensureUsers();
-                    setCreateOpen(true);
-                }}
-                style={({ pressed }) => [styles.fab, { bottom: fabBottom }, pressed && styles.fabPressed]}
-                accessibilityLabel="Crear cliente"
-            >
-                <Ionicons name="add" size={22} color="#fff" />
-            </Pressable>
-
-            {/* =========================
-          CREATE MODAL
-         ========================= */}
-            <Modal visible={createOpen} transparent animationType="fade" onRequestClose={() => setCreateOpen(false)}>
-                <View style={styles.modalOverlay}>
-                    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                        <View style={styles.modalCardBig}>
-                            <View style={styles.modalHeader}>
-                                <Text style={styles.modalTitle}>Crear cliente</Text>
-                                <Pressable onPress={() => setCreateOpen(false)} style={styles.modalClose}>
-                                    <Ionicons name="close" size={18} color={COLORS.text} />
-                                </Pressable>
-                            </View>
-
-                            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                {/* Assignee */}
-                                <Pressable onPress={openUserPickerForCreate} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
-                                    <View style={{ flex: 1, gap: 2 }}>
-                                        <Text style={styles.selectLabel}>Asignar a</Text>
-                                        {typeof cAssigneeId === "string" ? (
-                                            AssigneeRowValue(cAssigneeId)
-                                        ) : (
-                                            <Text style={styles.selectValue} numberOfLines={1}>
-                                                Sin asignar
-                                            </Text>
-                                        )}
-                                    </View>
-                                    <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-                                </Pressable>
-
-                                <View style={styles.grid2}>
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Nombre</Text>
-                                        <TextInput value={cName} onChangeText={setCName} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Negocio</Text>
-                                        <TextInput value={cBusiness} onChangeText={setCBusiness} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-                                </View>
-
-                                <View style={styles.grid2}>
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Teléfono *</Text>
-                                        <TextInput value={cPhone} onChangeText={setCPhone} keyboardType="phone-pad" placeholder="+55 91 954 23 232" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Dirección</Text>
-                                        <TextInput value={cAddress} onChangeText={setCAddress} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-                                </View>
-
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>Google Maps *</Text>
-                                    <TextInput
-                                        value={cMapsUrl}
-                                        onChangeText={setCMapsUrl}
-                                        autoCapitalize="none"
-                                        placeholder="https://maps.google.com/..."
-                                        placeholderTextColor={COLORS.muted}
-                                        style={styles.input}
-                                    />
-                                </View>
-
-                                {cErr ? (
-                                    <View style={styles.errorBox}>
-                                        <Ionicons name="alert-circle-outline" size={16} color={COLORS.rejected} />
-                                        <Text style={styles.errorText}>{cErr}</Text>
-                                    </View>
-                                ) : null}
-
-                                <View style={{ flexDirection: "row", gap: 10 }}>
-                                    <Pressable
-                                        onPress={() => {
-                                            resetCreate();
-                                            setCreateOpen(false);
-                                        }}
-                                        style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
-                                        disabled={cSaving}
-                                    >
-                                        <Ionicons name="close-outline" size={18} color={COLORS.text} />
-                                        <Text style={styles.ghostBtnText}>Cancelar</Text>
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={submitCreate}
-                                        style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, cSaving && styles.btnDisabled]}
-                                        disabled={cSaving}
-                                    >
-                                        <Ionicons name="add-outline" size={18} color="#fff" />
-                                        <Text style={styles.primaryBtnText}>{cSaving ? "Creando..." : "Crear"}</Text>
-                                    </Pressable>
-                                </View>
-                            </ScrollView>
-                        </View>
-                    </KeyboardAvoidingView>
-                </View>
-            </Modal>
-
-            {/* =========================
-          EDIT MODAL
-         ========================= */}
-            <Modal visible={editOpen} transparent animationType="fade" onRequestClose={cancelEdit}>
-                <View style={styles.modalOverlay}>
-                    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                        <View style={styles.modalCardBig}>
-                            <View style={styles.modalHeader}>
-                                <Text style={styles.modalTitle}>Editar</Text>
-                                <Pressable onPress={cancelEdit} style={styles.modalClose}>
-                                    <Ionicons name="close" size={18} color={COLORS.text} />
-                                </Pressable>
-                            </View>
-
-                            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                {/* Assignee */}
-                                <Pressable onPress={openUserPickerForEdit} style={({ pressed }) => [styles.selectRow, pressed && styles.selectRowPressed]}>
-                                    <View style={{ flex: 1, gap: 2 }}>
-                                        <Text style={styles.selectLabel}>Asignado a</Text>
-                                        {typeof eAssigneeId === "string" ? (
-                                            AssigneeRowValue(eAssigneeId)
-                                        ) : (
-                                            <Text style={styles.selectValue} numberOfLines={1}>
-                                                Sin asignar
-                                            </Text>
-                                        )}
-                                    </View>
-                                    <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-                                </Pressable>
-
-                                <View style={styles.grid2}>
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Nombre</Text>
-                                        <TextInput value={eName} onChangeText={setEName} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Negocio</Text>
-                                        <TextInput value={eBusiness} onChangeText={setEBusiness} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-                                </View>
-
-                                <View style={styles.grid2}>
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Teléfono *</Text>
-                                        <TextInput value={ePhone} onChangeText={setEPhone} keyboardType="phone-pad" placeholder="+55 91 954 23 232" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-
-                                    <View style={[styles.field, { flex: 1 }]}>
-                                        <Text style={styles.label}>Dirección</Text>
-                                        <TextInput value={eAddress} onChangeText={setEAddress} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-                                </View>
-
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>Google Maps *</Text>
-                                    <TextInput
-                                        value={eMapsUrl}
-                                        onChangeText={setEMapsUrl}
-                                        autoCapitalize="none"
-                                        placeholder="https://maps.google.com/..."
-                                        placeholderTextColor={COLORS.muted}
-                                        style={styles.input}
-                                    />
-                                </View>
-
-                                <View style={{ flexDirection: "row", gap: 10 }}>
-                                    <Pressable onPress={cancelEdit} style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]} disabled={eSaving}>
-                                        <Ionicons name="close-outline" size={18} color={COLORS.text} />
-                                        <Text style={styles.ghostBtnText}>Cancelar</Text>
-                                    </Pressable>
-
-                                    <Pressable onPress={submitEdit} style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, eSaving && styles.btnDisabled]} disabled={eSaving}>
-                                        <Ionicons name="save-outline" size={18} color="#fff" />
-                                        <Text style={styles.primaryBtnText}>{eSaving ? "Guardando..." : "Guardar"}</Text>
-                                    </Pressable>
-                                </View>
-                            </ScrollView>
-                        </View>
-                    </KeyboardAvoidingView>
-                </View>
-            </Modal>
-
-            {/* =========================
-          USER PICKER MODAL
-         ========================= */}
-            <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={() => setUserPickerOpen(false)}>
-                <View style={styles.modalOverlay}>
-                    <View style={styles.pickerWrap}>
-                        <View style={styles.pickerCard}>
-                            <View style={styles.modalHeader}>
-                                <Text style={styles.modalTitle}>Seleccionar usuario</Text>
-                                <Pressable onPress={() => setUserPickerOpen(false)} style={styles.modalClose}>
-                                    <Ionicons name="close" size={18} color={COLORS.text} />
-                                </Pressable>
-                            </View>
-
-                            <View style={styles.searchWrapModal}>
-                                <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                                <TextInput value={pickerQuery} onChangeText={setPickerQuery} placeholder="Buscar…" placeholderTextColor={COLORS.muted} style={styles.searchInput} />
-                                {!!pickerQuery ? (
-                                    <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
-                                        <Ionicons name="close" size={18} color={COLORS.text} />
-                                    </Pressable>
-                                ) : null}
-                            </View>
-
-                            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                {pickerMode !== "assignExisting" ? (
-                                    <Pressable
-                                        onPress={() => {
-                                            if (pickerMode === "create") setCAssigneeId(null);
-                                            if (pickerMode === "edit") setEAssigneeId(null);
-                                            setUserPickerOpen(false);
-                                        }}
-                                        style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
-                                    >
-                                        <View style={styles.userAvatar}>
-                                            <Ionicons name="remove-outline" size={18} color={COLORS.text} />
-                                        </View>
-                                        <View style={{ flex: 1 }}>
-                                            <Text style={styles.userName}>Sin asignar</Text>
-                                            <Text style={styles.userEmail}>Crear / editar sin asignación</Text>
-                                        </View>
-
-                                        <View style={styles.pendingBadgeMini}>
-                                            <Text style={styles.pendingBadgeMiniText}>{pendingByUser.get("UNASSIGNED") ?? 0}</Text>
-                                        </View>
-                                    </Pressable>
-                                ) : null}
-
-                                {pickerUsers.map((u) => {
-                                    const p = pendingByUser.get(u.id) ?? 0;
-
-                                    return (
-                                        <Pressable key={u.id} onPress={() => onPickUser(u)} style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}>
+                                <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                    {pickerMode !== "assignExisting" ? (
+                                        <Pressable
+                                            onPress={() => {
+                                                if (pickerMode === "create") setCAssigneeId(null);
+                                                if (pickerMode === "edit") setEAssigneeId(null);
+                                                setUserPickerOpen(false);
+                                            }}
+                                            style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
+                                        >
                                             <View style={styles.userAvatar}>
-                                                <Ionicons name="person-outline" size={18} color={COLORS.text} />
+                                                <Ionicons name="remove-outline" size={18} color={COLORS.text} />
                                             </View>
-
                                             <View style={{ flex: 1 }}>
-                                                <Text style={styles.userName} numberOfLines={1}>
-                                                    {u.name}
-                                                </Text>
-                                                <Text style={styles.userEmail} numberOfLines={1}>
-                                                    {u.email}
-                                                </Text>
+                                                <Text style={styles.userName}>Sin asignar</Text>
+                                                <Text style={styles.userEmail}>Crear / editar sin asignación</Text>
                                             </View>
 
                                             <View style={styles.pendingBadgeMini}>
-                                                <Text style={styles.pendingBadgeMiniText}>{p}</Text>
+                                                <Text style={styles.pendingBadgeMiniText}>{pendingByUser.get("UNASSIGNED") ?? 0}</Text>
                                             </View>
                                         </Pressable>
-                                    );
-                                })}
+                                    ) : null}
 
-                                {!pickerUsers.length ? (
-                                    <View style={styles.emptySmall}>
-                                        <Text style={styles.emptyText}>No hay resultados.</Text>
-                                    </View>
-                                ) : null}
-                            </ScrollView>
+                                    {pickerUsers.map((u) => {
+                                        const p = pendingByUser.get(u.id) ?? 0;
+
+                                        return (
+                                            <Pressable
+                                                key={u.id}
+                                                onPress={() => onPickUser(u)}
+                                                style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
+                                            >
+                                                <View style={styles.userAvatar}>
+                                                    <Ionicons name="person-outline" size={18} color={COLORS.text} />
+                                                </View>
+
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={styles.userName} numberOfLines={1}>
+                                                        {u.name}
+                                                    </Text>
+                                                    <Text style={styles.userEmail} numberOfLines={1}>
+                                                        {u.email}
+                                                    </Text>
+                                                </View>
+
+                                                <View style={styles.pendingBadgeMini}>
+                                                    <Text style={styles.pendingBadgeMiniText}>{p}</Text>
+                                                </View>
+                                            </Pressable>
+                                        );
+                                    })}
+
+                                    {!pickerUsers.length ? (
+                                        <View style={styles.emptySmall}>
+                                            <Text style={styles.emptyText}>No hay resultados.</Text>
+                                        </View>
+                                    ) : null}
+                                </ScrollView>
+                            </View>
                         </View>
                     </View>
-                </View>
-            </Modal>
+                </Modal>
+            </AdminBackground>
         </SafeAreaView>
     );
 }
@@ -1068,6 +1268,7 @@ const COLORS = {
     rejected: "#F87171",
     pending: "#FBBF24",
     primary: "#2563EB",
+    info: "#60A5FA",
 };
 
 const styles = StyleSheet.create({
@@ -1083,7 +1284,9 @@ const styles = StyleSheet.create({
     },
     hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.5 },
     hSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800", marginTop: 4 },
+    hSubAlt: { color: COLORS.muted, fontSize: 11, fontWeight: "800", marginTop: 2, opacity: 0.9 },
     hStrong: { color: COLORS.text, fontWeight: "900" },
+
     headerBadge: {
         width: 42,
         height: 42,
@@ -1151,6 +1354,41 @@ const styles = StyleSheet.create({
     sectionTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900", maxWidth: "75%" },
     sectionSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
+    sectionSourceRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        marginTop: 4,
+        flexWrap: "wrap",
+    },
+    sourceBadgeManual: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 5,
+        height: 24,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.06)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+    sourceBadgeAuto: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 5,
+        height: 24,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        backgroundColor: "rgba(37,99,235,0.12)",
+        borderWidth: 1,
+        borderColor: "rgba(37,99,235,0.26)",
+    },
+    sourceBadgeText: {
+        color: COLORS.text,
+        fontSize: 10,
+        fontWeight: "900",
+    },
+
     sectionPills: { flexDirection: "row", gap: 6, alignItems: "center" },
     miniPill: {
         minWidth: 28,
@@ -1169,7 +1407,6 @@ const styles = StyleSheet.create({
     miniPillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.28)" },
     miniTextRejected: { color: "#FCA5A5" },
 
-    // (ya no se usa en lista principal, pero se mantiene por si lo usas en modals u otras vistas)
     card: {
         backgroundColor: COLORS.card,
         borderWidth: 1,
@@ -1246,7 +1483,12 @@ const styles = StyleSheet.create({
     },
     fabPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
 
-    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 12, justifyContent: "center" },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(0,0,0,0.55)",
+        padding: 12,
+        justifyContent: "center",
+    },
     modalWrap: { width: "100%" },
     modalCardBig: {
         backgroundColor: COLORS.card,
@@ -1256,8 +1498,15 @@ const styles = StyleSheet.create({
         padding: 14,
         maxHeight: "92%",
     },
-    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 },
+    modalHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 10,
+        gap: 10,
+    },
     modalTitle: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
+    modalSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
     modalClose: {
         width: 40,
         height: 40,
@@ -1278,6 +1527,7 @@ const styles = StyleSheet.create({
         padding: 14,
         maxHeight: "80%",
     },
+
     userRow: {
         flexDirection: "row",
         alignItems: "center",
@@ -1331,6 +1581,27 @@ const styles = StyleSheet.create({
     selectLabel: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
     selectValue: { color: COLORS.text, fontSize: 13, fontWeight: "900", marginTop: 2 },
 
+    infoBanner: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        padding: 10,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: "rgba(96,165,250,0.28)",
+        backgroundColor: "rgba(96,165,250,0.10)",
+    },
+    infoBannerText: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 12,
+        fontWeight: "800",
+    },
+    infoBannerStrong: {
+        color: COLORS.text,
+        fontWeight: "900",
+    },
+
     errorBox: {
         flexDirection: "row",
         alignItems: "center",
@@ -1375,6 +1646,23 @@ const styles = StyleSheet.create({
     primaryBtnText: { color: "#fff", fontWeight: "900", fontSize: 14 },
     btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     btnDisabled: { opacity: 0.55 },
+
+    deleteWideBtn: {
+        height: 50,
+        borderRadius: 16,
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(248,113,113,0.28)",
+        alignItems: "center",
+        justifyContent: "center",
+        flexDirection: "row",
+        gap: 10,
+    },
+    deleteWideBtnText: {
+        color: COLORS.rejected,
+        fontWeight: "900",
+        fontSize: 14,
+    },
 
     pendingBadge: {
         paddingHorizontal: 10,
