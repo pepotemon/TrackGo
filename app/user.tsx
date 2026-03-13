@@ -91,6 +91,16 @@ function normalizeBRPhoneToWa(phoneRaw: string) {
     return digits.startsWith("55") ? digits : `55${digits}`;
 }
 
+function buildWhatsAppPrefilledMessage() {
+    return [
+        "Olá! Sou o atendente responsável pela liberação do seu crédito no Escritório Crédito Comercial.",
+        "",
+        "Estou entrando em contato para dar continuidade ao seu atendimento e passar as orientações necessárias.",
+        "",
+        "Quando puder, me responda por aqui.",
+    ].join("\n");
+}
+
 function reasonLabel(reason?: RejectReason | null) {
     switch (reason) {
         case "clavo":
@@ -614,7 +624,10 @@ export default function UserHome() {
             Alert.alert("WhatsApp", "Este cliente no tiene teléfono.");
             return;
         }
-        const url = `https://wa.me/${waDigits}`;
+
+        const message = buildWhatsAppPrefilledMessage();
+        const url = `https://wa.me/${waDigits}?text=${encodeURIComponent(message)}`;
+
         try {
             await Linking.openURL(url);
         } catch {
