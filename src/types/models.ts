@@ -53,27 +53,39 @@ export type ClientSource = "manual" | "whatsapp_meta";
 export type ClientParseStatus = "empty" | "partial" | "ready";
 
 /**
- * ✅ Nuevo: etapa del bot
- * - collecting: todavía recolectando datos
- * - final: ya se mandó el mensaje final / cierre
+ * ✅ Etapa del bot / flujo
  */
-export type ClientBotStage = "collecting" | "final";
+export type ClientBotStage =
+    | "collecting"
+    | "final"
+    | "intro"
+    | "coverage_check"
+    | "missing:business"
+    | "missing:maps"
+    | "missing:business,maps"
+    | "final:how_it_works"
+    | "final:not_suitable"
+    | string;
 
 /**
- * ✅ Nuevo: calidad del negocio detectado
+ * ✅ Calidad del negocio detectado
  */
 export type ClientBusinessQuality = "unknown" | "clear" | "mixed" | "review";
 
 /**
- * ✅ Nuevo: flags automáticos detectados
+ * ✅ Flags automáticos detectados
  */
 export type ClientAutoFlag =
     | "retirement_profile"
     | "salary_profile"
-    | "app_driver_profile";
+    | "app_driver_profile"
+    | "normalized_business_label"
+    | "multi_signal_business"
+    | "mixed_business_signals"
+    | "fallback_business_detected";
 
 /**
- * ✅ Nuevo: tipo de perfil detectado
+ * ✅ Tipo de perfil detectado
  */
 export type ClientProfileType =
     | "business"
@@ -83,18 +95,26 @@ export type ClientProfileType =
     | "mixed_restricted";
 
 /**
- * ✅ Nuevo: calidad operativa del lead
+ * ✅ Calidad operativa del lead
  */
 export type ClientLeadQuality = "unknown" | "valid" | "review" | "not_suitable";
 
 /**
- * ✅ Nuevo: clasificación manual/operativa del admin
+ * ✅ Clasificación manual/operativa del admin
  */
 export type ClientVerificationStatus =
     | "verified"
     | "pending_review"
     | "incomplete"
     | "not_suitable";
+
+/**
+ * ✅ Nuevo: control del modo de conversación
+ * - bot: responde el bot
+ * - human: responde humano / takeover manual
+ * - hybrid: reservado para futuro
+ */
+export type ClientChatMode = "bot" | "human" | "hybrid";
 
 export type ClientDoc = {
     id: string;
@@ -103,7 +123,7 @@ export type ClientDoc = {
     business?: string;
 
     /**
-     * ✅ Nuevo: texto bruto / original del negocio detectado
+     * ✅ Texto bruto / original del negocio detectado
      * útil para auditoría o UI
      */
     businessRaw?: string;
@@ -113,7 +133,7 @@ export type ClientDoc = {
     address?: string;
 
     /**
-     * ✅ Nuevo: coordenadas opcionales
+     * ✅ Coordenadas opcionales
      * para mapa / proximidad / rutas
      */
     lat?: number | null;
@@ -121,7 +141,7 @@ export type ClientDoc = {
 
     assignedTo?: string;
     assignedAt?: number;
-    assignedDayKey?: string;
+    assignedDayKey?: number | string;
 
     /**
      * Estado actual REAL del cliente
@@ -188,12 +208,17 @@ export type ClientDoc = {
     lastInboundMessageAt?: number | null;
 
     /**
+     * ✅ Nuevo: última actividad outbound
+     */
+    lastOutboundAt?: number | null;
+
+    /**
      * ✅ Nuevo: id del mensaje más reciente
      */
     lastMessageId?: string | null;
 
     /**
-     * ✅ Nuevo: texto del último mensaje
+     * ✅ Nuevo: texto del último mensaje inbound
      */
     lastInboundText?: string | null;
 
@@ -212,7 +237,7 @@ export type ClientDoc = {
      */
     lastBotReplyAt?: number | null;
     lastBotReplyText?: string | null;
-    lastBotStage?: ClientBotStage | string | null;
+    lastBotStage?: ClientBotStage | null;
 
     /**
      * ✅ Nuevo: intro inicial enviada por el bot
@@ -244,6 +269,67 @@ export type ClientDoc = {
      */
     verificationStatus?: ClientVerificationStatus;
     verifiedAt?: number | null;
+    verifiedBy?: string | null;
+    manualReviewNote?: string | null;
+
+    /**
+     * ✅ Nuevo: takeover humano / modo chat
+     */
+    chatMode?: ClientChatMode;
+    botPausedAt?: number | null;
+    botPausedBy?: string | null;
+    humanTakeoverAt?: number | null;
+    humanTakeoverBy?: string | null;
+    resumeBotAt?: number | null;
+    resumeBotBy?: string | null;
+
+    /**
+     * ✅ Nuevo: última respuesta manual
+     */
+    lastManualReplyAt?: number | null;
+    lastManualReplyText?: string | null;
+    lastManualReplyBy?: string | null;
+};
+
+// ----------------------
+// CLIENT MESSAGES / CHAT
+// ----------------------
+export type ClientMessageDirection = "inbound" | "outbound";
+export type ClientMessageSenderType = "client" | "bot" | "admin";
+export type ClientMessageStatus = "received" | "sent" | "error";
+
+export type ClientMessageDoc = {
+    id: string;
+    clientId: string;
+
+    direction: ClientMessageDirection;
+    senderType: ClientMessageSenderType;
+
+    /**
+     * client  -> waId
+     * bot     -> "system_bot"
+     * admin   -> uid del admin
+     */
+    senderId?: string | null;
+
+    text: string;
+    messageType?: string | null;
+
+    whatsappMessageId?: string | null;
+    status?: ClientMessageStatus | string | null;
+
+    createdAt: number;
+
+    /**
+     * Meta opcional para UI / auditoría
+     */
+    source?: string | null;
+    stage?: string | null;
+    profileName?: string | null;
+    mapsUrl?: string | null;
+    locationCaptured?: boolean | null;
+    lat?: number | null;
+    lng?: number | null;
 };
 
 // ----------------------
@@ -315,7 +401,7 @@ export type IncomingLeadDoc = {
     parseStatus?: ClientParseStatus;
 
     /**
-     * ✅ Nuevo: calidad automática negocio/perfil
+     * ✅ Calidad automática negocio/perfil
      */
     businessQuality?: ClientBusinessQuality;
     businessFlags?: ClientAutoFlag[];
@@ -325,7 +411,7 @@ export type IncomingLeadDoc = {
     notSuitableReason?: string | null;
 
     /**
-     * ✅ Nuevo: si llegó ubicación de WhatsApp
+     * ✅ Si llegó ubicación de WhatsApp
      */
     mapsUrl?: string;
     lat?: number | null;
@@ -344,18 +430,18 @@ export type IncomingLeadDoc = {
     dayKey: string;
 
     /**
-     * ✅ Nuevo: control de mensajes ignorados
+     * ✅ Control de mensajes ignorados
      */
     ignored?: boolean;
     ignoreReason?: string | null;
 
     /**
-     * ✅ Nuevo: flags del flujo
+     * ✅ Flags del flujo
      */
     greetingDetected?: boolean;
 
     /**
-     * ✅ Nuevo: estado de la respuesta automática del bot
+     * ✅ Estado de la respuesta automática del bot
      */
     botReplyStatus?: "sent" | "skipped" | "error";
     botReplyReason?: string | null;
@@ -364,6 +450,7 @@ export type IncomingLeadDoc = {
     botReplyAt?: number;
     botReplyMessageId?: string | null;
     botReplyStage?: string | null;
+    botReplyPlannedDelayMs?: number | null;
 };
 
 // ----------------------

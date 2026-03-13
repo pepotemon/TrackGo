@@ -1,7 +1,9 @@
 // src/screens/admin/AdminHomeScreen.tsx
-// ✅ FIX: el contador de rejected/visited (hoy y semana) ya NO se infla con:
-// - eventos de clientes ELIMINADOS
-// - eventos viejos de clientes REASIGNADOS / RESTAURADOS (porque ya no coinciden con el status actual del client)
+// ✅ FIX:
+// - verified se cuenta como antes (todos los Meta leads verificados)
+// - pending_review / incomplete / not_suitable solo cuentan Meta leads NO asignados
+// - así queda sincronizado con la pantalla de leads sin romper el total de verificados
+// - también se cambió el icono de "No aptos" para no confundirlo con rechazados
 
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -101,6 +103,11 @@ function isMetaLead(c: ClientDoc) {
     return source === "whatsapp_meta";
 }
 
+function isMetaUnassignedLead(c: ClientDoc) {
+    const assigned = String((c as any)?.assignedTo ?? "").trim();
+    return isMetaLead(c) && assigned.length === 0;
+}
+
 function getDerivedLeadQueueStatus(c: ClientDoc): "verified" | "pending_review" | "incomplete" | "not_suitable" {
     const verificationStatus = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
     const leadQuality = String((c as any)?.leadQuality ?? "").trim().toLowerCase();
@@ -117,6 +124,11 @@ function getDerivedLeadQueueStatus(c: ClientDoc): "verified" | "pending_review" 
     return "incomplete";
 }
 
+/**
+ * ✅ Lógica correcta:
+ * - verified: TODOS los Meta leads verificados
+ * - pending_review / incomplete / not_suitable: solo Meta NO asignados
+ */
 function getLeadQueueStats(clients: ClientDoc[]) {
     let verified = 0;
     let incomplete = 0;
@@ -127,8 +139,15 @@ function getLeadQueueStats(clients: ClientDoc[]) {
         if (!isMetaLead(c)) continue;
 
         const status = getDerivedLeadQueueStatus(c);
-        if (status === "verified") verified += 1;
-        else if (status === "pending_review") pendingReview += 1;
+
+        if (status === "verified") {
+            verified += 1;
+            continue;
+        }
+
+        if (!isMetaUnassignedLead(c)) continue;
+
+        if (status === "pending_review") pendingReview += 1;
         else if (status === "not_suitable") notSuitable += 1;
         else incomplete += 1;
     }
@@ -488,7 +507,7 @@ export default function AdminHomeScreen() {
                                 <View style={styles.leadsStatsRow}>
                                     <TinyStat icon="help-circle-outline" color={COLORS.info} value={leadQueueStats.pendingReview} label="Revisión" />
                                     <TinyStat icon="document-text-outline" color={COLORS.warn} value={leadQueueStats.incomplete} label="Incompletos" />
-                                    <TinyStat icon="close-circle-outline" color={COLORS.bad} value={leadQueueStats.notSuitable} label="No aptos" />
+                                    <TinyStat icon="ban-outline" color={COLORS.bad} value={leadQueueStats.notSuitable} label="No aptos" />
                                     <TinyStat icon="checkmark-done-outline" color={COLORS.ok} value={leadQueueStats.verified} label="Verificados" />
                                 </View>
 

@@ -11,6 +11,7 @@ const {
     buildGoogleMapsUrlFromCoords,
     extractGoogleMapsUrlFromText,
 } = require("../utils/geo");
+const { appendClientMessage } = require("./manualReply");
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -145,6 +146,25 @@ function createProcessIncomingWhatsappMessage({
                     messageId,
                     contactWaId: waId,
                     locationData,
+                });
+
+                await appendClientMessage({
+                    clientId: result.clientId,
+                    direction: "inbound",
+                    senderType: "client",
+                    senderId: waId,
+                    text: textBody,
+                    messageType: msgType,
+                    whatsappMessageId: messageId,
+                    status: "received",
+                    meta: {
+                        source: "whatsapp_meta",
+                        profileName: profileName || "",
+                        locationCaptured: !!locationData,
+                        lat: locationData?.lat ?? null,
+                        lng: locationData?.lng ?? null,
+                        mapsUrl: locationData?.mapsUrl || extractGoogleMapsUrlFromText(textBody) || "",
+                    },
                 });
 
                 await inboxRef.set({

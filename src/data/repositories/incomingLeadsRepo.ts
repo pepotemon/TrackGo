@@ -1,4 +1,5 @@
 import {
+    collection,
     limit,
     onSnapshot,
     orderBy,
@@ -7,7 +8,27 @@ import {
     type Unsubscribe,
 } from "firebase/firestore";
 import type { IncomingLeadDoc } from "../../types/models";
-import { col } from "../firestore";
+import { col, db } from "../firestore";
+
+export type ClientMessageDoc = {
+    id: string;
+    clientId: string;
+    direction: "inbound" | "outbound";
+    senderType: "client" | "bot" | "admin";
+    senderId?: string | null;
+    text: string;
+    messageType?: string | null;
+    whatsappMessageId?: string | null;
+    status?: "received" | "sent" | "error" | string | null;
+    createdAt: any;
+    source?: string | null;
+    stage?: string | null;
+    profileName?: string | null;
+    mapsUrl?: string | null;
+    locationCaptured?: boolean | null;
+    lat?: number | null;
+    lng?: number | null;
+};
 
 function toMs(v: any): number {
     if (!v) return 0;
@@ -21,6 +42,10 @@ function toMs(v: any): number {
     return 0;
 }
 
+/**
+ * Conversación legacy basada en incomingLeads.
+ * La mantengo para no romper pantallas/modales viejos.
+ */
 export function subscribeIncomingLeadConversation(
     clientId: string,
     callback: (items: IncomingLeadDoc[]) => void
@@ -55,6 +80,51 @@ export function subscribeIncomingLeadConversation(
         (err) => {
             console.log(
                 "[subscribeIncomingLeadConversation] onSnapshot error:",
+                err?.code,
+                err?.message
+            );
+            callback([]);
+        }
+    );
+}
+
+/**
+ * Nueva conversación real basada en clients/{clientId}/messages.
+ * Esta es la que deberías usar en la futura pantalla de chat.
+ */
+export function subscribeClientMessages(
+    clientId: string,
+    callback: (items: ClientMessageDoc[]) => void
+): Unsubscribe {
+    const cleanClientId = String(clientId ?? "").trim();
+
+    if (!cleanClientId) {
+        callback([]);
+        return () => { };
+    }
+
+    const messagesCol = collection(db, "clients", cleanClientId, "messages");
+
+    const q = query(
+        messagesCol,
+        orderBy("createdAt", "asc"),
+        limit(300)
+    );
+
+    return onSnapshot(
+        q,
+        (snap) => {
+            const list = snap.docs.map((d) => ({
+                id: d.id,
+                ...(d.data() as Omit<ClientMessageDoc, "id">),
+            })) as ClientMessageDoc[];
+
+            list.sort((a, b) => toMs(a.createdAt) - toMs(b.createdAt));
+            callback(list);
+        },
+        (err) => {
+            console.log(
+                "[subscribeClientMessages] onSnapshot error:",
                 err?.code,
                 err?.message
             );

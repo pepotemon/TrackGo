@@ -1,19 +1,19 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
-    KeyboardAvoidingView,
+    Dimensions,
     Linking,
-    Modal,
-    Platform,
     Pressable,
     ScrollView,
     StatusBar,
     StyleSheet,
     Text,
     TextInput,
+    UIManager,
     View,
+    findNodeHandle,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AdminBackground from "../../components/admin/AdminBackground";
@@ -23,9 +23,8 @@ import {
     subscribeAdminClients,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
-import { subscribeIncomingLeadConversation } from "../../data/repositories/incomingLeadsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, IncomingLeadDoc, UserDoc } from "../../types/models";
+import type { ClientDoc, UserDoc } from "../../types/models";
 
 function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
@@ -87,21 +86,18 @@ type VerificationStatus =
     | "incomplete"
     | "not_suitable";
 
-type ConversationRow =
-    | {
-        id: string;
-        kind: "customer";
-        text: string;
-        at: number;
-        meta?: string;
-    }
-    | {
-        id: string;
-        kind: "bot";
-        text: string;
-        at: number;
-        meta?: string;
-    };
+type MenuAnchor = {
+    id: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    openUp: boolean;
+} | null;
+
+const MENU_WIDTH = 186;
+const MENU_HEIGHT = 258;
+const MENU_GAP = 8;
 
 function looksLikeMapsUrl(url: string) {
     const u = (url ?? "").trim().toLowerCase();
@@ -151,25 +147,6 @@ function formatDateLabel(ms?: number) {
     return `${day} ${month} ${year}`;
 }
 
-function formatDateTimeLabel(ms?: number) {
-    if (!ms || !Number.isFinite(ms)) return "—";
-
-    const d = new Date(ms);
-    const day = String(d.getDate()).padStart(2, "0");
-    const months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-    const month = months[d.getMonth()];
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-
-    return `${day} ${month} · ${hh}:${mm}`;
-}
-
-function getClientSourceLabel(c: ClientDoc) {
-    const source = String((c as any)?.source ?? "manual").trim().toLowerCase();
-    if (source === "whatsapp_meta") return "Meta / WhatsApp";
-    return "Manual";
-}
-
 function getClientParseStatus(c: ClientDoc): "ready" | "partial" | "empty" {
     const raw = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
     if (raw === "ready") return "ready";
@@ -182,16 +159,25 @@ function hasUsefulBusiness(c: ClientDoc) {
 }
 
 function hasUsefulMaps(c: ClientDoc) {
-    return !!String(c.mapsUrl ?? "").trim();
+    const mapsUrl = !!String(c.mapsUrl ?? "").trim();
+    const lat = safeNumber((c as any)?.lat);
+    const lng = safeNumber((c as any)?.lng);
+    const currentLeadMapsConfirmedAt = safeNumber((c as any)?.currentLeadMapsConfirmedAt);
+
+    const hasStoredMaps = mapsUrl || (lat != null && lng != null);
+    const hasConfirmedCurrentLeadMaps = currentLeadMapsConfirmedAt != null && currentLeadMapsConfirmedAt > 0;
+
+    return hasStoredMaps && hasConfirmedCurrentLeadMaps;
 }
 
 function getMissingFields(c: ClientDoc) {
-    const missing: string[] = [];
+    const hasBusiness = hasUsefulBusiness(c);
+    const hasMaps = hasUsefulMaps(c);
 
-    if (!hasUsefulBusiness(c)) missing.push("negocio");
-    if (!hasUsefulMaps(c)) missing.push("maps");
-
-    return missing;
+    if (!hasBusiness && !hasMaps) return ["negocio", "maps"];
+    if (!hasBusiness) return ["negocio"];
+    if (!hasMaps) return ["maps"];
+    return [];
 }
 
 function getDerivedVerificationStatus(c: ClientDoc): VerificationStatus {
@@ -250,58 +236,19 @@ function getQuickStatusText(c: ClientDoc) {
 
     if (status === "incomplete") {
         const missing = getMissingFields(c);
-        if (!missing.length) return "Faltan datos por revisar";
-        if (missing.length === 2) return "Faltan negocio y Maps";
-        return `Falta ${missing[0]}`;
+        if (missing.length === 2) return "Falta negocio y maps";
+        if (missing.length === 1) return `Falta ${missing[0]}`;
+        return "Faltan datos por revisar";
     }
 
     if (status === "verified") return "Lead validado";
     return "Listo para revisión";
 }
 
-function buildConversationRows(items: IncomingLeadDoc[]): ConversationRow[] {
-    const rows: ConversationRow[] = [];
-
-    for (const item of items) {
-        const inboundText = String(item?.rawText ?? "").trim();
-        const inboundAt = toMs(item?.createdAt);
-        const botText = String(item?.botReplyText ?? "").trim();
-        const botAt = toMs(item?.botReplyAt);
-        const botStage = String(item?.botReplyStage ?? "").trim();
-        const botStatus = String(item?.botReplyStatus ?? "").trim();
-        const messageType = String(item?.messageType ?? "").trim();
-
-        if (inboundText) {
-            rows.push({
-                id: `${item.id}_customer`,
-                kind: "customer",
-                text: inboundText,
-                at: inboundAt,
-                meta: messageType ? `Cliente · ${messageType}` : "Cliente",
-            });
-        }
-
-        if (botText) {
-            rows.push({
-                id: `${item.id}_bot`,
-                kind: "bot",
-                text: botText,
-                at: botAt || inboundAt,
-                meta: botStage
-                    ? `Bot · ${botStage}${botStatus ? ` · ${botStatus}` : ""}`
-                    : botStatus
-                        ? `Bot · ${botStatus}`
-                        : "Bot",
-            });
-        }
-    }
-
-    return rows.sort((a, b) => a.at - b.at);
-}
-
 export default function AdminLeadQueueScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
+    const menuButtonRefs = useRef<Record<string, View | null>>({});
 
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
@@ -310,6 +257,8 @@ export default function AdminLeadQueueScreen() {
     const [q, setQ] = useState("");
     const [filter, setFilter] = useState<MetaFilterKey>("pending_review");
     const [busyId, setBusyId] = useState<string | null>(null);
+    const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+    const [menuAnchor, setMenuAnchor] = useState<MenuAnchor>(null);
 
     const [editOpen, setEditOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -326,12 +275,6 @@ export default function AdminLeadQueueScreen() {
     const [userPickerOpen, setUserPickerOpen] = useState(false);
     const [pickerQuery, setPickerQuery] = useState("");
     const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(null);
-
-    const [conversationOpen, setConversationOpen] = useState(false);
-    const [conversationClientId, setConversationClientId] = useState<string | null>(null);
-    const [conversationClientName, setConversationClientName] = useState("");
-    const [conversationItems, setConversationItems] = useState<IncomingLeadDoc[]>([]);
-    const [conversationLoading, setConversationLoading] = useState(false);
 
     useEffect(() => {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
@@ -354,24 +297,51 @@ export default function AdminLeadQueueScreen() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    useEffect(() => {
-        if (!conversationOpen || !conversationClientId) {
-            setConversationItems([]);
-            setConversationLoading(false);
+    const closeMenu = () => {
+        setMenuOpenId(null);
+        setMenuAnchor(null);
+    };
+
+    const openSmartMenu = (clientId: string) => {
+        const ref = menuButtonRefs.current[clientId];
+        const node = ref ? findNodeHandle(ref) : null;
+
+        if (!ref || !node) {
+            setMenuOpenId((prev) => (prev === clientId ? null : clientId));
             return;
         }
 
-        setConversationLoading(true);
+        UIManager.measureInWindow(
+            node,
+            (x: number, y: number, width: number, height: number) => {
+                const windowHeight = Dimensions.get("window").height;
+                const safeTop = insets.top + 12;
+                const safeBottom = insets.bottom + 12;
 
-        const unsub = subscribeIncomingLeadConversation(conversationClientId, (items) => {
-            setConversationItems(items ?? []);
-            setConversationLoading(false);
-        });
+                const spaceBelow = windowHeight - (y + height) - safeBottom;
+                const spaceAbove = y - safeTop;
+                const openUp = spaceBelow < MENU_HEIGHT && spaceAbove > spaceBelow;
 
-        return () => {
-            unsub?.();
-        };
-    }, [conversationOpen, conversationClientId]);
+                setMenuOpenId((prev) => {
+                    const next = prev === clientId ? null : clientId;
+                    if (!next) {
+                        setMenuAnchor(null);
+                        return null;
+                    }
+
+                    setMenuAnchor({
+                        id: clientId,
+                        x,
+                        y,
+                        width,
+                        height,
+                        openUp,
+                    });
+                    return clientId;
+                });
+            }
+        );
+    };
 
     const metaUnassignedClients = useMemo(
         () => clients.filter(isMetaUnassignedLead),
@@ -427,10 +397,10 @@ export default function AdminLeadQueueScreen() {
                         ${safeText(c.address)}
                         ${safeText(c.mapsUrl)}
                         ${safeText(c.phone)}
-                        ${safeText(getClientSourceLabel(c))}
                         ${safeText(getVerificationStatusLabel(verification))}
                         ${safeText(getNotSuitableReason(c))}
                         ${safeText(getQuickStatusText(c))}
+                        ${safeText(String((c as any)?.lastInboundText ?? ""))}
                     `;
                     return hay.includes(qtText);
                 }
@@ -447,8 +417,6 @@ export default function AdminLeadQueueScreen() {
     const visibleTotal = useMemo(() => {
         return totals.pendingReview + totals.incomplete + totals.notSuitable;
     }, [totals]);
-
-    const conversationRows = useMemo(() => buildConversationRows(conversationItems), [conversationItems]);
 
     const phoneExists = (phoneDigits: string, excludeId?: string | null) => {
         const p = normalizePhone(phoneDigits);
@@ -486,27 +454,23 @@ export default function AdminLeadQueueScreen() {
         }
     };
 
-    const openConversation = (client: ClientDoc) => {
-        setConversationClientId(client.id);
-        setConversationClientName(
+    const openChatScreen = (client: ClientDoc) => {
+        const clientName =
             String((client as any)?.name ?? "").trim() ||
             String((client as any)?.phone ?? "").trim() ||
-            "Lead"
-        );
-        setConversationItems([]);
-        setConversationLoading(true);
-        setConversationOpen(true);
-    };
+            "Lead";
 
-    const closeConversation = () => {
-        setConversationOpen(false);
-        setConversationClientId(null);
-        setConversationClientName("");
-        setConversationItems([]);
-        setConversationLoading(false);
+        router.push({
+            pathname: "/admin/lead-chat" as any,
+            params: {
+                clientId: client.id,
+                clientName,
+            },
+        });
     };
 
     const confirmDelete = (id: string) => {
+        closeMenu();
         Alert.alert("Eliminar lead", "¿Seguro que quieres eliminar este lead?", [
             { text: "Cancelar", style: "cancel" },
             {
@@ -524,6 +488,7 @@ export default function AdminLeadQueueScreen() {
     };
 
     const openAssignPicker = async (clientId: string) => {
+        closeMenu();
         if (!users.length && !usersLoading) await reloadUsers();
         setPickerTargetClientId(clientId);
         setPickerQuery("");
@@ -574,6 +539,7 @@ export default function AdminLeadQueueScreen() {
     ) => {
         try {
             setBusyId(clientId);
+            closeMenu();
 
             const patch: any = {
                 verificationStatus: nextStatus,
@@ -604,6 +570,8 @@ export default function AdminLeadQueueScreen() {
         nextStatus: Exclude<VerificationStatus, "verified">,
         reason?: string
     ) => {
+        closeMenu();
+
         const title =
             nextStatus === "pending_review"
                 ? "Marcar por revisar"
@@ -630,6 +598,7 @@ export default function AdminLeadQueueScreen() {
     };
 
     const startEdit = (c: ClientDoc) => {
+        closeMenu();
         setEditingId(c.id);
         setEName(((c as any).name ?? "").toString());
         setEBusiness(((c as any).business ?? "").toString());
@@ -741,593 +710,570 @@ export default function AdminLeadQueueScreen() {
         });
     }, [users, pickerQuery]);
 
-    const modalBottomPad = Math.max(10, insets.bottom + 10);
-
-    const FilterPill = ({
-        k,
-        label,
+    const SummaryFilter = ({
+        icon,
         value,
+        label,
+        color,
+        bgStyle,
+        textStyle,
+        k,
     }: {
-        k: MetaFilterKey;
-        label: string;
+        icon: any;
         value: number;
+        label: string;
+        color: string;
+        bgStyle: any;
+        textStyle: any;
+        k: MetaFilterKey;
     }) => {
         const active = filter === k;
         return (
             <Pressable
-                onPress={() => setFilter(k)}
+                onPress={() => {
+                    closeMenu();
+                    setFilter(k);
+                }}
                 style={({ pressed }) => [
-                    styles.filterPill,
-                    active && styles.filterPillActive,
+                    styles.summaryBadge,
+                    bgStyle,
+                    active && styles.summaryBadgeActive,
                     pressed && styles.pressed,
                 ]}
             >
-                <Text style={[styles.filterText, active && styles.filterTextActive]}>{label}</Text>
-                <View style={[styles.filterBadge, active && styles.filterBadgeActive]}>
-                    <Text style={[styles.filterBadgeText, active && styles.filterBadgeTextActive]}>{value}</Text>
-                </View>
+                <Ionicons name={icon} size={12} color={color} />
+                <Text style={[styles.summaryBadgeText, textStyle]}>{value}</Text>
+                <Text style={[styles.summaryBadgeLabel, active && styles.summaryBadgeLabelActive]}>
+                    {label}
+                </Text>
             </Pressable>
         );
     };
+
+    const menuTop = useMemo(() => {
+        if (!menuAnchor) return 0;
+        if (menuAnchor.openUp) {
+            return Math.max(insets.top + 8, menuAnchor.y - MENU_HEIGHT - MENU_GAP);
+        }
+        const maxTop = Dimensions.get("window").height - insets.bottom - MENU_HEIGHT - 8;
+        return Math.min(maxTop, menuAnchor.y + menuAnchor.height + MENU_GAP);
+    }, [menuAnchor, insets.top, insets.bottom]);
+
+    const menuLeft = useMemo(() => {
+        if (!menuAnchor) return 0;
+        const windowWidth = Dimensions.get("window").width;
+        const preferred = menuAnchor.x + menuAnchor.width - MENU_WIDTH;
+        return Math.max(10, Math.min(preferred, windowWidth - MENU_WIDTH - 10));
+    }, [menuAnchor]);
 
     return (
         <SafeAreaView style={styles.safe} edges={["bottom"]}>
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
             <AdminBackground>
-                <View style={styles.header}>
-                    <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}>
-                        <Ionicons name="chevron-back" size={18} color={COLORS.text} />
-                    </Pressable>
-
-                    <View style={{ flex: 1, gap: 2 }}>
-                        <Text style={styles.hTitle} numberOfLines={1}>
-                            Leads Meta
-                        </Text>
-                        <Text style={styles.hSub} numberOfLines={1}>
-                            Cola activa · T <Text style={styles.hStrong}>{visibleTotal}</Text>
-                        </Text>
-                    </View>
-
-                    <Pressable
-                        onPress={reloadUsers}
-                        style={({ pressed }) => [
-                            styles.headerBadge,
-                            pressed && styles.pressed,
-                            usersLoading && styles.headerBadgeDisabled,
-                        ]}
-                        disabled={usersLoading}
-                        accessibilityLabel="Refrescar usuarios"
-                    >
-                        <Ionicons name={usersLoading ? "sync" : "people-outline"} size={18} color={COLORS.text} />
-                    </Pressable>
-                </View>
-
-                <View style={styles.summaryRow}>
-                    <View style={[styles.summaryBadge, styles.summaryBadgeBlue]}>
-                        <Ionicons name="shield-checkmark-outline" size={13} color="#93C5FD" />
-                        <Text style={[styles.summaryBadgeText, styles.summaryBadgeTextBlue]}>
-                            {totals.pendingReview}
-                        </Text>
-                    </View>
-
-                    <View style={[styles.summaryBadge, styles.summaryBadgeYellow]}>
-                        <Ionicons name="alert-circle-outline" size={13} color="#FDE68A" />
-                        <Text style={[styles.summaryBadgeText, styles.summaryBadgeTextYellow]}>
-                            {totals.incomplete}
-                        </Text>
-                    </View>
-
-                    <View style={[styles.summaryBadge, styles.summaryBadgeRed]}>
-                        <Ionicons name="close-circle-outline" size={13} color="#FCA5A5" />
-                        <Text style={[styles.summaryBadgeText, styles.summaryBadgeTextRed]}>
-                            {totals.notSuitable}
-                        </Text>
-                    </View>
-                </View>
-
-                <View style={styles.searchWrap}>
-                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                    <TextInput
-                        value={q}
-                        onChangeText={setQ}
-                        placeholder="Buscar lead"
-                        placeholderTextColor={COLORS.muted}
-                        style={styles.searchInput}
-                    />
-                    {!!q ? (
-                        <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
-                            <Ionicons name="close" size={18} color={COLORS.text} />
-                        </Pressable>
-                    ) : null}
-                </View>
-
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersRow}>
-                    <FilterPill k="pending_review" label="Por revisar" value={totals.pendingReview} />
-                    <FilterPill k="incomplete" label="Incompletos" value={totals.incomplete} />
-                    <FilterPill k="not_suitable" label="No aptos" value={totals.notSuitable} />
-                    <FilterPill k="all" label="Todos" value={visibleTotal} />
-                </ScrollView>
-
-                <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-                    {filteredClients.map((c) => {
-                        const name = ((c as any).name ?? "").trim();
-                        const subtitle = getPrimarySubtitle(c);
-                        const verificationStatus = getDerivedVerificationStatus(c);
-                        const verificationLabel = getVerificationStatusLabel(verificationStatus);
-                        const sourceLabel = getClientSourceLabel(c);
-                        const createdAt = toMs((c as any)?.createdAt);
-                        const lastInboundAt = toMs((c as any)?.lastInboundMessageAt);
-                        const isBusy = busyId === c.id;
-                        const lastInboundText = String((c as any)?.lastInboundText ?? "").trim();
-                        const notSuitableReason = getNotSuitableReason(c);
-                        const quickStatus = getQuickStatusText(c);
-
-                        return (
-                            <View key={c.id} style={styles.card}>
-                                <View style={styles.cardTop}>
-                                    <View style={{ flex: 1, gap: 6 }}>
-                                        <Text style={styles.phone} numberOfLines={1}>
-                                            {c.phone}
-                                        </Text>
-
-                                        {!!name ? (
-                                            <Text style={styles.metaPrimary} numberOfLines={1}>
-                                                {name}
-                                            </Text>
-                                        ) : null}
-
-                                        {!!subtitle ? (
-                                            <Text style={styles.meta} numberOfLines={1}>
-                                                {subtitle}
-                                            </Text>
-                                        ) : null}
-
-                                        <View style={styles.infoBadgeRow}>
-                                            <View style={[styles.infoBadge, styles.infoBadgeBlue]}>
-                                                <Ionicons name="logo-whatsapp" size={12} color={COLORS.text} />
-                                                <Text style={styles.infoBadgeText}>{sourceLabel}</Text>
-                                            </View>
-
-                                            <View
-                                                style={[
-                                                    styles.infoBadge,
-                                                    verificationStatus === "pending_review"
-                                                        ? styles.infoBadgeBlue
-                                                        : verificationStatus === "not_suitable"
-                                                            ? styles.infoBadgeRed
-                                                            : styles.infoBadgeYellow,
-                                                ]}
-                                            >
-                                                <Ionicons
-                                                    name={
-                                                        verificationStatus === "pending_review"
-                                                            ? "shield-checkmark-outline"
-                                                            : verificationStatus === "not_suitable"
-                                                                ? "close-circle-outline"
-                                                                : "alert-circle-outline"
-                                                    }
-                                                    size={12}
-                                                    color={COLORS.text}
-                                                />
-                                                <Text style={styles.infoBadgeText}>{verificationLabel}</Text>
-                                            </View>
-                                        </View>
-
-                                        <View
-                                            style={[
-                                                styles.statusBox,
-                                                verificationStatus === "pending_review"
-                                                    ? styles.statusBoxBlue
-                                                    : verificationStatus === "not_suitable"
-                                                        ? styles.statusBoxRed
-                                                        : styles.statusBoxYellow,
-                                            ]}
-                                        >
-                                            <Ionicons
-                                                name={
-                                                    verificationStatus === "pending_review"
-                                                        ? "search-outline"
-                                                        : verificationStatus === "not_suitable"
-                                                            ? "ban-outline"
-                                                            : "warning-outline"
-                                                }
-                                                size={15}
-                                                color={
-                                                    verificationStatus === "pending_review"
-                                                        ? "#93C5FD"
-                                                        : verificationStatus === "not_suitable"
-                                                            ? "#FCA5A5"
-                                                            : "#FDE68A"
-                                                }
-                                            />
-                                            <Text
-                                                style={[
-                                                    styles.statusBoxText,
-                                                    verificationStatus === "pending_review"
-                                                        ? styles.statusBoxTextBlue
-                                                        : verificationStatus === "not_suitable"
-                                                            ? styles.statusBoxTextRed
-                                                            : styles.statusBoxTextYellow,
-                                                ]}
-                                            >
-                                                {quickStatus}
-                                            </Text>
-                                        </View>
-
-                                        {verificationStatus === "not_suitable" && !!notSuitableReason ? (
-                                            <View style={styles.reasonRow}>
-                                                <Ionicons name="information-circle-outline" size={14} color={COLORS.muted} />
-                                                <Text style={styles.reasonText}>{notSuitableReason}</Text>
-                                            </View>
-                                        ) : null}
-                                    </View>
-                                </View>
-
-                                {!!c.address ? (
-                                    <View style={styles.infoRow}>
-                                        <Ionicons name="location-outline" size={16} color={COLORS.muted} />
-                                        <Text style={styles.infoText} numberOfLines={2}>
-                                            {c.address}
-                                        </Text>
-                                    </View>
-                                ) : null}
-
-                                <View style={styles.assignedRow}>
-                                    <Ionicons name="time-outline" size={16} color={COLORS.muted} />
-                                    <Text style={styles.assignedText} numberOfLines={1}>
-                                        Creado: {formatDateLabel(createdAt)} · Último: {formatDateLabel(lastInboundAt || createdAt)}
-                                    </Text>
-                                </View>
-
-                                {lastInboundText ? (
-                                    <Pressable
-                                        onPress={() => openConversation(c)}
-                                        style={({ pressed }) => [
-                                            styles.inboundBox,
-                                            pressed && styles.pressed,
-                                        ]}
-                                    >
-                                        <View style={styles.inboundHeader}>
-                                            <Ionicons name="chatbubble-ellipses-outline" size={14} color={COLORS.muted} />
-                                            <Text style={styles.inboundTitle}>Último mensaje recibido</Text>
-                                            <View style={styles.inboundOpenPill}>
-                                                <Text style={styles.inboundOpenPillText}>Abrir</Text>
-                                            </View>
-                                        </View>
-
-                                        <Text style={styles.inboundText} numberOfLines={3}>
-                                            {lastInboundText}
-                                        </Text>
-                                    </Pressable>
-                                ) : null}
-
-                                <View style={styles.quickRow}>
-                                    <Pressable
-                                        onPress={() => confirmVerificationStatusChange(c.id, "pending_review")}
-                                        disabled={isBusy}
-                                        style={({ pressed }) => [
-                                            styles.quickBtn,
-                                            styles.quickBtnBlue,
-                                            pressed && styles.pressed,
-                                            isBusy && styles.btnDisabled,
-                                        ]}
-                                    >
-                                        <Ionicons name="shield-checkmark-outline" size={16} color="#93C5FD" />
-                                        <Text style={[styles.quickBtnText, styles.quickBtnTextBlue]}>Revisar</Text>
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={() => confirmVerificationStatusChange(c.id, "incomplete")}
-                                        disabled={isBusy}
-                                        style={({ pressed }) => [
-                                            styles.quickBtn,
-                                            styles.quickBtnYellow,
-                                            pressed && styles.pressed,
-                                            isBusy && styles.btnDisabled,
-                                        ]}
-                                    >
-                                        <Ionicons name="alert-circle-outline" size={16} color="#FDE68A" />
-                                        <Text style={[styles.quickBtnText, styles.quickBtnTextYellow]}>Incompleto</Text>
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={() =>
-                                            confirmVerificationStatusChange(
-                                                c.id,
-                                                "not_suitable",
-                                                getNotSuitableReason(c) || "Perfil no apto"
-                                            )
-                                        }
-                                        disabled={isBusy}
-                                        style={({ pressed }) => [
-                                            styles.quickBtn,
-                                            styles.quickBtnRed,
-                                            pressed && styles.pressed,
-                                            isBusy && styles.btnDisabled,
-                                        ]}
-                                    >
-                                        <Ionicons name="close-outline" size={16} color="#FCA5A5" />
-                                        <Text style={[styles.quickBtnText, styles.quickBtnTextRed]}>No apto</Text>
-                                    </Pressable>
-                                </View>
-
-                                <View style={styles.actionsRow}>
-                                    <Pressable onPress={() => openMaps(c.mapsUrl)} style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
-                                        <Ionicons name="map-outline" size={18} color={COLORS.text} />
-                                    </Pressable>
-
-                                    <Pressable onPress={() => openWsp((c as any).waId || c.phone)} style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
-                                        <Ionicons name="logo-whatsapp" size={18} color={COLORS.text} />
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={() => openAssignPicker(c.id)}
-                                        disabled={isBusy}
-                                        style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
-                                    >
-                                        <Ionicons name="person-add-outline" size={18} color={COLORS.text} />
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={() => startEdit(c)}
-                                        disabled={isBusy}
-                                        style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
-                                    >
-                                        <Ionicons name="create-outline" size={18} color={COLORS.text} />
-                                    </Pressable>
-
-                                    <Pressable
-                                        onPress={() => confirmDelete(c.id)}
-                                        disabled={isBusy}
-                                        style={({ pressed }) => [styles.iconBtn, styles.iconBtnDanger, pressed && styles.iconBtnPressed, isBusy && styles.iconBtnDisabled]}
-                                    >
-                                        <Ionicons name="trash-outline" size={18} color={COLORS.rejected} />
-                                    </Pressable>
-                                </View>
-
-                                {isBusy ? <Text style={styles.busyText}>Procesando…</Text> : null}
-                            </View>
-                        );
-                    })}
-
-                    {!filteredClients.length ? (
-                        <View style={styles.empty}>
-                            <Ionicons name="file-tray-outline" size={24} color={COLORS.muted} />
-                            <Text style={styles.emptyText}>
-                                {q.trim() ? "No hay resultados." : "No hay leads Meta pendientes en la cola."}
+                <View style={styles.screenOverlay}>
+                    <View style={styles.header}>
+                        <View style={{ flex: 1, gap: 2 }}>
+                            <Text style={styles.hTitle} numberOfLines={1}>
+                                Leads Meta
+                            </Text>
+                            <Text style={styles.hSub} numberOfLines={1}>
+                                Cola activa · T <Text style={styles.hStrong}>{visibleTotal}</Text>
                             </Text>
                         </View>
-                    ) : null}
-                </ScrollView>
 
-                <Modal visible={editOpen} transparent animationType="fade" onRequestClose={cancelEdit}>
-                    <View style={styles.modalOverlay}>
-                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                            <View style={[styles.modalCardBig, { paddingBottom: 14 + modalBottomPad }]}>
-                                <View style={styles.modalHeader}>
-                                    <Text style={styles.modalTitle}>Editar lead Meta</Text>
-                                    <Pressable onPress={cancelEdit} style={styles.modalClose}>
-                                        <Ionicons name="close" size={18} color={COLORS.text} />
-                                    </Pressable>
-                                </View>
-                                <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                    <View style={styles.grid2}>
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Nombre</Text>
-                                            <TextInput value={eName} onChangeText={setEName} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                        <Pressable
+                            onPress={reloadUsers}
+                            style={({ pressed }) => [
+                                styles.headerBadge,
+                                pressed && styles.pressed,
+                                usersLoading && styles.headerBadgeDisabled,
+                            ]}
+                            disabled={usersLoading}
+                            accessibilityLabel="Refrescar usuarios"
+                        >
+                            <Ionicons name={usersLoading ? "sync" : "people-outline"} size={17} color={COLORS.text} />
+                        </Pressable>
+                    </View>
+
+                    <View style={styles.summaryRow}>
+                        <SummaryFilter
+                            k="pending_review"
+                            icon="shield-checkmark-outline"
+                            value={totals.pendingReview}
+                            label="Revisar"
+                            color="#93C5FD"
+                            bgStyle={styles.summaryBadgeBlue}
+                            textStyle={styles.summaryBadgeTextBlue}
+                        />
+
+                        <SummaryFilter
+                            k="incomplete"
+                            icon="alert-circle-outline"
+                            value={totals.incomplete}
+                            label=""
+                            color="#FDE68A"
+                            bgStyle={styles.summaryBadgeYellow}
+                            textStyle={styles.summaryBadgeTextYellow}
+                        />
+
+                        <SummaryFilter
+                            k="not_suitable"
+                            icon="ban-outline"
+                            value={totals.notSuitable}
+                            label="No aptos"
+                            color="#FCA5A5"
+                            bgStyle={styles.summaryBadgeRed}
+                            textStyle={styles.summaryBadgeTextRed}
+                        />
+
+                        <SummaryFilter
+                            k="all"
+                            icon="apps-outline"
+                            value={visibleTotal}
+                            label="Todos"
+                            color="#C4B5FD"
+                            bgStyle={styles.summaryBadgeAll}
+                            textStyle={styles.summaryBadgeTextAll}
+                        />
+                    </View>
+
+                    <View style={styles.searchWrap}>
+                        <Ionicons name="search-outline" size={17} color={COLORS.muted} />
+                        <TextInput
+                            value={q}
+                            onChangeText={setQ}
+                            placeholder="Buscar lead"
+                            placeholderTextColor={COLORS.muted}
+                            style={styles.searchInput}
+                        />
+                        {!!q ? (
+                            <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
+                                <Ionicons name="close" size={17} color={COLORS.text} />
+                            </Pressable>
+                        ) : null}
+                    </View>
+
+                    <ScrollView
+                        contentContainerStyle={styles.listContent}
+                        showsVerticalScrollIndicator={false}
+                        keyboardShouldPersistTaps="handled"
+                        onScrollBeginDrag={closeMenu}
+                    >
+                        {filteredClients.map((c) => {
+                            const name = ((c as any).name ?? "").trim();
+                            const subtitle = getPrimarySubtitle(c);
+                            const verificationStatus = getDerivedVerificationStatus(c);
+                            const createdAt = toMs((c as any)?.createdAt);
+                            const lastInboundAt = toMs((c as any)?.lastInboundMessageAt);
+                            const isBusy = busyId === c.id;
+                            const lastInboundText = String((c as any)?.lastInboundText ?? "").trim();
+                            const notSuitableReason = getNotSuitableReason(c);
+
+                            return (
+                                <View key={c.id} style={styles.card}>
+                                    <View style={styles.cardTop}>
+                                        <View style={styles.cardTopMain}>
+                                            <Text style={styles.phone} numberOfLines={1}>
+                                                {c.phone}
+                                            </Text>
+
+                                            {!!name ? (
+                                                <Text style={styles.metaPrimary} numberOfLines={1}>
+                                                    {name}
+                                                </Text>
+                                            ) : null}
+
+                                            {!!subtitle ? (
+                                                <Text style={styles.meta} numberOfLines={1}>
+                                                    {subtitle}
+                                                </Text>
+                                            ) : null}
                                         </View>
 
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Negocio</Text>
-                                            <TextInput value={eBusiness} onChangeText={setEBusiness} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        <View style={styles.menuWrap}>
+                                            <View
+                                                ref={(ref) => {
+                                                    menuButtonRefs.current[c.id] = ref;
+                                                }}
+                                                collapsable={false}
+                                            >
+                                                <Pressable
+                                                    onPress={() => openSmartMenu(c.id)}
+                                                    style={({ pressed }) => [
+                                                        styles.menuBtn,
+                                                        pressed && styles.pressed,
+                                                    ]}
+                                                    disabled={isBusy}
+                                                >
+                                                    <Ionicons name="ellipsis-vertical" size={16} color={COLORS.text} />
+                                                </Pressable>
+                                            </View>
                                         </View>
                                     </View>
 
-                                    <View style={styles.field}>
-                                        <Text style={styles.label}>Negocio original / bruto</Text>
-                                        <TextInput value={eBusinessRaw} onChangeText={setEBusinessRaw} placeholder="Texto original del cliente" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                    </View>
-
-                                    <View style={styles.grid2}>
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Teléfono *</Text>
-                                            <TextInput value={ePhone} onChangeText={setEPhone} keyboardType="phone-pad" placeholder="+55 91 954 23 232" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                        </View>
-
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Dirección</Text>
-                                            <TextInput value={eAddress} onChangeText={setEAddress} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
-                                        </View>
-                                    </View>
-
-                                    <View style={styles.field}>
-                                        <Text style={styles.label}>Google Maps *</Text>
-                                        <TextInput
-                                            value={eMapsUrl}
-                                            onChangeText={setEMapsUrl}
-                                            autoCapitalize="none"
-                                            placeholder="https://maps.google.com/..."
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.input}
+                                    <View
+                                        style={[
+                                            styles.statusBox,
+                                            verificationStatus === "pending_review"
+                                                ? styles.statusBoxBlue
+                                                : verificationStatus === "not_suitable"
+                                                    ? styles.statusBoxRed
+                                                    : styles.statusBoxYellow,
+                                        ]}
+                                    >
+                                        <Ionicons
+                                            name={
+                                                verificationStatus === "pending_review"
+                                                    ? "search-outline"
+                                                    : verificationStatus === "not_suitable"
+                                                        ? "ban-outline"
+                                                        : "warning-outline"
+                                            }
+                                            size={14}
+                                            color={
+                                                verificationStatus === "pending_review"
+                                                    ? "#93C5FD"
+                                                    : verificationStatus === "not_suitable"
+                                                        ? "#FCA5A5"
+                                                        : "#FDE68A"
+                                            }
                                         />
+                                        <Text
+                                            style={[
+                                                styles.statusBoxText,
+                                                verificationStatus === "pending_review"
+                                                    ? styles.statusBoxTextBlue
+                                                    : verificationStatus === "not_suitable"
+                                                        ? styles.statusBoxTextRed
+                                                        : styles.statusBoxTextYellow,
+                                            ]}
+                                        >
+                                            {getQuickStatusText(c)}
+                                        </Text>
                                     </View>
 
-                                    <View style={styles.field}>
-                                        <Text style={styles.label}>Estado en cola</Text>
-                                        <View style={styles.segmentRow}>
-                                            {(["pending_review", "incomplete", "not_suitable"] as Exclude<VerificationStatus, "verified">[]).map((s) => {
-                                                const active = eVerificationStatus === s;
-                                                const label = getVerificationStatusFilterLabel(s);
-
-                                                return (
-                                                    <Pressable
-                                                        key={s}
-                                                        onPress={() => setEVerificationStatus(s)}
-                                                        style={({ pressed }) => [
-                                                            styles.segmentPill,
-                                                            active && styles.segmentPillActive,
-                                                            pressed && styles.pressed,
-                                                        ]}
-                                                    >
-                                                        <Text style={[styles.segmentPillText, active && styles.segmentPillTextActive]}>
-                                                            {label}
-                                                        </Text>
-                                                    </Pressable>
-                                                );
-                                            })}
+                                    {!!c.address ? (
+                                        <View style={styles.infoRow}>
+                                            <Ionicons name="location-outline" size={14} color={COLORS.muted} />
+                                            <Text style={styles.infoText} numberOfLines={2}>
+                                                {c.address}
+                                            </Text>
                                         </View>
+                                    ) : null}
+
+                                    <View style={styles.assignedRow}>
+                                        <Ionicons name="time-outline" size={14} color={COLORS.muted} />
+                                        <Text style={styles.assignedText} numberOfLines={1}>
+                                            Creado: {formatDateLabel(createdAt)} · Último: {formatDateLabel(lastInboundAt || createdAt)}
+                                        </Text>
                                     </View>
 
-                                    {eVerificationStatus === "not_suitable" ? (
+                                    {lastInboundText ? (
+                                        <View style={styles.inboundBox}>
+                                            <View style={styles.inboundHeader}>
+                                                <Ionicons name="chatbubble-ellipses-outline" size={13} color={COLORS.muted} />
+                                                <Text style={styles.inboundTitle}>Último mensaje recibido</Text>
+
+                                                <Pressable
+                                                    onPress={() => openChatScreen(c)}
+                                                    style={({ pressed }) => [
+                                                        styles.inboundOpenPill,
+                                                        pressed && styles.pressed,
+                                                    ]}
+                                                >
+                                                    <Text style={styles.inboundOpenPillText}>Ir al chat</Text>
+                                                </Pressable>
+                                            </View>
+
+                                            <Text style={styles.inboundText} numberOfLines={2}>
+                                                {lastInboundText}
+                                            </Text>
+                                        </View>
+                                    ) : (
+                                        <Pressable
+                                            onPress={() => openChatScreen(c)}
+                                            style={({ pressed }) => [
+                                                styles.openChatEmptyBtn,
+                                                pressed && styles.pressed,
+                                            ]}
+                                        >
+                                            <Ionicons name="chatbubble-outline" size={15} color="#93C5FD" />
+                                            <Text style={styles.openChatEmptyBtnText}>Abrir chat</Text>
+                                        </Pressable>
+                                    )}
+
+                                    <View style={styles.bottomMiniRow}>
+                                        <Pressable
+                                            onPress={() => openMaps(c.mapsUrl)}
+                                            style={({ pressed }) => [styles.miniIconBtn, pressed && styles.iconBtnPressed]}
+                                        >
+                                            <Ionicons name="map-outline" size={16} color={COLORS.text} />
+                                        </Pressable>
+
+                                        <Pressable
+                                            onPress={() => openWsp((c as any).waId || c.phone)}
+                                            style={({ pressed }) => [styles.miniIconBtn, pressed && styles.iconBtnPressed]}
+                                        >
+                                            <Ionicons name="logo-whatsapp" size={16} color={COLORS.text} />
+                                        </Pressable>
+
+                                        {verificationStatus === "not_suitable" && !!notSuitableReason ? (
+                                            <Text style={styles.bottomReasonText} numberOfLines={1}>
+                                                {notSuitableReason}
+                                            </Text>
+                                        ) : (
+                                            <View style={{ flex: 1 }} />
+                                        )}
+                                    </View>
+
+                                    {isBusy ? <Text style={styles.busyText}>Procesando…</Text> : null}
+                                </View>
+                            );
+                        })}
+
+                        {!filteredClients.length ? (
+                            <View style={styles.empty}>
+                                <Ionicons name="file-tray-outline" size={22} color={COLORS.muted} />
+                                <Text style={styles.emptyText}>
+                                    {q.trim() ? "No hay resultados." : "No hay leads Meta pendientes en la cola."}
+                                </Text>
+                            </View>
+                        ) : null}
+                    </ScrollView>
+
+                    {menuOpenId && menuAnchor ? (
+                        <View style={styles.menuOverlay} pointerEvents="box-none">
+                            <Pressable style={StyleSheet.absoluteFillObject} onPress={closeMenu} />
+                            <View
+                                style={[
+                                    styles.menuPanelPortal,
+                                    {
+                                        top: menuTop,
+                                        left: menuLeft,
+                                    },
+                                ]}
+                            >
+                                <Pressable
+                                    onPress={() => confirmVerificationStatusChange(menuOpenId, "pending_review")}
+                                    style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+                                >
+                                    <Ionicons name="shield-checkmark-outline" size={15} color="#93C5FD" />
+                                    <Text style={styles.menuItemText}>Revisar</Text>
+                                </Pressable>
+
+                                <Pressable
+                                    onPress={() => confirmVerificationStatusChange(menuOpenId, "incomplete")}
+                                    style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+                                >
+                                    <Ionicons name="alert-circle-outline" size={15} color="#FDE68A" />
+                                    <Text style={styles.menuItemText}>Incompleto</Text>
+                                </Pressable>
+
+                                <Pressable
+                                    onPress={() => {
+                                        const target = filteredClients.find((x) => x.id === menuOpenId);
+                                        confirmVerificationStatusChange(
+                                            menuOpenId,
+                                            "not_suitable",
+                                            target ? getNotSuitableReason(target) || "Perfil no apto" : "Perfil no apto"
+                                        );
+                                    }}
+                                    style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+                                >
+                                    <Ionicons name="ban-outline" size={15} color="#FCA5A5" />
+                                    <Text style={styles.menuItemText}>No apto</Text>
+                                </Pressable>
+
+                                <Pressable
+                                    onPress={() => openAssignPicker(menuOpenId)}
+                                    style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+                                >
+                                    <Ionicons name="person-add-outline" size={15} color={COLORS.text} />
+                                    <Text style={styles.menuItemText}>Reasignar</Text>
+                                </Pressable>
+
+                                <Pressable
+                                    onPress={() => {
+                                        const target = filteredClients.find((x) => x.id === menuOpenId);
+                                        if (target) startEdit(target);
+                                    }}
+                                    style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+                                >
+                                    <Ionicons name="create-outline" size={15} color={COLORS.text} />
+                                    <Text style={styles.menuItemText}>Editar</Text>
+                                </Pressable>
+
+                                <Pressable
+                                    onPress={() => confirmDelete(menuOpenId)}
+                                    style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+                                >
+                                    <Ionicons name="trash-outline" size={15} color={COLORS.rejected} />
+                                    <Text style={[styles.menuItemText, { color: "#FCA5A5" }]}>Eliminar</Text>
+                                </Pressable>
+                            </View>
+                        </View>
+                    ) : null}
+
+                    {editOpen ? (
+                        <View style={styles.inlineModalOverlay}>
+                            <View style={styles.inlineModalWrap}>
+                                <View style={styles.modalCardBig}>
+                                    <View style={styles.modalHeader}>
+                                        <Text style={styles.modalTitle}>Editar lead Meta</Text>
+                                        <Pressable onPress={cancelEdit} style={styles.modalClose}>
+                                            <Ionicons name="close" size={18} color={COLORS.text} />
+                                        </Pressable>
+                                    </View>
+                                    <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                        <View style={styles.grid2}>
+                                            <View style={[styles.field, { flex: 1 }]}>
+                                                <Text style={styles.label}>Nombre</Text>
+                                                <TextInput value={eName} onChangeText={setEName} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                            </View>
+
+                                            <View style={[styles.field, { flex: 1 }]}>
+                                                <Text style={styles.label}>Negocio</Text>
+                                                <TextInput value={eBusiness} onChangeText={setEBusiness} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                            </View>
+                                        </View>
+
                                         <View style={styles.field}>
-                                            <Text style={styles.label}>Motivo no apto *</Text>
+                                            <Text style={styles.label}>Negocio original / bruto</Text>
+                                            <TextInput value={eBusinessRaw} onChangeText={setEBusinessRaw} placeholder="Texto original del cliente" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                        </View>
+
+                                        <View style={styles.grid2}>
+                                            <View style={[styles.field, { flex: 1 }]}>
+                                                <Text style={styles.label}>Teléfono *</Text>
+                                                <TextInput value={ePhone} onChangeText={setEPhone} keyboardType="phone-pad" placeholder="+55 91 954 23 232" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                            </View>
+
+                                            <View style={[styles.field, { flex: 1 }]}>
+                                                <Text style={styles.label}>Dirección</Text>
+                                                <TextInput value={eAddress} onChangeText={setEAddress} placeholder="Opcional" placeholderTextColor={COLORS.muted} style={styles.input} />
+                                            </View>
+                                        </View>
+
+                                        <View style={styles.field}>
+                                            <Text style={styles.label}>Google Maps *</Text>
                                             <TextInput
-                                                value={eNotSuitableReason}
-                                                onChangeText={setENotSuitableReason}
-                                                placeholder="Ej: Motorista / trabalho de aplicativo"
+                                                value={eMapsUrl}
+                                                onChangeText={setEMapsUrl}
+                                                autoCapitalize="none"
+                                                placeholder="https://maps.google.com/..."
                                                 placeholderTextColor={COLORS.muted}
                                                 style={styles.input}
                                             />
                                         </View>
-                                    ) : null}
 
-                                    <View style={{ flexDirection: "row", gap: 10 }}>
-                                        <Pressable onPress={cancelEdit} style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]} disabled={eSaving}>
-                                            <Ionicons name="close-outline" size={18} color={COLORS.text} />
-                                            <Text style={styles.ghostBtnText}>Cancelar</Text>
-                                        </Pressable>
+                                        <View style={styles.field}>
+                                            <Text style={styles.label}>Estado en cola</Text>
+                                            <View style={styles.segmentRow}>
+                                                {(["pending_review", "incomplete", "not_suitable"] as Exclude<VerificationStatus, "verified">[]).map((s) => {
+                                                    const active = eVerificationStatus === s;
+                                                    const label = getVerificationStatusFilterLabel(s);
 
-                                        <Pressable
-                                            onPress={submitEdit}
-                                            style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, eSaving && styles.btnDisabled]}
-                                            disabled={eSaving}
-                                        >
-                                            <Ionicons name="save-outline" size={18} color="#fff" />
-                                            <Text style={styles.primaryBtnText}>{eSaving ? "Guardando..." : "Guardar"}</Text>
-                                        </Pressable>
-                                    </View>
-                                </ScrollView>
-                            </View>
-                        </KeyboardAvoidingView>
-                    </View>
-                </Modal>
-
-                <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={() => setUserPickerOpen(false)}>
-                    <View style={styles.modalOverlay}>
-                        <View style={styles.pickerWrap}>
-                            <View style={styles.pickerCard}>
-                                <View style={styles.modalHeader}>
-                                    <Text style={styles.modalTitle}>Asignar lead a</Text>
-                                    <Pressable onPress={() => setUserPickerOpen(false)} style={styles.modalClose}>
-                                        <Ionicons name="close" size={18} color={COLORS.text} />
-                                    </Pressable>
-                                </View>
-
-                                <View style={styles.searchWrapModal}>
-                                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                                    <TextInput value={pickerQuery} onChangeText={setPickerQuery} placeholder="Buscar…" placeholderTextColor={COLORS.muted} style={styles.searchInput} />
-                                    {!!pickerQuery ? (
-                                        <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
-                                            <Ionicons name="close" size={18} color={COLORS.text} />
-                                        </Pressable>
-                                    ) : null}
-                                </View>
-
-                                <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                    {pickerUsers.map((u) => (
-                                        <Pressable key={u.id} onPress={() => onPickUser(u)} style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}>
-                                            <View style={styles.userAvatar}>
-                                                <Ionicons name="person-outline" size={18} color={COLORS.text} />
+                                                    return (
+                                                        <Pressable
+                                                            key={s}
+                                                            onPress={() => setEVerificationStatus(s)}
+                                                            style={({ pressed }) => [
+                                                                styles.segmentPill,
+                                                                active && styles.segmentPillActive,
+                                                                pressed && styles.pressed,
+                                                            ]}
+                                                        >
+                                                            <Text style={[styles.segmentPillText, active && styles.segmentPillTextActive]}>
+                                                                {label}
+                                                            </Text>
+                                                        </Pressable>
+                                                    );
+                                                })}
                                             </View>
-
-                                            <View style={{ flex: 1 }}>
-                                                <Text style={styles.userName} numberOfLines={1}>{u.name}</Text>
-                                                <Text style={styles.userEmail} numberOfLines={1}>{u.email}</Text>
-                                            </View>
-
-                                            <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
-                                        </Pressable>
-                                    ))}
-
-                                    {!pickerUsers.length ? (
-                                        <View style={styles.emptySmall}>
-                                            <Text style={styles.emptyText}>No hay resultados.</Text>
                                         </View>
-                                    ) : null}
-                                </ScrollView>
+
+                                        {eVerificationStatus === "not_suitable" ? (
+                                            <View style={styles.field}>
+                                                <Text style={styles.label}>Motivo no apto *</Text>
+                                                <TextInput
+                                                    value={eNotSuitableReason}
+                                                    onChangeText={setENotSuitableReason}
+                                                    placeholder="Ej: Motorista / trabalho de aplicativo"
+                                                    placeholderTextColor={COLORS.muted}
+                                                    style={styles.input}
+                                                />
+                                            </View>
+                                        ) : null}
+
+                                        <View style={{ flexDirection: "row", gap: 10 }}>
+                                            <Pressable onPress={cancelEdit} style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]} disabled={eSaving}>
+                                                <Ionicons name="close-outline" size={18} color={COLORS.text} />
+                                                <Text style={styles.ghostBtnText}>Cancelar</Text>
+                                            </Pressable>
+
+                                            <Pressable
+                                                onPress={submitEdit}
+                                                style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, eSaving && styles.btnDisabled]}
+                                                disabled={eSaving}
+                                            >
+                                                <Ionicons name="save-outline" size={18} color="#fff" />
+                                                <Text style={styles.primaryBtnText}>{eSaving ? "Guardando..." : "Guardar"}</Text>
+                                            </Pressable>
+                                        </View>
+                                    </ScrollView>
+                                </View>
                             </View>
                         </View>
-                    </View>
-                </Modal>
+                    ) : null}
 
-                <Modal visible={conversationOpen} transparent animationType="fade" onRequestClose={closeConversation}>
-                    <View style={styles.modalOverlay}>
-                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                            <View style={[styles.modalCardBig, { paddingBottom: 14 + modalBottomPad }]}>
-                                <View style={styles.modalHeader}>
-                                    <View style={{ flex: 1, gap: 2 }}>
-                                        <Text style={styles.modalTitle} numberOfLines={1}>
-                                            Conversación
-                                        </Text>
-                                        <Text style={styles.modalSub} numberOfLines={1}>
-                                            {conversationClientName || "Lead"}
-                                        </Text>
+                    {userPickerOpen ? (
+                        <View style={styles.inlineModalOverlay}>
+                            <View style={styles.pickerWrap}>
+                                <View style={styles.pickerCard}>
+                                    <View style={styles.modalHeader}>
+                                        <Text style={styles.modalTitle}>Asignar lead a</Text>
+                                        <Pressable onPress={() => setUserPickerOpen(false)} style={styles.modalClose}>
+                                            <Ionicons name="close" size={18} color={COLORS.text} />
+                                        </Pressable>
                                     </View>
 
-                                    <Pressable onPress={closeConversation} style={styles.modalClose}>
-                                        <Ionicons name="close" size={18} color={COLORS.text} />
-                                    </Pressable>
-                                </View>
+                                    <View style={styles.searchWrapModal}>
+                                        <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                                        <TextInput value={pickerQuery} onChangeText={setPickerQuery} placeholder="Buscar…" placeholderTextColor={COLORS.muted} style={styles.searchInput} />
+                                        {!!pickerQuery ? (
+                                            <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
+                                                <Ionicons name="close" size={18} color={COLORS.text} />
+                                            </Pressable>
+                                        ) : null}
+                                    </View>
 
-                                <ScrollView contentContainerStyle={styles.conversationList} showsVerticalScrollIndicator={false}>
-                                    {conversationLoading ? (
-                                        <View style={styles.emptySmall}>
-                                            <Text style={styles.emptyText}>Cargando conversación…</Text>
-                                        </View>
-                                    ) : conversationRows.length ? (
-                                        conversationRows.map((row) => (
-                                            <View
-                                                key={row.id}
-                                                style={[
-                                                    styles.chatBubbleWrap,
-                                                    row.kind === "customer"
-                                                        ? styles.chatBubbleWrapLeft
-                                                        : styles.chatBubbleWrapRight,
-                                                ]}
-                                            >
-                                                <View
-                                                    style={[
-                                                        styles.chatBubble,
-                                                        row.kind === "customer"
-                                                            ? styles.chatBubbleCustomer
-                                                            : styles.chatBubbleBot,
-                                                    ]}
-                                                >
-                                                    <Text
-                                                        style={[
-                                                            styles.chatMeta,
-                                                            row.kind === "customer"
-                                                                ? styles.chatMetaCustomer
-                                                                : styles.chatMetaBot,
-                                                        ]}
-                                                    >
-                                                        {row.meta || (row.kind === "customer" ? "Cliente" : "Bot")} · {formatDateTimeLabel(row.at)}
-                                                    </Text>
-
-                                                    <Text style={styles.chatText}>{row.text}</Text>
+                                    <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                        {pickerUsers.map((u) => (
+                                            <Pressable key={u.id} onPress={() => onPickUser(u)} style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}>
+                                                <View style={styles.userAvatar}>
+                                                    <Ionicons name="person-outline" size={18} color={COLORS.text} />
                                                 </View>
+
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={styles.userName} numberOfLines={1}>{u.name}</Text>
+                                                    <Text style={styles.userEmail} numberOfLines={1}>{u.email}</Text>
+                                                </View>
+
+                                                <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
+                                            </Pressable>
+                                        ))}
+
+                                        {!pickerUsers.length ? (
+                                            <View style={styles.emptySmall}>
+                                                <Text style={styles.emptyText}>No hay resultados.</Text>
                                             </View>
-                                        ))
-                                    ) : (
-                                        <View style={styles.emptySmall}>
-                                            <Text style={styles.emptyText}>No hay historial guardado para este lead.</Text>
-                                        </View>
-                                    )}
-                                </ScrollView>
+                                        ) : null}
+                                    </ScrollView>
+                                </View>
                             </View>
-                        </KeyboardAvoidingView>
-                    </View>
-                </Modal>
+                        </View>
+                    ) : null}
+                </View>
             </AdminBackground>
         </SafeAreaView>
     );
@@ -1346,34 +1292,25 @@ const COLORS = {
 
 const styles = StyleSheet.create({
     safe: { flex: 1, backgroundColor: COLORS.bg },
+    screenOverlay: { flex: 1 },
 
     pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
 
     header: {
         paddingHorizontal: 16,
         paddingTop: 10,
-        paddingBottom: 10,
+        paddingBottom: 8,
         flexDirection: "row",
         alignItems: "center",
         gap: 12,
-    },
-    backBtn: {
-        width: 42,
-        height: 42,
-        borderRadius: 14,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        alignItems: "center",
-        justifyContent: "center",
     },
     hTitle: { color: COLORS.text, fontSize: 18, fontWeight: "900" },
     hSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
     hStrong: { color: COLORS.text, fontWeight: "900" },
     headerBadge: {
-        width: 42,
-        height: 42,
-        borderRadius: 14,
+        width: 40,
+        height: 40,
+        borderRadius: 13,
         backgroundColor: "#0F172A",
         borderWidth: 1,
         borderColor: COLORS.border,
@@ -1387,20 +1324,32 @@ const styles = StyleSheet.create({
         flexWrap: "wrap",
         gap: 8,
         paddingHorizontal: 16,
-        paddingBottom: 10,
+        paddingBottom: 8,
     },
     summaryBadge: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
+        gap: 5,
         paddingHorizontal: 10,
-        height: 28,
+        height: 26,
         borderRadius: 999,
         borderWidth: 1,
+    },
+    summaryBadgeActive: {
+        transform: [{ scale: 1.01 }],
+        borderColor: "rgba(255,255,255,0.22)",
     },
     summaryBadgeText: {
         fontSize: 11,
         fontWeight: "900",
+    },
+    summaryBadgeLabel: {
+        color: "#D1D5DB",
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    summaryBadgeLabelActive: {
+        color: COLORS.text,
     },
     summaryBadgeBlue: {
         backgroundColor: "rgba(37,99,235,0.12)",
@@ -1417,6 +1366,11 @@ const styles = StyleSheet.create({
         borderColor: "rgba(248,113,113,0.24)",
     },
     summaryBadgeTextRed: { color: "#FCA5A5" },
+    summaryBadgeAll: {
+        backgroundColor: "rgba(124,58,237,0.12)",
+        borderColor: "rgba(124,58,237,0.26)",
+    },
+    summaryBadgeTextAll: { color: "#C4B5FD" },
 
     searchWrap: {
         marginHorizontal: 16,
@@ -1427,9 +1381,9 @@ const styles = StyleSheet.create({
         backgroundColor: "#0F172A",
         borderWidth: 1,
         borderColor: COLORS.border,
-        borderRadius: 16,
+        borderRadius: 15,
         paddingHorizontal: 12,
-        height: 48,
+        height: 46,
     },
     searchWrapModal: {
         marginBottom: 10,
@@ -1445,60 +1399,23 @@ const styles = StyleSheet.create({
     },
     searchInput: { flex: 1, color: COLORS.text, fontSize: 14, fontWeight: "700" },
     clearBtn: {
-        width: 34,
-        height: 34,
-        borderRadius: 12,
+        width: 32,
+        height: 32,
+        borderRadius: 10,
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: "rgba(255,255,255,0.06)",
     },
 
-    filtersRow: { paddingHorizontal: 16, gap: 10, paddingBottom: 10 },
-    filterPill: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        height: 38,
-        paddingHorizontal: 12,
-        borderRadius: 999,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-    },
-    filterPillActive: {
-        backgroundColor: "rgba(37,99,235,0.16)",
-        borderColor: "rgba(37,99,235,0.35)",
-    },
-    filterText: { color: COLORS.muted, fontWeight: "900", fontSize: 12 },
-    filterTextActive: { color: COLORS.text },
-
-    filterBadge: {
-        minWidth: 28,
-        height: 24,
-        borderRadius: 999,
-        paddingHorizontal: 8,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
-    },
-    filterBadgeActive: {
-        backgroundColor: "rgba(37,99,235,0.25)",
-        borderColor: "rgba(37,99,235,0.35)",
-    },
-    filterBadgeText: { color: COLORS.muted, fontWeight: "900", fontSize: 12 },
-    filterBadgeTextActive: { color: COLORS.text },
-
-    listContent: { paddingHorizontal: 16, paddingBottom: 24, gap: 12 },
+    listContent: { paddingHorizontal: 16, paddingBottom: 24, gap: 10 },
 
     card: {
         backgroundColor: COLORS.card,
         borderWidth: 1,
         borderColor: COLORS.border,
-        borderRadius: 18,
-        padding: 14,
-        gap: 10,
+        borderRadius: 16,
+        padding: 12,
+        gap: 9,
     },
     cardTop: {
         flexDirection: "row",
@@ -1506,49 +1423,66 @@ const styles = StyleSheet.create({
         justifyContent: "space-between",
         gap: 10,
     },
-    phone: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
+    cardTopMain: {
+        flex: 1,
+        gap: 4,
+        paddingRight: 4,
+    },
+    phone: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
     metaPrimary: { color: "#D7DCE5", fontSize: 13, fontWeight: "900" },
     meta: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
 
-    infoBadgeRow: {
-        flexDirection: "row",
-        flexWrap: "wrap",
-        alignItems: "center",
-        gap: 8,
-        marginTop: 2,
+    menuWrap: {
+        position: "relative",
+        zIndex: 2,
     },
-    infoBadge: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-        height: 26,
-        paddingHorizontal: 9,
-        borderRadius: 999,
+    menuOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        zIndex: 50,
+        elevation: 50,
+    },
+    menuBtn: {
+        width: 34,
+        height: 34,
+        borderRadius: 11,
+        backgroundColor: "#0F172A",
         borderWidth: 1,
+        borderColor: COLORS.border,
+        alignItems: "center",
+        justifyContent: "center",
     },
-    infoBadgeText: {
+    menuPanelPortal: {
+        position: "absolute",
+        width: MENU_WIDTH,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        borderRadius: 14,
+        paddingVertical: 6,
+        shadowColor: "#000",
+        shadowOpacity: 0.25,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 10 },
+        elevation: 12,
+    },
+    menuItem: {
+        minHeight: 40,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        paddingHorizontal: 12,
+    },
+    menuItemText: {
         color: COLORS.text,
-        fontSize: 11,
-        fontWeight: "900",
-    },
-    infoBadgeBlue: {
-        backgroundColor: "rgba(37,99,235,0.12)",
-        borderColor: "rgba(37,99,235,0.26)",
-    },
-    infoBadgeYellow: {
-        backgroundColor: "rgba(251,191,36,0.10)",
-        borderColor: "rgba(251,191,36,0.24)",
-    },
-    infoBadgeRed: {
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderColor: "rgba(248,113,113,0.24)",
+        fontSize: 13,
+        fontWeight: "800",
     },
 
     statusBox: {
-        borderRadius: 14,
+        borderRadius: 12,
         borderWidth: 1,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
+        paddingHorizontal: 10,
+        paddingVertical: 9,
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
@@ -1574,31 +1508,19 @@ const styles = StyleSheet.create({
     statusBoxTextYellow: { color: "#FDE68A" },
     statusBoxTextRed: { color: "#FCA5A5" },
 
-    reasonRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-    },
-    reasonText: {
-        flex: 1,
-        color: COLORS.muted,
-        fontSize: 12,
-        fontWeight: "800",
-    },
-
     infoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
     infoText: { flex: 1, color: COLORS.text, opacity: 0.9, fontSize: 12, fontWeight: "700" },
 
-    assignedRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
-    assignedText: { flex: 1, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    assignedRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    assignedText: { flex: 1, color: COLORS.muted, fontSize: 11, fontWeight: "800" },
 
     inboundBox: {
         padding: 10,
-        borderRadius: 14,
+        borderRadius: 12,
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.08)",
         backgroundColor: "rgba(255,255,255,0.03)",
-        gap: 6,
+        gap: 5,
     },
     inboundHeader: {
         flexDirection: "row",
@@ -1616,11 +1538,11 @@ const styles = StyleSheet.create({
         opacity: 0.9,
         fontSize: 12,
         fontWeight: "700",
-        lineHeight: 18,
+        lineHeight: 17,
     },
     inboundOpenPill: {
         paddingHorizontal: 8,
-        height: 22,
+        height: 20,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
@@ -1634,64 +1556,47 @@ const styles = StyleSheet.create({
         fontWeight: "900",
     },
 
-    quickRow: {
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: 8,
-    },
-    quickBtn: {
-        minHeight: 36,
-        paddingHorizontal: 12,
-        borderRadius: 999,
+    openChatEmptyBtn: {
+        minHeight: 38,
+        borderRadius: 12,
         borderWidth: 1,
+        borderColor: "rgba(37,99,235,0.26)",
+        backgroundColor: "rgba(37,99,235,0.08)",
         alignItems: "center",
         justifyContent: "center",
         flexDirection: "row",
-        gap: 6,
+        gap: 8,
+        paddingHorizontal: 12,
     },
-    quickBtnText: {
+    openChatEmptyBtnText: {
+        color: "#93C5FD",
         fontSize: 12,
         fontWeight: "900",
     },
-    quickBtnBlue: {
-        backgroundColor: "rgba(37,99,235,0.10)",
-        borderColor: "rgba(37,99,235,0.24)",
-    },
-    quickBtnTextBlue: { color: "#93C5FD" },
-    quickBtnYellow: {
-        backgroundColor: "rgba(251,191,36,0.10)",
-        borderColor: "rgba(251,191,36,0.24)",
-    },
-    quickBtnTextYellow: { color: "#FDE68A" },
-    quickBtnRed: {
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderColor: "rgba(248,113,113,0.24)",
-    },
-    quickBtnTextRed: { color: "#FCA5A5" },
 
-    actionsRow: {
+    bottomMiniRow: {
         flexDirection: "row",
-        flexWrap: "wrap",
-        gap: 10,
         alignItems: "center",
-        justifyContent: "flex-end",
+        gap: 8,
     },
-    iconBtn: {
-        width: 44,
-        height: 44,
-        borderRadius: 16,
+    miniIconBtn: {
+        width: 36,
+        height: 36,
+        borderRadius: 12,
         backgroundColor: "#0F172A",
         borderWidth: 1,
         borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
     },
-    iconBtnDanger: {
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderColor: "rgba(248,113,113,0.30)",
-    },
     iconBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
-    iconBtnDisabled: { opacity: 0.5 },
+    bottomReasonText: {
+        flex: 1,
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "800",
+        marginLeft: 2,
+    },
 
     busyText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
 
@@ -1699,8 +1604,16 @@ const styles = StyleSheet.create({
     emptySmall: { paddingVertical: 10, alignItems: "center" },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900", textAlign: "center" },
 
-    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 12, justifyContent: "center" },
-    modalWrap: { width: "100%" },
+    inlineModalOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0,0,0,0.55)",
+        padding: 12,
+        justifyContent: "center",
+        zIndex: 100,
+        elevation: 100,
+    },
+    inlineModalWrap: { width: "100%" },
+
     modalCardBig: {
         backgroundColor: COLORS.card,
         borderRadius: 18,
@@ -1717,7 +1630,6 @@ const styles = StyleSheet.create({
         gap: 10,
     },
     modalTitle: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
-    modalSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
     modalClose: {
         width: 40,
         height: 40,
@@ -1837,50 +1749,4 @@ const styles = StyleSheet.create({
     primaryBtnText: { color: "#fff", fontWeight: "900", fontSize: 14 },
     btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     btnDisabled: { opacity: 0.55 },
-
-    conversationList: {
-        gap: 10,
-        paddingBottom: 6,
-    },
-    chatBubbleWrap: {
-        width: "100%",
-    },
-    chatBubbleWrapLeft: {
-        alignItems: "flex-start",
-    },
-    chatBubbleWrapRight: {
-        alignItems: "flex-end",
-    },
-    chatBubble: {
-        maxWidth: "88%",
-        borderRadius: 16,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderWidth: 1,
-        gap: 6,
-    },
-    chatBubbleCustomer: {
-        backgroundColor: "#0F172A",
-        borderColor: "rgba(255,255,255,0.10)",
-    },
-    chatBubbleBot: {
-        backgroundColor: "rgba(37,99,235,0.10)",
-        borderColor: "rgba(37,99,235,0.26)",
-    },
-    chatMeta: {
-        fontSize: 10,
-        fontWeight: "900",
-    },
-    chatMetaCustomer: {
-        color: COLORS.muted,
-    },
-    chatMetaBot: {
-        color: "#93C5FD",
-    },
-    chatText: {
-        color: COLORS.text,
-        fontSize: 13,
-        fontWeight: "700",
-        lineHeight: 19,
-    },
 });

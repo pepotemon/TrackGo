@@ -3,6 +3,7 @@ const {
     onDocumentUpdated,
 } = require("firebase-functions/v2/firestore");
 const { onRequest } = require("firebase-functions/v2/https");
+const { getAuth } = require("firebase-admin/auth");
 
 const { db } = require("./src/core/firebase");
 const { WHATSAPP_VERIFY_TOKEN } = require("./src/config/params");
@@ -42,6 +43,12 @@ const { looksLikeSystemOrMetaMessage } = (() => {
 
 const { looksLikeBrazilAddress } = require("./src/utils/geo");
 const { sendWhatsAppText } = require("./src/whatsapp/sender");
+const {
+    appendClientMessage,
+    isBotAllowedForClient,
+    sendManualWhatsAppMessage,
+    resumeBotForClient,
+} = require("./src/whatsapp/manualReply");
 const { notifyAssignedUser } = require("./src/push/expoPush");
 
 const business = require("./src/bot/business");
@@ -119,6 +126,42 @@ const buildBotReplyPtBr = createBotReplyBuilder({
     hasRequiredMapsForFlow: leadState.hasRequiredMapsForFlow,
 });
 
+async function requireAdminUser(req) {
+    const authHeader = String(req.headers.authorization || "");
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+
+    if (!match?.[1]) {
+        const err = new Error("missing_authorization_token");
+        err.statusCode = 401;
+        throw err;
+    }
+
+    const decoded = await getAuth().verifyIdToken(match[1]);
+    const uid = String(decoded?.uid || "").trim();
+
+    if (!uid) {
+        const err = new Error("invalid_auth_user");
+        err.statusCode = 401;
+        throw err;
+    }
+
+    const userSnap = await db.doc(`users/${uid}`).get();
+    if (!userSnap.exists) {
+        const err = new Error("admin_user_not_found");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    const user = userSnap.data() || {};
+    if (user.role !== "admin" || user.active !== true) {
+        const err = new Error("admin_required");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    return { uid, user };
+}
+
 async function maybeReplyToLead({
     clientId,
     waId,
@@ -132,6 +175,16 @@ async function maybeReplyToLead({
     if (!snap.exists) return;
 
     const client = snap.data() || {};
+    const { safeString, safeNumber } = require("./src/utils/text");
+
+    if (!isBotAllowedForClient(client)) {
+        await inboxRef.set({
+            botReplyStatus: "skipped",
+            botReplyReason: "human_takeover_active",
+            botReplyAt: Date.now(),
+        }, { merge: true });
+        return;
+    }
 
     if (!leadState.shouldSendBotReply(client)) {
         await inboxRef.set({
@@ -141,8 +194,6 @@ async function maybeReplyToLead({
         }, { merge: true });
         return;
     }
-
-    const { safeString, safeNumber } = require("./src/utils/text");
 
     const reply = buildBotReplyPtBr({ client, messageType });
     const body = safeString(reply?.body || "");
@@ -175,11 +226,28 @@ async function maybeReplyToLead({
 
     const sendResult = await sendWhatsAppText(waId, body);
     const now = Date.now();
+    const whatsappMessageId = safeString(sendResult?.messages?.[0]?.id || "");
+
+    await appendClientMessage({
+        clientId,
+        direction: "outbound",
+        senderType: "bot",
+        senderId: "system_bot",
+        text: body,
+        messageType: "text",
+        whatsappMessageId,
+        status: "sent",
+        meta: {
+            source: "bot_auto",
+            stage: currentBotStage,
+        },
+    });
 
     const clientPatch = {
         lastBotReplyAt: now,
         lastBotReplyText: body,
         lastBotStage: currentBotStage,
+        lastOutboundAt: now,
     };
 
     if (markIntroSent && !safeNumber(client?.initialIntroSentAt, 0)) {
@@ -194,7 +262,7 @@ async function maybeReplyToLead({
         botReplyText: body,
         botReplyAt: now,
         botReplyStage: currentBotStage,
-        botReplyMessageId: sendResult?.messages?.[0]?.id || "",
+        botReplyMessageId: whatsappMessageId,
     }, { merge: true });
 }
 
@@ -244,6 +312,93 @@ exports.onClientReassigned = onDocumentUpdated("clients/{clientId}", async (even
         console.log("[PUSH] update error:", e);
     }
 });
+
+exports.sendManualLeadMessage = onRequest(
+    {
+        region: "us-central1",
+        cors: true,
+    },
+    async (req, res) => {
+        try {
+            if (req.method !== "POST") {
+                res.status(405).json({ ok: false, error: "method_not_allowed" });
+                return;
+            }
+
+            const { uid } = await requireAdminUser(req);
+
+            const body = req.body || {};
+            const clientId = String(body?.clientId || "").trim();
+            const text = String(body?.text || "").trim();
+            const markHumanTakeover = body?.markHumanTakeover !== false;
+
+            if (!clientId) {
+                res.status(400).json({ ok: false, error: "missing_client_id" });
+                return;
+            }
+
+            if (!text) {
+                res.status(400).json({ ok: false, error: "missing_text" });
+                return;
+            }
+
+            const result = await sendManualWhatsAppMessage({
+                clientId,
+                adminUserId: uid,
+                body: text,
+                markHumanTakeover,
+            });
+
+            res.status(200).json(result);
+        } catch (error) {
+            const status = Number(error?.statusCode) || 500;
+            console.error("[WHATSAPP MANUAL] send error:", error);
+            res.status(status).json({
+                ok: false,
+                error: String(error?.message || "manual_send_failed"),
+            });
+        }
+    }
+);
+
+exports.resumeBotLead = onRequest(
+    {
+        region: "us-central1",
+        cors: true,
+    },
+    async (req, res) => {
+        try {
+            if (req.method !== "POST") {
+                res.status(405).json({ ok: false, error: "method_not_allowed" });
+                return;
+            }
+
+            const { uid } = await requireAdminUser(req);
+
+            const body = req.body || {};
+            const clientId = String(body?.clientId || "").trim();
+
+            if (!clientId) {
+                res.status(400).json({ ok: false, error: "missing_client_id" });
+                return;
+            }
+
+            const result = await resumeBotForClient({
+                clientId,
+                adminUserId: uid,
+            });
+
+            res.status(200).json(result);
+        } catch (error) {
+            const status = Number(error?.statusCode) || 500;
+            console.error("[WHATSAPP MANUAL] resume bot error:", error);
+            res.status(status).json({
+                ok: false,
+                error: String(error?.message || "resume_bot_failed"),
+            });
+        }
+    }
+);
 
 exports.whatsappWebhook = onRequest(
     {
