@@ -71,7 +71,6 @@ const looksLikePersonName = namesFactory.looksLikePersonNameFactory({
 
 const resolveNextClientName = namesFactory.resolveNextClientNameFactory({
     isBadProfileName,
-    sanitizeExplicitPersonName,
     sanitizeFallbackProfileName,
 });
 
@@ -109,6 +108,7 @@ const parseLeadText = createLeadParser({
     sanitizeBusiness: business.sanitizeBusiness,
     isPossibleBusinessFallbackText,
     classifyBusinessQuality: business.classifyBusinessQuality,
+    getBusinessFlags: business.getBusinessFlags,
 });
 
 const hasUsefulName = leadState.hasUsefulNameFactory({ isBadProfileName });
@@ -136,7 +136,7 @@ async function maybeReplyToLead({
     if (!leadState.shouldSendBotReply(client)) {
         await inboxRef.set({
             botReplyStatus: "skipped",
-            botReplyReason: "outside_customer_service_window",
+            botReplyReason: "reply_rules_blocked",
             botReplyAt: Date.now(),
         }, { merge: true });
         return;
@@ -149,7 +149,14 @@ async function maybeReplyToLead({
     const currentBotStage = safeString(reply?.stage || "");
     const markIntroSent = !!reply?.markIntroSent;
 
-    if (!body || !currentBotStage) return;
+    if (!body || !currentBotStage) {
+        await inboxRef.set({
+            botReplyStatus: "skipped",
+            botReplyReason: "empty_reply",
+            botReplyAt: Date.now(),
+        }, { merge: true });
+        return;
+    }
 
     const lastBotReplyText = safeString(client?.lastBotReplyText || "");
     const lastBotStage = safeString(client?.lastBotStage || "");
@@ -204,6 +211,7 @@ const processIncomingWhatsappMessage = createProcessIncomingWhatsappMessage({
     isLikelyBusinessLine: business.isLikelyBusinessLine,
     upsertLeadAsClient,
     maybeReplyToLead,
+    getRandomHumanReplyDelayMs: leadState.getRandomHumanReplyDelayMs,
 });
 
 exports.onClientCreatedAssigned = onDocumentCreated("clients/{clientId}", async (event) => {

@@ -16,8 +16,8 @@ function buildIntroMessagePtBr() {
         "Para continuar com a análise, por favor envie:",
         "",
         "1️⃣ Tipo de comércio",
-        "2️⃣ Nome completo",
-        "3️⃣ Localização do comércio no Google Maps",
+        "2️⃣ Localização do comércio no Google Maps",
+        "3️⃣ Nome completo (opcional, mas recomendado)",
         "",
         "Após receber essas informações, encaminharemos seu cadastro para o responsável da sua região, que fará a análise e entrará em contato.",
         "",
@@ -41,9 +41,23 @@ function buildCoverageReplyPtBr() {
         "",
         "Envie por favor:",
         "1️⃣ Tipo de comércio",
-        "2️⃣ Nome completo",
-        "3️⃣ Localização do comércio no Google Maps",
+        "2️⃣ Localização do comércio no Google Maps",
+        "3️⃣ Nome completo (opcional)",
     ].join("\n");
+}
+
+function buildNotSuitableReplyPtBr(reason) {
+    return [
+        "Obrigado pelo contato.",
+        "",
+        "No momento trabalhamos apenas com lojistas e proprietários de comércio ativo.",
+        reason ? `Motivo identificado: ${reason}.` : "",
+        "",
+        "Por isso, infelizmente não conseguimos seguir com a análise neste perfil.",
+        "Agradecemos o interesse.",
+    ]
+        .filter(Boolean)
+        .join("\n");
 }
 
 function createBotReplyBuilder({
@@ -55,10 +69,21 @@ function createBotReplyBuilder({
         const hasMaps = hasRequiredMapsForFlow(client);
         const introAlreadySent = safeNumber(client?.initialIntroSentAt, 0) > 0;
 
+        const leadQuality = safeString(client?.leadQuality || "");
+        const notSuitableReason = safeString(client?.notSuitableReason || "");
+
         const lastText = safeString(client?.lastInboundText || "");
         const coverageIntent = isCoverageQuestion(lastText);
         const howItWorksIntent = isHowItWorksQuestion(lastText);
         const urgencyIntent = isUrgencyText(lastText);
+
+        if (leadQuality === "not_suitable") {
+            return {
+                body: buildNotSuitableReplyPtBr(notSuitableReason),
+                stage: "final:not_suitable",
+                markIntroSent: introAlreadySent,
+            };
+        }
 
         if (!introAlreadySent) {
             return {
@@ -103,13 +128,14 @@ function createBotReplyBuilder({
                     "Ok, muito obrigado.",
                     "",
                     "Vou encaminhar as informações para o responsável da sua região.",
-                    "O retorno normalmente acontece entre 24 e 48 horas, e em alguns casos pode acontecer antes.",
+                    urgencyIntent
+                        ? "Como você informou urgência, o responsável vai analisar assim que possível."
+                        : "O retorno normalmente acontece entre 24 e 48 horas, e em alguns casos pode acontecer antes.",
                     "",
                     howItWorksIntent
                         ? "Ele também vai explicar valores, condições e próximos passos."
                         : "Muito obrigado.",
-                    urgencyIntent ? "" : "",
-                ].filter(Boolean).join("\n"),
+                ].join("\n"),
                 stage: howItWorksIntent ? "final:how_it_works" : "final",
                 markIntroSent: false,
             };
@@ -125,7 +151,7 @@ function createBotReplyBuilder({
                     "• Tipo de comércio",
                     "• Localização do comércio no Google Maps",
                     "",
-                    "Você também pode enviar seu nome completo, mas isso é opcional.",
+                    "Seu nome completo é opcional, mas pode ser enviado também.",
                     "",
                     "Você pode enviar a localização de um destes jeitos:",
                     "• Compartilhando a localização fixa",
@@ -150,7 +176,7 @@ function createBotReplyBuilder({
                     "",
                     "Exemplo: mercadinho, loja de roupas, salão, barbearia, restaurante, oficina, farmácia, padaria, distribuidora, loja de variedades, studio, etc.",
                     "",
-                    "Se quiser, você também pode enviar seu nome completo.",
+                    "Seu nome completo é opcional.",
                 ].join("\n"),
                 stage: "missing:business",
                 markIntroSent: false,
@@ -190,5 +216,6 @@ module.exports = {
     buildIntroMessagePtBr,
     buildHowItWorksSnippetPtBr,
     buildCoverageReplyPtBr,
+    buildNotSuitableReplyPtBr,
     createBotReplyBuilder,
 };

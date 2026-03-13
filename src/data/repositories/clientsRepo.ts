@@ -21,6 +21,7 @@ import type {
     ClientProfileType,
     ClientStatus,
     ClientVerificationStatus,
+    RejectedReason,
 } from "../../types/models";
 import { col, docRef } from "../firestore";
 import { dayKeyFromMs } from "./dailyEventsRepo";
@@ -49,22 +50,7 @@ function normalizeCoord(value?: number | null) {
     return Number.isFinite(n) ? n : undefined;
 }
 
-/**
- * ✅ Motivos ampliados de rechazo
- */
-export type RejectReason =
-    | "clavo"
-    | "localizacion"
-    | "zona_riesgosa"
-    | "ingresos_insuficientes"
-    | "muy_endeudado"
-    | "informacion_dudosa"
-    | "no_le_interesa"
-    | "no_estaba_cerrado"
-    | "fuera_de_ruta"
-    | "otro";
-
-function normalizeRejectReason(value?: string | null): RejectReason | null {
+function normalizeRejectReason(value?: string | null): RejectedReason | null {
     if (!value) return null;
 
     const v = String(value).toLowerCase().trim();
@@ -253,10 +239,13 @@ export async function createClient(input: Omit<ClientDoc, "id">) {
  * - Soporta motivos ampliados de rechazo
  * - Guarda el motivo en:
  *   - client.rejectedReason
+ *   - client.rejectedReasonText
  *   - dailyEvent.rejectedReason
+ *   - dailyEvent.rejectedReasonText
  *
- * ✅ Compat: para arreglar tu error TS "Expected 3-4 arguments, but got 5"
- * aceptamos un 5to argumento opcional (string u objeto).
+ * ✅ Compat:
+ * - string => se interpreta como rejectedReason
+ * - object => rejectedReason + note + rejectedReasonText
  */
 export async function updateClientStatus(
     clientId: string,
@@ -266,8 +255,9 @@ export async function updateClientStatus(
     extra?:
         | string
         | {
-            rejectedReason?: RejectReason | string;
-            note?: string;
+            rejectedReason?: RejectedReason | string;
+            rejectedReasonText?: string | null;
+            note?: string | null;
         }
 ) {
     const now = Date.now();
@@ -280,48 +270,59 @@ export async function updateClientStatus(
             ) ?? "otro"
             : null;
 
+    const rejectedReasonText =
+        status === "rejected"
+            ? typeof extra === "string"
+                ? null
+                : (extra?.rejectedReasonText ?? "").trim() || null
+            : null;
+
     const note =
         status === "rejected"
             ? typeof extra === "string"
                 ? null
-                : extra?.note ?? null
+                : (extra?.note ?? "").trim() || null
             : null;
 
     const batch = writeBatch(db);
 
-    const clientPatch: any =
+    const clientPatch: Partial<ClientDoc> =
         status === "pending"
             ? {
-                status: "pending" as const,
+                status: "pending",
                 statusBy: null,
                 statusAt: null,
                 rejectedReason: null,
+                rejectedReasonText: null,
                 note: null,
                 updatedAt: now,
             }
             : status === "visited"
                 ? {
-                    status: "visited" as const,
+                    status: "visited",
                     statusBy: actorId,
                     statusAt: now,
                     rejectedReason: null,
+                    rejectedReasonText: null,
                     note: null,
                     updatedAt: now,
                 }
                 : {
-                    status: "rejected" as const,
+                    status: "rejected",
                     statusBy: actorId,
                     statusAt: now,
                     rejectedReason: normalizedRejectedReason,
+                    rejectedReasonText:
+                        normalizedRejectedReason === "otro" ? rejectedReasonText : null,
                     note,
                     updatedAt: now,
                 };
 
-    batch.update(docRef.client(clientId), stripUndefined(clientPatch));
+    batch.update(docRef.client(clientId), stripUndefined(clientPatch as any));
 
     const eventId = `${dayKey}_${clientId}`;
 
-    const event: any = stripUndefined({
+    const event = stripUndefined({
         type: status,
         userId: actorId,
         clientId,
@@ -332,6 +333,10 @@ export async function updateClientStatus(
         address: snapshot?.address,
 
         rejectedReason: status === "rejected" ? normalizedRejectedReason : null,
+        rejectedReasonText:
+            status === "rejected" && normalizedRejectedReason === "otro"
+                ? rejectedReasonText
+                : null,
         note: status === "rejected" ? note : null,
 
         createdAt: now,
@@ -366,6 +371,7 @@ export async function assignClient(clientId: string, userId: string) {
             statusBy: null,
             statusAt: null,
             rejectedReason: null,
+            rejectedReasonText: null,
             note: null,
 
             updatedAt: now,
@@ -430,6 +436,9 @@ export async function updateClientFields(
         lastBotReplyAt: number | null;
         lastBotReplyText: string | null;
         lastBotStage: string | null;
+        rejectedReason: RejectedReason | null;
+        rejectedReasonText: string | null;
+        note: string | null;
     }>
 ) {
     const data: any = {
@@ -481,6 +490,21 @@ export async function updateClientFields(
 
     if ("profileFlags" in patch) {
         data.profileFlags = normalizeAutoFlags(patch.profileFlags) ?? [];
+    }
+
+    if ("rejectedReason" in patch) {
+        data.rejectedReason =
+            patch.rejectedReason == null
+                ? null
+                : normalizeRejectReason(patch.rejectedReason) ?? "otro";
+    }
+
+    if ("rejectedReasonText" in patch) {
+        data.rejectedReasonText = (patch.rejectedReasonText ?? "").trim() || null;
+    }
+
+    if ("note" in patch) {
+        data.note = (patch.note ?? "").trim() || null;
     }
 
     await updateDoc(docRef.client(clientId), stripUndefined(data));

@@ -1,5 +1,3 @@
-// types/models.ts
-
 // ----------------------
 // USERS
 // ----------------------
@@ -159,6 +157,12 @@ export type ClientDoc = {
     rejectedReason?: RejectedReason | null;
 
     /**
+     * ✅ Nuevo:
+     * texto libre cuando rejectedReason === "otro"
+     */
+    rejectedReasonText?: string | null;
+
+    /**
      * ✅ Nuevo: origen del cliente
      */
     source?: ClientSource;
@@ -275,6 +279,12 @@ export type DailyEventDoc = {
      * Solo debería venir cuando type === "rejected"
      */
     rejectedReason?: RejectedReason | null;
+
+    /**
+     * ✅ Nuevo:
+     * texto libre cuando rejectedReason === "otro"
+     */
+    rejectedReasonText?: string | null;
 
     createdAt: number; // ms
     dayKey: string; // "YYYY-MM-DD"

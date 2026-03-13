@@ -2,13 +2,15 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Clipboard from "expo-clipboard";
 import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     FlatList,
     ImageBackground,
+    KeyboardAvoidingView,
     Linking,
     Modal,
+    Platform,
     Pressable,
     StatusBar,
     StyleSheet,
@@ -177,7 +179,7 @@ function weekRangeKeys(base = new Date()) {
     const jsDay = d.getDay();
     const diffToMonday = jsDay === 0 ? 6 : jsDay - 1;
     const start = new Date(d);
-    start.setDate(start.getDate() - diffToMonday);
+    start.setDate(d.getDate() - diffToMonday);
     const end = new Date(start);
     end.setDate(start.getDate() + 6);
     return { startKey: dayKeyFromDate(start), endKey: dayKeyFromDate(end) };
@@ -190,6 +192,41 @@ function formatTodayLabel(date = new Date()) {
     const mm = String(date.getMonth() + 1).padStart(2, "0");
     const yyyy = date.getFullYear();
     return `${dayName} - ${dd}/${mm}/${yyyy}`;
+}
+
+function toMs(v: any): number {
+    if (!v) return 0;
+    if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+    if (v instanceof Date) return v.getTime();
+    if (typeof v?.toMillis === "function") return v.toMillis();
+    if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+    }
+    return 0;
+}
+
+/**
+ * Último evento por clientId dentro del rango.
+ * Solo considera visited / rejected / pending.
+ */
+function latestEventByClient(events: DailyEventDoc[]) {
+    const map = new Map<string, DailyEventDoc>();
+
+    for (const e of events) {
+        const cid = (e as any)?.clientId as string | undefined;
+        const type = (e as any)?.type as string | undefined;
+        if (!cid) continue;
+        if (type !== "visited" && type !== "rejected" && type !== "pending") continue;
+
+        const prev = map.get(cid);
+        const eMs = toMs((e as any)?.createdAt);
+        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
+
+        if (!prev || eMs >= pMs) map.set(cid, e);
+    }
+
+    return map;
 }
 
 export default function UserHome() {
@@ -220,6 +257,7 @@ export default function UserHome() {
     const [confirmRejectOpen, setConfirmRejectOpen] = useState(false);
     const [rejectClient, setRejectClient] = useState<ClientDoc | null>(null);
     const [selectedRejectReason, setSelectedRejectReason] = useState<RejectReason | null>(null);
+    const [otherRejectReason, setOtherRejectReason] = useState("");
 
     const [confirmVisitOpen, setConfirmVisitOpen] = useState(false);
     const [visitClient, setVisitClient] = useState<ClientDoc | null>(null);
@@ -374,62 +412,89 @@ export default function UserHome() {
         return () => unsub();
     }, [firebaseUser?.uid, weekRange.startKey, weekRange.endKey]);
 
+    const clientById = useMemo(() => {
+        const m = new Map<string, ClientDoc>();
+        for (const c of clients) m.set(c.id, c);
+        return m;
+    }, [clients]);
+
+    /**
+     * Misma lógica del admin:
+     * solo cuenta el evento si:
+     * 1) el cliente todavía existe
+     * 2) el status actual del cliente coincide con el type del evento
+     */
+    const shouldCountEvent = useCallback(
+        (e: DailyEventDoc) => {
+            const cid = (e as any)?.clientId as string | undefined;
+            if (!cid) return false;
+
+            const c = clientById.get(cid);
+            if (!c) return false;
+
+            return c.status === e.type;
+        },
+        [clientById]
+    );
+
     const pendingNowCount = useMemo(
         () => clients.filter((c) => c.status === "pending").length,
         [clients]
     );
 
-    const assignedTotal = useMemo(() => clients.length, [clients]);
-
-    const totalVisitedAll = useMemo(
-        () => clients.filter((c) => c.status === "visited").length,
-        [clients]
-    );
-
-    const totalRejectedAll = useMemo(
-        () => clients.filter((c) => c.status === "rejected").length,
-        [clients]
-    );
-
     const weekLatestByClient = useMemo(() => {
-        const last = new Map<string, DailyEventDoc>();
-
-        for (const e of weekEvents) {
-            if (e.type !== "visited" && e.type !== "rejected" && e.type !== "pending") continue;
-            if (!e.clientId) continue;
-
-            const prev = last.get(e.clientId);
-            if (!prev || (e.createdAt ?? 0) > (prev.createdAt ?? 0)) last.set(e.clientId, e);
-        }
-
-        return last;
+        return latestEventByClient(weekEvents);
     }, [weekEvents]);
+
+    const todayEvents = useMemo(() => {
+        return weekEvents.filter((e) => e.dayKey === todayDayKey);
+    }, [weekEvents, todayDayKey]);
+
+    const todayLatestByClient = useMemo(() => {
+        return latestEventByClient(todayEvents);
+    }, [todayEvents]);
 
     const weekVisitedIds = useMemo(() => {
         const s = new Set<string>();
         for (const e of weekLatestByClient.values()) {
-            if (e.type === "visited" && e.clientId) s.add(e.clientId);
+            if ((e as any)?.type !== "visited") continue;
+            if (!shouldCountEvent(e)) continue;
+
+            const cid = (e as any)?.clientId as string | undefined;
+            if (cid) s.add(cid);
         }
         return s;
-    }, [weekLatestByClient]);
+    }, [weekLatestByClient, shouldCountEvent]);
 
     const weekRejectedIds = useMemo(() => {
         const s = new Set<string>();
         for (const e of weekLatestByClient.values()) {
-            if (e.type === "rejected" && e.clientId) s.add(e.clientId);
+            if ((e as any)?.type !== "rejected") continue;
+            if (!shouldCountEvent(e)) continue;
+
+            const cid = (e as any)?.clientId as string | undefined;
+            if (cid) s.add(cid);
         }
         return s;
-    }, [weekLatestByClient]);
+    }, [weekLatestByClient, shouldCountEvent]);
 
     const weekCounts = useMemo(() => {
         let visited = 0;
         let rejected = 0;
+
         for (const e of weekLatestByClient.values()) {
-            if (e.type === "visited") visited += 1;
-            if (e.type === "rejected") rejected += 1;
+            if (!shouldCountEvent(e)) continue;
+
+            if ((e as any)?.type === "visited") visited += 1;
+            if ((e as any)?.type === "rejected") rejected += 1;
         }
+
         return { visited, rejected };
-    }, [weekLatestByClient]);
+    }, [weekLatestByClient, shouldCountEvent]);
+
+    const weekHandledCount = useMemo(() => {
+        return weekCounts.visited + weekCounts.rejected;
+    }, [weekCounts]);
 
     const currentWeekUnionCount = useMemo(() => {
         const ids = new Set<string>();
@@ -445,19 +510,21 @@ export default function UserHome() {
 
     const todayVisitedCount = useMemo(() => {
         let count = 0;
-        for (const e of weekEvents) {
-            if (e.type === "visited" && e.dayKey === todayDayKey) count += 1;
+        for (const e of todayLatestByClient.values()) {
+            if (!shouldCountEvent(e)) continue;
+            if ((e as any)?.type === "visited") count += 1;
         }
         return count;
-    }, [weekEvents, todayDayKey]);
+    }, [todayLatestByClient, shouldCountEvent]);
 
     const todayRejectedCount = useMemo(() => {
         let count = 0;
-        for (const e of weekEvents) {
-            if (e.type === "rejected" && e.dayKey === todayDayKey) count += 1;
+        for (const e of todayLatestByClient.values()) {
+            if (!shouldCountEvent(e)) continue;
+            if ((e as any)?.type === "rejected") count += 1;
         }
         return count;
-    }, [weekEvents, todayDayKey]);
+    }, [todayLatestByClient, shouldCountEvent]);
 
     const todayHandledCount = useMemo(() => {
         return todayVisitedCount + todayRejectedCount;
@@ -468,8 +535,8 @@ export default function UserHome() {
             .filter((c) => c.status === "pending")
             .slice()
             .sort((a, b) => {
-                const aKey = (a.createdAt ?? a.assignedAt ?? a.updatedAt ?? 0) as number;
-                const bKey = (b.createdAt ?? b.assignedAt ?? b.updatedAt ?? 0) as number;
+                const aKey = toMs((a as any).createdAt ?? (a as any).assignedAt ?? (a as any).updatedAt);
+                const bKey = toMs((b as any).createdAt ?? (b as any).assignedAt ?? (b as any).updatedAt);
                 return aKey - bKey;
             });
 
@@ -535,8 +602,8 @@ export default function UserHome() {
             const rb = rank(b);
             if (ra !== rb) return ra - rb;
 
-            const aKey = (a.createdAt ?? a.assignedAt ?? a.updatedAt ?? 0) as number;
-            const bKey = (b.createdAt ?? b.assignedAt ?? b.updatedAt ?? 0) as number;
+            const aKey = toMs((a as any).createdAt ?? (a as any).assignedAt ?? (a as any).updatedAt);
+            const bKey = toMs((b as any).createdAt ?? (b as any).assignedAt ?? (b as any).updatedAt);
             return aKey - bKey;
         });
     }, [clients, filter, q, weekVisitedIds, weekRejectedIds]);
@@ -577,7 +644,13 @@ export default function UserHome() {
     const doUpdateStatus = async (
         client: ClientDoc,
         nextStatus: "pending" | "visited" | "rejected",
-        reason?: RejectReason
+        extra?:
+            | RejectReason
+            | {
+                rejectedReason?: RejectReason;
+                rejectedReasonText?: string | null;
+                note?: string | null;
+            }
     ) => {
         if (!firebaseUser || !client.id) return;
 
@@ -589,7 +662,7 @@ export default function UserHome() {
 
         try {
             setBusyId(client.id);
-            await updateClientStatus(client.id, nextStatus, firebaseUser.uid, snapshot, reason);
+            await updateClientStatus(client.id, nextStatus, firebaseUser.uid, snapshot, extra as any);
         } catch (e: any) {
             Alert.alert("Error", e?.message ?? "No se pudo actualizar el estado.");
         } finally {
@@ -602,6 +675,7 @@ export default function UserHome() {
         setConfirmRejectOpen(false);
         setRejectClient(null);
         setSelectedRejectReason(null);
+        setOtherRejectReason("");
     };
 
     const resetVisitFlow = () => {
@@ -612,6 +686,7 @@ export default function UserHome() {
     const confirmRejectedWithReason = (client: ClientDoc) => {
         setRejectClient(client);
         setSelectedRejectReason(null);
+        setOtherRejectReason("");
         setRejectModalOpen(true);
     };
 
@@ -622,6 +697,22 @@ export default function UserHome() {
 
     const selectRejectReason = (reason: RejectReason) => {
         setSelectedRejectReason(reason);
+
+        if (reason === "otro") return;
+
+        setRejectModalOpen(false);
+        setConfirmRejectOpen(true);
+    };
+
+    const continueRejectWithOther = () => {
+        if (selectedRejectReason !== "otro") return;
+
+        const text = otherRejectReason.trim();
+        if (!text) {
+            Alert.alert("Motivo requerido", "Escribe el motivo cuando elijas “Otro”.");
+            return;
+        }
+
         setRejectModalOpen(false);
         setConfirmRejectOpen(true);
     };
@@ -631,9 +722,20 @@ export default function UserHome() {
 
         const client = rejectClient;
         const reason = selectedRejectReason;
+        const otherText = otherRejectReason.trim();
+
+        if (reason === "otro" && !otherText) {
+            Alert.alert("Motivo requerido", "Escribe el motivo cuando elijas “Otro”.");
+            return;
+        }
 
         resetRejectFlow();
-        await doUpdateStatus(client, "rejected", reason);
+
+        await doUpdateStatus(client, "rejected", {
+            rejectedReason: reason,
+            rejectedReasonText: reason === "otro" ? otherText : null,
+            note: reason === "otro" ? otherText : null,
+        });
     };
 
     const submitVisited = async () => {
@@ -644,7 +746,7 @@ export default function UserHome() {
     };
 
     const canRestoreToPendingToday = (client: ClientDoc) => {
-        const at = (client.statusAt ?? client.updatedAt ?? 0) as number;
+        const at = toMs((client as any).statusAt ?? (client as any).updatedAt);
         if (!at) return false;
         return dayKeyFromMs(at) === todayDayKey;
     };
@@ -733,23 +835,6 @@ export default function UserHome() {
             params: { startKey: weekRange.startKey, endKey: weekRange.endKey },
         });
     };
-
-    const TinyStat = ({
-        icon,
-        color,
-        value,
-        label,
-    }: {
-        icon: any;
-        color: string;
-        value: number;
-        label: string;
-    }) => (
-        <View style={styles.tinyStatWrap} accessibilityLabel={`${label}: ${value}`}>
-            <Ionicons name={icon} size={14} color={color} />
-            <Text style={styles.tinyStatValue}>{value}</Text>
-        </View>
-    );
 
     const PortfolioMiniStat = ({
         icon,
@@ -908,8 +993,6 @@ export default function UserHome() {
                             <Text numberOfLines={1} style={styles.clientName}>
                                 {name}
                             </Text>
-
-
                         </View>
 
                         {business ? (
@@ -920,8 +1003,6 @@ export default function UserHome() {
                     </View>
 
                     <View style={styles.cardTopRight}>
-
-
                         <View style={styles.statusColumn}>
                             <View style={[styles.pill, statusPillStyle(item.status)]}>
                                 <Text style={[styles.pillText, statusPillTextStyle(item.status)]}>
@@ -1134,31 +1215,31 @@ export default function UserHome() {
                                     <View style={[styles.topCard, styles.portfolioCard]}>
                                         <View style={styles.bannerTop}>
                                             <View style={styles.bannerIconWrap}>
-                                                <Ionicons name="people-outline" size={18} color={COLORS.text} />
+                                                <Ionicons name="calendar-outline" size={18} color={COLORS.text} />
                                             </View>
                                             <View style={[styles.badge, styles.badgePrimarySoft]}>
                                                 <Text style={[styles.badgeText, styles.badgeTextPrimarySoft]}>
-                                                    TU CARTERA
+                                                    SEMANA
                                                 </Text>
                                             </View>
                                         </View>
 
                                         <View style={styles.portfolioMainBlock}>
-                                            <Text style={styles.portfolioMainValue}>{assignedTotal}</Text>
-                                            <Text style={styles.portfolioMainLabel}>Asignados</Text>
+                                            <Text style={styles.portfolioMainValue}>{weekHandledCount}</Text>
+                                            <Text style={styles.portfolioMainLabel}>Resumen semanal</Text>
                                         </View>
 
                                         <View style={styles.portfolioBottomRow}>
                                             <PortfolioMiniStat
                                                 icon="checkmark-circle-outline"
                                                 color={COLORS.ok}
-                                                value={totalVisitedAll}
+                                                value={weekCounts.visited}
                                                 label="Visitados"
                                             />
                                             <PortfolioMiniStat
                                                 icon="close-circle-outline"
                                                 color={COLORS.bad}
-                                                value={totalRejectedAll}
+                                                value={weekCounts.rejected}
                                                 label="Rechazados"
                                             />
                                         </View>
@@ -1234,14 +1315,12 @@ export default function UserHome() {
                             </View>
                         }
                     />
-
-
                 </View>
             </ImageBackground>
 
             <Modal visible={noteModalOpen} transparent animationType="fade" onRequestClose={closeNoteModal}>
                 <Pressable style={styles.modalBackdrop} onPress={closeNoteModal} />
-                <View style={styles.modalCard}>
+                <View style={[styles.modalCard, { bottom: Math.max(16, insets.bottom + 8) }]}>
                     <View style={styles.modalHeader}>
                         <Text style={styles.modalTitle}>Nota del cliente</Text>
                         <Pressable
@@ -1286,8 +1365,6 @@ export default function UserHome() {
                             <Text style={styles.modalBtnText}>Guardar</Text>
                         </Pressable>
                     </View>
-
-
                 </View>
             </Modal>
 
@@ -1299,55 +1376,110 @@ export default function UserHome() {
             >
                 <Pressable style={styles.modalBackdrop} onPress={resetRejectFlow} />
 
-                <View style={styles.rejectModalCard}>
-                    <View style={styles.modalHeader}>
-                        <View style={{ flex: 1, gap: 3 }}>
-                            <Text style={styles.modalTitle}>Motivo del rechazo</Text>
-                            <Text style={styles.rejectModalSub} numberOfLines={2}>
-                                {rejectClient
-                                    ? `Selecciona el motivo para ${((rejectClient as any)?.name ?? (rejectClient as any)?.business ?? rejectClient.phone ?? "este cliente").toString().trim()}`
-                                    : "Selecciona el motivo"}
-                            </Text>
+                <KeyboardAvoidingView
+                    behavior={Platform.OS === "ios" ? "padding" : "height"}
+                    style={styles.rejectModalWrap}
+                >
+                    <View
+                        style={[
+                            styles.rejectModalCard,
+                            {
+                                bottom: Math.max(12, insets.bottom + 8),
+                            },
+                        ]}
+                    >
+                        <View style={styles.modalHeader}>
+                            <View style={{ flex: 1, gap: 3 }}>
+                                <Text style={styles.modalTitle}>Motivo del rechazo</Text>
+                                <Text style={styles.rejectModalSub} numberOfLines={2}>
+                                    {rejectClient
+                                        ? `Selecciona el motivo para ${((rejectClient as any)?.name ?? (rejectClient as any)?.business ?? rejectClient.phone ?? "este cliente").toString().trim()}`
+                                        : "Selecciona el motivo"}
+                                </Text>
+                            </View>
+
+                            <Pressable onPress={resetRejectFlow} style={styles.modalClose}>
+                                <Ionicons name="close" size={18} color={COLORS.text} />
+                            </Pressable>
                         </View>
 
-                        <Pressable onPress={resetRejectFlow} style={styles.modalClose}>
-                            <Ionicons name="close" size={18} color={COLORS.text} />
-                        </Pressable>
-                    </View>
+                        <View style={styles.rejectGrid}>
+                            {(
+                                [
+                                    "clavo",
+                                    "localizacion",
+                                    "zona_riesgosa",
+                                    "ingresos_insuficientes",
+                                    "muy_endeudado",
+                                    "informacion_dudosa",
+                                    "no_le_interesa",
+                                    "no_estaba_cerrado",
+                                    "fuera_de_ruta",
+                                    "otro",
+                                ] as RejectReason[]
+                            ).map((reason) => {
+                                const active = selectedRejectReason === reason;
 
-                    <View style={styles.rejectGrid}>
-                        {(
-                            [
-                                "clavo",
-                                "localizacion",
-                                "zona_riesgosa",
-                                "ingresos_insuficientes",
-                                "muy_endeudado",
-                                "informacion_dudosa",
-                                "no_le_interesa",
-                                "no_estaba_cerrado",
-                                "fuera_de_ruta",
-                                "otro",
-                            ] as RejectReason[]
-                        ).map((reason) => (
-                            <Pressable
-                                key={reason}
-                                style={({ pressed }) => [
-                                    styles.rejectOption,
-                                    pressed && styles.rejectOptionPressed,
-                                ]}
-                                onPress={() => selectRejectReason(reason)}
-                            >
-                                <Ionicons
-                                    name={reasonIcon(reason) as any}
-                                    size={18}
-                                    color={reason === "clavo" ? COLORS.bad : COLORS.text}
+                                return (
+                                    <Pressable
+                                        key={reason}
+                                        style={({ pressed }) => [
+                                            styles.rejectOption,
+                                            active && styles.rejectOptionActive,
+                                            pressed && styles.rejectOptionPressed,
+                                        ]}
+                                        onPress={() => selectRejectReason(reason)}
+                                    >
+                                        <Ionicons
+                                            name={reasonIcon(reason) as any}
+                                            size={18}
+                                            color={reason === "clavo" ? COLORS.bad : COLORS.text}
+                                        />
+                                        <Text style={styles.rejectOptionText}>{reasonLabel(reason)}</Text>
+                                    </Pressable>
+                                );
+                            })}
+                        </View>
+
+                        {selectedRejectReason === "otro" ? (
+                            <View style={styles.otherReasonWrap}>
+                                <Text style={styles.otherReasonLabel}>Escribe el motivo *</Text>
+                                <TextInput
+                                    value={otherRejectReason}
+                                    onChangeText={setOtherRejectReason}
+                                    placeholder="Ej: dueño ausente, local en reforma, volver otro día…"
+                                    placeholderTextColor={COLORS.muted}
+                                    style={styles.otherReasonInput}
+                                    multiline
                                 />
-                                <Text style={styles.rejectOptionText}>{reasonLabel(reason)}</Text>
-                            </Pressable>
-                        ))}
+
+                                <View style={styles.modalActions}>
+                                    <Pressable
+                                        onPress={resetRejectFlow}
+                                        style={({ pressed }) => [
+                                            styles.modalBtn,
+                                            pressed && styles.modalBtnPressed,
+                                        ]}
+                                    >
+                                        <Text style={styles.modalBtnText}>Cancelar</Text>
+                                    </Pressable>
+
+                                    <Pressable
+                                        onPress={continueRejectWithOther}
+                                        style={({ pressed }) => [
+                                            styles.modalBtn,
+                                            styles.modalBtnPrimary,
+                                            pressed && styles.modalBtnPressed,
+                                        ]}
+                                    >
+                                        <Ionicons name="arrow-forward-outline" size={18} color={COLORS.text} />
+                                        <Text style={styles.modalBtnText}>Continuar</Text>
+                                    </Pressable>
+                                </View>
+                            </View>
+                        ) : null}
                     </View>
-                </View>
+                </KeyboardAvoidingView>
             </Modal>
 
             <Modal
@@ -1376,6 +1508,12 @@ export default function UserHome() {
                         </Text>
                         ?
                     </Text>
+
+                    {selectedRejectReason === "otro" && otherRejectReason.trim() ? (
+                        <Text style={styles.confirmOtherReasonText}>
+                            Motivo: {otherRejectReason.trim()}
+                        </Text>
+                    ) : null}
 
                     {!!rejectClient ? (
                         <Text style={styles.confirmClientText} numberOfLines={2}>
@@ -1709,24 +1847,6 @@ const styles = StyleSheet.create({
         textAlign: "center",
     },
 
-    tinyStatWrap: {
-        height: 34,
-        borderRadius: 12,
-        backgroundColor: "rgba(255,255,255,0.05)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 6,
-        paddingHorizontal: 8,
-    },
-    tinyStatValue: {
-        color: COLORS.text,
-        fontWeight: "900",
-        fontSize: 12,
-    },
-
     searchWrap: {
         marginBottom: 10,
         flexDirection: "row",
@@ -1852,19 +1972,6 @@ const styles = StyleSheet.create({
 
     cardTopRight: { flexDirection: "row", alignItems: "center", gap: 10 },
 
-    noteBtn: {
-        width: 38,
-        height: 28,
-        borderRadius: 12,
-        backgroundColor: "rgba(15, 23, 42, 0.72)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.12)",
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    noteBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
-    noteBtnDisabled: { opacity: 0.45 },
-
     pill: {
         paddingHorizontal: 10,
         height: 28,
@@ -1951,7 +2058,6 @@ const styles = StyleSheet.create({
     empty: { marginTop: 40, alignItems: "center", gap: 10 },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "800" },
 
-
     modalBackdrop: {
         ...StyleSheet.absoluteFillObject,
         backgroundColor: "rgba(0,0,0,0.55)",
@@ -1960,7 +2066,6 @@ const styles = StyleSheet.create({
         position: "absolute",
         left: 16,
         right: 16,
-        bottom: 16,
         backgroundColor: "#111827",
         borderRadius: 18,
         borderWidth: 1,
@@ -2022,13 +2127,15 @@ const styles = StyleSheet.create({
     modalBtnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     modalBtnText: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
     modalBtnTextDanger: { color: COLORS.bad, fontSize: 13, fontWeight: "900" },
-    modalHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.9 },
 
+    rejectModalWrap: {
+        flex: 1,
+        justifyContent: "flex-end",
+    },
     rejectModalCard: {
         position: "absolute",
         left: 16,
         right: 16,
-        bottom: 16,
         backgroundColor: "#111827",
         borderRadius: 18,
         borderWidth: 1,
@@ -2062,6 +2169,10 @@ const styles = StyleSheet.create({
         gap: 8,
         paddingHorizontal: 10,
     },
+    rejectOptionActive: {
+        borderColor: "rgba(255,255,255,0.28)",
+        backgroundColor: "rgba(255,255,255,0.08)",
+    },
     rejectOptionPressed: {
         transform: [{ scale: 0.98 }],
         opacity: 0.96,
@@ -2072,6 +2183,29 @@ const styles = StyleSheet.create({
         fontWeight: "800",
         textAlign: "center",
         flexShrink: 1,
+    },
+
+    otherReasonWrap: {
+        gap: 10,
+        marginTop: 2,
+    },
+    otherReasonLabel: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    otherReasonInput: {
+        minHeight: 92,
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        paddingVertical: 12,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "700",
+        textAlignVertical: "top",
     },
 
     confirmModalCard: {
@@ -2122,6 +2256,13 @@ const styles = StyleSheet.create({
     confirmTextStrong: {
         color: COLORS.text,
         fontWeight: "900",
+    },
+    confirmOtherReasonText: {
+        color: "#CBD5E1",
+        fontSize: 12,
+        fontWeight: "800",
+        textAlign: "center",
+        lineHeight: 18,
     },
     confirmClientText: {
         color: COLORS.text,

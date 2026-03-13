@@ -50,13 +50,38 @@ function getFinalParseStatusFactory({ hasUsefulName }) {
     };
 }
 
+function getRandomHumanReplyDelayMs() {
+    const min = 10_000;
+    const max = 15_000;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 function shouldSendBotReply(client) {
     const lastInbound = safeNumber(client?.lastInboundMessageAt, 0);
     if (!lastInbound) return false;
 
     const now = Date.now();
     const diff = now - lastInbound;
-    return diff >= 0 && diff <= 24 * 60 * 60 * 1000;
+    if (diff < 0 || diff > 24 * 60 * 60 * 1000) return false;
+
+    const lastBotReplyAt = safeNumber(client?.lastBotReplyAt, 0);
+    const lastBotStage = safeString(client?.lastBotStage || "");
+    const parseStatus = safeString(client?.parseStatus || "");
+    const verificationStatus = safeString(client?.verificationStatus || "");
+
+    if (lastBotReplyAt > 0 && now - lastBotReplyAt < 8_000) {
+        return false;
+    }
+
+    if (verificationStatus === "not_suitable" && lastBotStage === "final:not_suitable") {
+        return false;
+    }
+
+    if (parseStatus === "ready" && lastBotStage.startsWith("final")) {
+        return false;
+    }
+
+    return true;
 }
 
 module.exports = {
@@ -67,5 +92,6 @@ module.exports = {
     hasRequiredMapsForFlow,
     getMissingLeadFields,
     getFinalParseStatusFactory,
+    getRandomHumanReplyDelayMs,
     shouldSendBotReply,
 };

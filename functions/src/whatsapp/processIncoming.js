@@ -12,6 +12,10 @@ const {
     extractGoogleMapsUrlFromText,
 } = require("../utils/geo");
 
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function createProcessIncomingWhatsappMessage({
     looksLikeSystemOrMetaMessage,
     looksLikeGreetingOrInterestText,
@@ -19,6 +23,7 @@ function createProcessIncomingWhatsappMessage({
     isLikelyBusinessLine,
     upsertLeadAsClient,
     maybeReplyToLead,
+    getRandomHumanReplyDelayMs,
 }) {
     return async function processIncomingWhatsappMessage(changeValue) {
         const contacts = Array.isArray(changeValue?.contacts) ? changeValue.contacts : [];
@@ -170,6 +175,17 @@ function createProcessIncomingWhatsappMessage({
                 }, { merge: true });
 
                 try {
+                    const delayMs =
+                        typeof getRandomHumanReplyDelayMs === "function"
+                            ? getRandomHumanReplyDelayMs()
+                            : 12000;
+
+                    await inboxRef.set({
+                        botReplyPlannedDelayMs: delayMs,
+                    }, { merge: true });
+
+                    await sleep(delayMs);
+
                     await maybeReplyToLead({
                         clientId: result.clientId,
                         waId,

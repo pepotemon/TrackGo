@@ -130,7 +130,7 @@ function looksLikePersonNameFactory({
         const s = normalizeLooseText(v);
 
         if (!v) return false;
-        if (v.length < 3 || v.length > 60) return false;
+        if (v.length < 2 || v.length > 60) return false;
         if (looksLikeBrazilAddress(v)) return false;
         if (isLikelyBusinessLine(v)) return false;
         if (isClearlyNotPersonText(v)) return false;
@@ -158,15 +158,11 @@ function looksLikePersonNameFactory({
 
 function resolveNextClientNameFactory({
     isBadProfileName,
-    sanitizeExplicitPersonName,
     sanitizeFallbackProfileName,
 }) {
-    return function resolveNextClientName({ prevName, explicitParsedName, profileName }) {
+    return function resolveNextClientName({ prevName, profileName }) {
         const prevClean = cleanupExtractedText(prevName || "");
         const prevIsUseful = !!prevClean && !isBadProfileName(prevClean);
-
-        const explicitClean = sanitizeExplicitPersonName(explicitParsedName || "");
-        if (explicitClean) return explicitClean;
 
         if (prevIsUseful) return prevClean;
 

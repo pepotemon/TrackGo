@@ -28,7 +28,14 @@ function roundCoord(v) {
 }
 
 function hasValidCoords(lat, lng) {
-    return Number.isFinite(lat) && Number.isFinite(lng);
+    return (
+        Number.isFinite(lat) &&
+        Number.isFinite(lng) &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lng >= -180 &&
+        lng <= 180
+    );
 }
 
 function buildGoogleMapsUrlFromCoords(lat, lng) {
@@ -61,13 +68,14 @@ function extractGoogleMapsUrlFromText(text) {
     return "";
 }
 
-function looksLikeBrazilAddress(text) {
+function looksLikeAddressPattern(text) {
     const s = normalizeLooseText(text);
     if (!s) return false;
 
     return (
         s.includes("rua ") ||
         s.includes("av ") ||
+        s.includes("av. ") ||
         s.includes("avenida") ||
         s.includes("travessa") ||
         s.includes("tv ") ||
@@ -78,8 +86,18 @@ function looksLikeBrazilAddress(text) {
         s.includes("estrada") ||
         s.includes("bairro") ||
         s.includes("numero ") ||
+        s.includes("número ") ||
         s.includes("nº") ||
         s.includes("cep ") ||
+        isLikelyCep(s)
+    );
+}
+
+function looksLikeKnownRegionMention(text) {
+    const s = normalizeLooseText(text);
+    if (!s) return false;
+
+    return (
         s.includes("goias") ||
         s.includes("goiás") ||
         s.includes("goiania") ||
@@ -96,23 +114,29 @@ function looksLikeBrazilAddress(text) {
         s.includes("macaiba") ||
         s.includes("macaíba") ||
         s.includes("zona norte") ||
-        s.includes("pa ") ||
         s.includes(" - pa") ||
         s.includes("/pa") ||
-        s.includes("go ") ||
         s.includes(" - go") ||
         s.includes("/go") ||
-        s.includes("rn ") ||
         s.includes(" - rn") ||
         s.includes("/rn") ||
-        s.includes("am ") ||
         s.includes(" - am") ||
         s.includes("/am") ||
-        s.includes("ma ") ||
         s.includes(" - ma") ||
-        s.includes("/ma") ||
-        isLikelyCep(s)
+        s.includes("/ma")
     );
+}
+
+function looksLikeBrazilAddress(text) {
+    const s = normalizeLooseText(text);
+    if (!s) return false;
+
+    if (looksLikeAddressPattern(s)) return true;
+
+    const hasNumber = /\b\d{1,6}\b/.test(s);
+    if (looksLikeKnownRegionMention(s) && hasNumber) return true;
+
+    return false;
 }
 
 module.exports = {
@@ -124,5 +148,7 @@ module.exports = {
     buildGoogleMapsUrlFromCoords,
     looksLikeMapsUrl,
     extractGoogleMapsUrlFromText,
+    looksLikeAddressPattern,
+    looksLikeKnownRegionMention,
     looksLikeBrazilAddress,
 };

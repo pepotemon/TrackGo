@@ -48,15 +48,30 @@ function onlyDigits(v) {
 function includesAnyNormalized(text, patterns) {
     const s = normalizeLooseText(text);
     if (!s) return false;
-    return patterns.some((p) => s.includes(normalizeLooseText(p)));
+    return (patterns || []).some((p) => s.includes(normalizeLooseText(p)));
+}
+
+function escapeRegex(text) {
+    return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasWholeWordNormalized(text, word) {
+    const s = normalizeLooseText(text);
+    const w = normalizeLooseText(word);
+
+    if (!s || !w) return false;
+
+    const re = new RegExp(`(^|[^a-z0-9])${escapeRegex(w)}([^a-z0-9]|$)`, "i");
+    return re.test(s);
 }
 
 function extractLabeledValue(text, labels) {
     const source = safeString(text);
 
-    for (const label of labels) {
+    for (const label of labels || []) {
+        const safeLabel = escapeRegex(label);
         const re = new RegExp(
-            `(?:^|\\n|\\r)\\s*${label}\\s*[:\\-]?\\s*(.+)`,
+            `(?:^|\\n|\\r)\\s*${safeLabel}\\s*[:\\-]?\\s*(.+)`,
             "i"
         );
         const m = source.match(re);
@@ -79,5 +94,7 @@ module.exports = {
     normalizeLooseText,
     onlyDigits,
     includesAnyNormalized,
+    escapeRegex,
+    hasWholeWordNormalized,
     extractLabeledValue,
 };

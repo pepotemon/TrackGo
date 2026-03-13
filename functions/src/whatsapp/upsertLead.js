@@ -26,7 +26,9 @@ function pickLeadQuality(prevQuality, nextQuality) {
     const prevRank = rank[prevQuality || ""] || 0;
     const nextRank = rank[nextQuality || ""] || 0;
 
-    return nextRank >= prevRank ? (nextQuality || "unknown") : (prevQuality || "unknown");
+    return nextRank >= prevRank
+        ? (nextQuality || "unknown")
+        : (prevQuality || "unknown");
 }
 
 function pickProfileType(prevType, nextType) {
@@ -39,21 +41,39 @@ function pickVerificationStatus(prevStatus, nextStatus, leadQuality, parseStatus
     const prev = String(prevStatus || "").trim().toLowerCase();
     const next = String(nextStatus || "").trim().toLowerCase();
 
-    // manual verified no se pisa automáticamente
     if (prev === "verified") return "verified";
 
-    // si se detecta no apto, manda
     if (String(leadQuality || "").trim().toLowerCase() === "not_suitable") {
         return "not_suitable";
     }
 
-    // si no está completo
     if (String(parseStatus || "").trim().toLowerCase() !== "ready") {
         return "incomplete";
     }
 
-    // por defecto listo para revisión manual
     return next || prev || "pending_review";
+}
+
+function pickBetterBusiness(prevBusiness, nextBusiness) {
+    const prev = cleanupExtractedText(prevBusiness || "");
+    const next = cleanupExtractedText(nextBusiness || "");
+
+    if (!prev) return next;
+    if (!next) return prev;
+
+    if (prev.length >= next.length) return prev;
+    return next;
+}
+
+function pickBetterAddress(prevAddress, nextAddress) {
+    const prev = cleanupExtractedText(prevAddress || "");
+    const next = cleanupExtractedText(nextAddress || "");
+
+    if (!prev) return next;
+    if (!next) return prev;
+
+    if (next.length > prev.length + 4) return next;
+    return prev;
 }
 
 function createUpsertLeadAsClient({
@@ -103,14 +123,13 @@ function createUpsertLeadAsClient({
 
             const resolvedName = resolveNextClientName({
                 prevName: "",
-                explicitParsedName: parsed.parsedNameExplicit,
                 profileName,
             });
 
             const draftClient = {
                 name: resolvedName || "",
-                business: parsed.parsedBusiness || "",
-                businessRaw: parsed.parsedBusinessRaw || parsed.parsedBusiness || "",
+                business: pickBetterBusiness("", parsed.parsedBusiness || ""),
+                businessRaw: pickBetterBusiness("", parsed.parsedBusinessRaw || parsed.parsedBusiness || ""),
                 businessQuality,
                 businessFlags,
                 profileFlags,
@@ -119,7 +138,7 @@ function createUpsertLeadAsClient({
                 notSuitableReason,
                 phone,
                 mapsUrl: generatedMapsUrl || "",
-                address: parsed.parsedAddress || locationAddress || "",
+                address: pickBetterAddress("", parsed.parsedAddress || locationAddress || ""),
                 lat: hasValidCoords(lat, lng) ? lat : null,
                 lng: hasValidCoords(lat, lng) ? lng : null,
                 currentLeadMapsConfirmedAt: hasMapsInThisMessage ? now : 0,
@@ -218,11 +237,13 @@ function createUpsertLeadAsClient({
             ...prev,
             name: resolveNextClientName({
                 prevName: prev.name,
-                explicitParsedName: parsed.parsedNameExplicit,
                 profileName,
             }),
-            business: cleanupExtractedText(prev.business || "") || cleanupExtractedText(parsed.parsedBusiness || ""),
-            businessRaw: cleanupExtractedText(prev.businessRaw || "") || cleanupExtractedText(parsed.parsedBusinessRaw || parsed.parsedBusiness || ""),
+            business: pickBetterBusiness(prev.business, parsed.parsedBusiness || ""),
+            businessRaw: pickBetterBusiness(
+                prev.businessRaw,
+                parsed.parsedBusinessRaw || parsed.parsedBusiness || ""
+            ),
             businessQuality:
                 prev.businessQuality && prev.businessQuality !== "unknown"
                     ? prev.businessQuality
@@ -232,7 +253,7 @@ function createUpsertLeadAsClient({
             profileType: pickProfileType(prev.profileType, profileType),
             leadQuality: pickLeadQuality(prev.leadQuality, leadQuality),
             notSuitableReason: safeString(prev.notSuitableReason || "") || safeString(notSuitableReason || ""),
-            address: cleanupExtractedText(prev.address || "") || cleanupExtractedText(parsed.parsedAddress || locationAddress),
+            address: pickBetterAddress(prev.address, parsed.parsedAddress || locationAddress),
             mapsUrl: safeString(prev.mapsUrl || "") || generatedMapsUrl || "",
             lat:
                 prev.lat !== undefined && prev.lat !== null

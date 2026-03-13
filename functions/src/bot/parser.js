@@ -1,5 +1,8 @@
 const { safeString, extractLabeledValue } = require("../utils/text");
-const { extractGoogleMapsUrlFromText, looksLikeBrazilAddress } = require("../utils/geo");
+const {
+    extractGoogleMapsUrlFromText,
+    looksLikeBrazilAddress,
+} = require("../utils/geo");
 const {
     detectUnsupportedProfileSignals,
     classifyProfileFromFlags,
@@ -16,6 +19,7 @@ function createLeadParser({
     sanitizeBusiness,
     isPossibleBusinessFallbackText,
     classifyBusinessQuality,
+    getBusinessFlags,
 }) {
     return function parseLeadText(rawText, fallbackProfileName) {
         const text = safeString(rawText);
@@ -94,7 +98,8 @@ function createLeadParser({
             }
         }
 
-        const finalName = explicitName || sanitizeFallbackProfileName(fallbackProfileName);
+        const fallbackName = sanitizeFallbackProfileName(fallbackProfileName);
+        const finalName = fallbackName || explicitName || "";
         const hasBusiness = !!finalBusiness || !!businessRaw;
         const hasMapsCandidate = !!extractGoogleMapsUrlFromText(text);
 
@@ -106,8 +111,11 @@ function createLeadParser({
         } = classifyProfileFromFlags(profileFlags);
 
         const businessQuality = classifyBusinessQuality(text, finalBusiness, businessRaw);
+        const businessFlags = typeof getBusinessFlags === "function"
+            ? getBusinessFlags(text, finalBusiness, businessRaw)
+            : [];
 
-        const parseStatus =
+        const messageParseStatus =
             hasBusiness && hasMapsCandidate
                 ? "ready"
                 : hasBusiness || hasMapsCandidate || !!finalName
@@ -115,25 +123,26 @@ function createLeadParser({
                     : "empty";
 
         const verificationStatus = getVerificationStatusFromLead({
-            parseStatus,
+            parseStatus: messageParseStatus,
             leadQuality,
         });
 
         return {
             rawText: text,
-            parsedName: finalName || "",
+            parsedName: finalName,
             parsedNameExplicit: explicitName || "",
             parsedAddress: finalAddress || "",
             parsedBusiness: finalBusiness || businessRaw || "",
             parsedBusinessRaw: businessRaw || finalBusiness || "",
             businessQuality,
-            businessFlags: [],
+            businessFlags,
             profileFlags,
             profileType,
             leadQuality,
             notSuitableReason,
             verificationStatus,
-            parseStatus,
+            parseStatus: messageParseStatus,
+            messageParseStatus,
             lines,
         };
     };

@@ -1,4 +1,8 @@
-const { includesAnyNormalized, normalizeLooseText } = require("../utils/text");
+const {
+    includesAnyNormalized,
+    normalizeLooseText,
+    hasWholeWordNormalized,
+} = require("../utils/text");
 
 function isCoverageQuestion(text) {
     return includesAnyNormalized(text, [
@@ -6,12 +10,19 @@ function isCoverageQuestion(text) {
         "sou de",
         "aqui e de",
         "aqui é de",
+        "voces faz",
         "vocês faz",
         "vcs faz",
         "trabalha com a regiao",
         "trabalha com a região",
         "atende minha regiao",
         "atende minha região",
+        "atende aqui",
+        "faz aqui",
+        "faz na minha cidade",
+        "faz na minha regiao",
+        "faz na minha região",
+        "tem cobertura aqui",
         "atende goias",
         "atende goiás",
         "atende maranhao",
@@ -21,13 +32,11 @@ function isCoverageQuestion(text) {
         "atende natal",
         "atende belem",
         "atende belém",
-        "trabalha com",
         "faz em goias",
         "faz em goiás",
         "faz no maranhao",
         "faz no maranhão",
         "faz em pernambuco",
-        "faz aqui",
     ]);
 }
 
@@ -37,8 +46,9 @@ function isHowItWorksQuestion(text) {
         "como e",
         "como é",
         "como funciona o credito",
-        "como funciona o empréstimo",
+        "como funciona o crédito",
         "como funciona o emprestimo",
+        "como funciona o empréstimo",
         "como funciona ai",
         "como funciona aí",
         "quais sao as condicoes",
@@ -47,6 +57,10 @@ function isHowItWorksQuestion(text) {
         "quais as condições",
         "me explica",
         "explica melhor",
+        "como voces trabalham",
+        "como vocês trabalham",
+        "como funciona ai com voces",
+        "como funciona aí com vocês",
     ]);
 }
 
@@ -61,6 +75,8 @@ function isUrgencyText(text) {
         "o quanto antes",
         "hoje ainda",
         "ainda hoje",
+        "com urgencia",
+        "com urgência",
     ]);
 }
 
@@ -70,55 +86,75 @@ function detectUnsupportedProfileSignals(text) {
 
     if (!s) return flags;
 
-    // aposentado / pensionista / INSS
-    if (
-        s.includes("aposentado") ||
-        s.includes("aposentada") ||
-        s.includes("pensionista") ||
-        s.includes("pensão") ||
-        s.includes("pensao") ||
-        s.includes("inss") ||
-        s.includes("beneficio") ||
-        s.includes("benefício")
-    ) {
+    const hasRetirementSignal =
+        includesAnyNormalized(s, [
+            "sou aposentado",
+            "sou aposentada",
+            "aposentado",
+            "aposentada",
+            "sou pensionista",
+            "pensionista",
+            "beneficio do inss",
+            "benefício do inss",
+            "recebo inss",
+            "recebo beneficio",
+            "recebo benefício",
+            "sou do inss",
+        ]) ||
+        (hasWholeWordNormalized(s, "inss") &&
+            (hasWholeWordNormalized(s, "aposentado") ||
+                hasWholeWordNormalized(s, "aposentada") ||
+                hasWholeWordNormalized(s, "pensionista") ||
+                hasWholeWordNormalized(s, "beneficio") ||
+                hasWholeWordNormalized(s, "benefício")));
+
+    if (hasRetirementSignal) {
         flags.push("retirement_profile");
     }
 
-    // assalariado / CLT / empregado
-    if (
-        s.includes("assalariado") ||
-        s.includes("assalariada") ||
-        s.includes("clt") ||
-        s.includes("carteira assinada") ||
-        s.includes("trabalho registrado") ||
-        s.includes("empregado") ||
-        s.includes("empregada") ||
-        s.includes("funcionario") ||
-        s.includes("funcionário")
-    ) {
+    const hasSalarySignal = includesAnyNormalized(s, [
+        "sou assalariado",
+        "sou assalariada",
+        "assalariado",
+        "assalariada",
+        "sou clt",
+        "trabalho de clt",
+        "carteira assinada",
+        "trabalho registrado",
+        "sou empregado",
+        "sou empregada",
+        "sou funcionario",
+        "sou funcionário",
+    ]);
+
+    if (hasSalarySignal) {
         flags.push("salary_profile");
     }
 
-    // aplicativo / uber / motoboy / entregador
-    if (
-        s.includes("uber") ||
-        s.includes("99pop") ||
-        s.includes("99") ||
-        s.includes("motorista de aplicativo") ||
-        s.includes("trabalho de aplicativo") ||
-        s.includes("trabalha de aplicativo") ||
-        s.includes("trabalho com aplicativo") ||
-        s.includes("trabalho no aplicativo") ||
-        s.includes("aplicativo") ||
-        s.includes("moto entrega") ||
-        s.includes("moto-entrega") ||
-        s.includes("motoboy") ||
-        s.includes("entregador") ||
-        s.includes("entregador de aplicativo") ||
-        s.includes("ifood") ||
-        s.includes("rappi") ||
-        s.includes("loggi")
-    ) {
+    const hasAppDriverSignal =
+        includesAnyNormalized(s, [
+            "uber",
+            "99pop",
+            "motorista de aplicativo",
+            "trabalho de aplicativo",
+            "trabalho com aplicativo",
+            "trabalho no aplicativo",
+            "trabalha de aplicativo",
+            "sou motoboy",
+            "motoboy",
+            "moto entrega",
+            "moto-entrega",
+            "entregador de aplicativo",
+            "ifood",
+            "rappi",
+            "loggi",
+        ]) ||
+        (hasWholeWordNormalized(s, "99") &&
+            (hasWholeWordNormalized(s, "motorista") ||
+                hasWholeWordNormalized(s, "app") ||
+                hasWholeWordNormalized(s, "aplicativo")));
+
+    if (hasAppDriverSignal) {
         flags.push("app_driver_profile");
     }
 
@@ -128,7 +164,6 @@ function detectUnsupportedProfileSignals(text) {
 function classifyProfileFromFlags(flags) {
     const list = Array.isArray(flags) ? flags : [];
 
-    // si mezcla varios perfiles no aptos, igual queda como review manual
     if (list.length > 1) {
         return {
             profileType: "mixed_restricted",
