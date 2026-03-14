@@ -4,6 +4,7 @@
 // - pending_review / incomplete / not_suitable solo cuentan Meta leads NO asignados
 // - así queda sincronizado con la pantalla de leads sin romper el total de verificados
 // - también se cambió el icono de "No aptos" para no confundirlo con rechazados
+// - pendientes de cobranza ahora cuentan SOLO clientes pending asignados (misma lógica del daily)
 
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -252,8 +253,16 @@ export default function AdminHomeScreen() {
         return m;
     }, [clients]);
 
+    // ✅ Igual que daily report:
+    // solo clientes actualmente pending Y asignados a un usuario
     const pendingNow = useMemo(() => {
-        return clients.filter((c) => c.status === "pending").length;
+        let count = 0;
+        for (const c of clients) {
+            if (c.status !== "pending") continue;
+            if (!c.assignedTo) continue;
+            count += 1;
+        }
+        return count;
     }, [clients]);
 
     const leadQueueStats = useMemo(() => getLeadQueueStats(clients), [clients]);
@@ -592,7 +601,7 @@ const styles = StyleSheet.create({
         flexWrap: "wrap",
         gap: 10,
         marginBottom: 60,
-        top: 20
+        top: 20,
     },
     topToolBtn: {
         width: "10.4%",

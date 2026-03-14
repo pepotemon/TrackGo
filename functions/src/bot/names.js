@@ -44,7 +44,55 @@ function isClearlyNotPersonText(text) {
         s.includes("tenho interesse") ||
         s.includes("quero saber") ||
         s.includes("quero informacoes") ||
-        s.includes("quero informações")
+        s.includes("quero informações") ||
+        s.includes("tipo de comercio") ||
+        s.includes("tipo de comércio") ||
+        s.includes("tipo de negocio") ||
+        s.includes("tipo de negócio") ||
+        s.includes("negocio") ||
+        s.includes("negócio") ||
+        s.includes("endereco") ||
+        s.includes("endereço") ||
+        s.includes("localizacao") ||
+        s.includes("localização") ||
+        s.includes("google maps")
+    );
+}
+
+function stripCommonNameLabels(value) {
+    const raw = cleanupExtractedText(value || "");
+    if (!raw) return "";
+
+    return raw
+        .replace(/^(nome completo|nome|meu nome)\s*[:\-]\s*/i, "")
+        .replace(/^(me chamo|sou)\s+/i, "")
+        .trim();
+}
+
+function hasTooManyWordsLikeSentence(value) {
+    const words = cleanupExtractedText(value || "")
+        .split(/\s+/)
+        .filter(Boolean);
+
+    return words.length > 5;
+}
+
+function hasSuspiciousSentenceMarkers(value) {
+    const s = normalizeLooseText(value);
+    if (!s) return false;
+
+    return (
+        s.includes(" e tenho ") ||
+        s.includes(" e trabalho ") ||
+        s.includes(" trabalho com ") ||
+        s.includes(" moro ") ||
+        s.includes(" fica ") ||
+        s.includes(" estamos ") ||
+        s.includes(" meu comercio ") ||
+        s.includes(" meu comércio ") ||
+        s.includes(" minha loja ") ||
+        s.includes(" meu negocio ") ||
+        s.includes(" meu negócio ")
     );
 }
 
@@ -76,6 +124,8 @@ function isBadProfileNameFactory({ isLikelyBusinessLine }) {
             looksLikeBrazilAddress(v) ||
             isLikelyBusinessLine(v) ||
             isClearlyNotPersonText(v) ||
+            hasSuspiciousSentenceMarkers(v) ||
+            extractGoogleMapsUrlFromText(v) ||
             s.includes("setup guidance") ||
             s.includes("continue setting up") ||
             s.includes("whatsapp business")
@@ -89,7 +139,7 @@ function isBadProfileNameFactory({ isLikelyBusinessLine }) {
 
 function sanitizeExplicitPersonNameFactory({ isLikelyBusinessLine }) {
     return function sanitizeExplicitPersonName(name) {
-        const explicit = cleanupExtractedText(name || "");
+        const explicit = stripCommonNameLabels(name || "");
         if (!explicit) return "";
 
         const s = normalizeLooseText(explicit);
@@ -98,11 +148,15 @@ function sanitizeExplicitPersonNameFactory({ isLikelyBusinessLine }) {
             looksLikeBrazilAddress(explicit) ||
             isLikelyBusinessLine(explicit) ||
             isClearlyNotPersonText(explicit) ||
+            hasSuspiciousSentenceMarkers(explicit) ||
+            extractGoogleMapsUrlFromText(explicit) ||
             s.includes("http://") ||
             s.includes("https://") ||
             explicit.length > 80 ||
+            explicit.length < 2 ||
             /^\d+$/.test(explicit) ||
-            /^[\.\-_]+$/i.test(explicit)
+            /^[\.\-_]+$/i.test(explicit) ||
+            hasTooManyWordsLikeSentence(explicit)
         ) {
             return "";
         }
@@ -126,7 +180,7 @@ function looksLikePersonNameFactory({
     looksLikeGreetingOrInterestText,
 }) {
     return function looksLikePersonName(line) {
-        const v = cleanupExtractedText(line);
+        const v = stripCommonNameLabels(line);
         const s = normalizeLooseText(v);
 
         if (!v) return false;
@@ -134,10 +188,12 @@ function looksLikePersonNameFactory({
         if (looksLikeBrazilAddress(v)) return false;
         if (isLikelyBusinessLine(v)) return false;
         if (isClearlyNotPersonText(v)) return false;
+        if (hasSuspiciousSentenceMarkers(v)) return false;
         if (extractGoogleMapsUrlFromText(v)) return false;
         if (onlyDigits(v).length >= 8) return false;
         if (s.includes("http://") || s.includes("https://")) return false;
         if (s.includes("tipo de comercio") || s.includes("tipo de comércio")) return false;
+        if (s.includes("tipo de negocio") || s.includes("tipo de negócio")) return false;
         if (s.includes("negocio") || s.includes("negócio")) return false;
         if (s.includes("endereco") || s.includes("endereço")) return false;
         if (s.includes("localizacao") || s.includes("localização")) return false;

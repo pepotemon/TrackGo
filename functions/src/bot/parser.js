@@ -29,6 +29,9 @@ function createLeadParser({
             .map((x) => x.trim())
             .filter(Boolean);
 
+        const nonEmptyLines = lines.filter(Boolean);
+        const hasMapsCandidate = !!extractGoogleMapsUrlFromText(text);
+
         const parsedNameLabeled = extractLabeledValue(text, [
             "nome completo",
             "nome",
@@ -61,6 +64,15 @@ function createLeadParser({
             "loja",
             "ramo",
             "atividade",
+            "trabalho com",
+            "tenho um box",
+            "tenho uma loja",
+            "tenho uma banca",
+            "tenho uma barraca",
+            "meu comercio",
+            "meu comércio",
+            "meu negocio",
+            "meu negócio",
         ]);
 
         let explicitName = sanitizeExplicitPersonName(parsedNameLabeled);
@@ -68,23 +80,35 @@ function createLeadParser({
         let businessRaw = sanitizeBusiness(parsedBusinessLabeled);
         let finalBusiness = normalizeBusinessLabel(parsedBusinessLabeled);
 
-        const nonEmptyLines = lines.filter(Boolean);
-
         if (!finalAddress) {
             const addrLine = nonEmptyLines.find((line) => looksLikeBrazilAddress(line));
-            if (addrLine) finalAddress = sanitizeAddress(addrLine);
-        }
-
-        if (!businessRaw) {
-            const businessLine = nonEmptyLines.find((line) => isLikelyBusinessLine(line));
-            if (businessLine) {
-                businessRaw = sanitizeBusiness(businessLine);
-                finalBusiness = normalizeBusinessLabel(businessLine);
+            if (addrLine) {
+                finalAddress = sanitizeAddress(addrLine);
             }
         }
 
         if (!businessRaw) {
-            const fallbackBusinessLine = nonEmptyLines.find((line) => isPossibleBusinessFallbackText(line));
+            const businessLine = nonEmptyLines.find((line) => {
+                if (!line) return false;
+                if (looksLikeBrazilAddress(line)) return false;
+                if (extractGoogleMapsUrlFromText(line)) return false;
+                return isLikelyBusinessLine(line);
+            });
+
+            if (businessLine) {
+                businessRaw = sanitizeBusiness(businessLine);
+                finalBusiness = normalizeBusinessLabel(businessLine) || businessRaw;
+            }
+        }
+
+        if (!businessRaw) {
+            const fallbackBusinessLine = nonEmptyLines.find((line) => {
+                if (!line) return false;
+                if (looksLikeBrazilAddress(line)) return false;
+                if (extractGoogleMapsUrlFromText(line)) return false;
+                return isPossibleBusinessFallbackText(line);
+            });
+
             if (fallbackBusinessLine) {
                 businessRaw = sanitizeBusiness(fallbackBusinessLine);
                 finalBusiness = normalizeBusinessLabel(fallbackBusinessLine) || businessRaw;
@@ -92,16 +116,24 @@ function createLeadParser({
         }
 
         if (!explicitName) {
-            const possibleName = nonEmptyLines.find((line) => looksLikePersonName(line));
+            const possibleName = nonEmptyLines.find((line) => {
+                if (!line) return false;
+                if (looksLikeBrazilAddress(line)) return false;
+                if (extractGoogleMapsUrlFromText(line)) return false;
+                if (isLikelyBusinessLine(line)) return false;
+                if (isPossibleBusinessFallbackText(line)) return false;
+                return looksLikePersonName(line);
+            });
+
             if (possibleName) {
                 explicitName = sanitizeExplicitPersonName(possibleName);
             }
         }
 
         const fallbackName = sanitizeFallbackProfileName(fallbackProfileName);
-        const finalName = fallbackName || explicitName || "";
-        const hasBusiness = !!finalBusiness || !!businessRaw;
-        const hasMapsCandidate = !!extractGoogleMapsUrlFromText(text);
+
+        const finalName = explicitName || fallbackName || "";
+        const hasBusiness = !!(finalBusiness || businessRaw);
 
         const profileFlags = detectUnsupportedProfileSignals(text);
         const {

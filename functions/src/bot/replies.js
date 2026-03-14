@@ -9,22 +9,18 @@ function buildIntroMessagePtBr() {
     return [
         "Olá 👋 Obrigado pelo contato.",
         "",
-        "Trabalhamos com microcrédito comercial para lojistas e proprietários de comércios ativos, com pagamento diário e taxas de juros entre 10% e 20%, dependendo da análise.",
+        "Trabalhamos com microcrédito comercial para lojistas e donos de comércio ativo.",
         "",
-        "⚠️ No momento não trabalhamos com aposentados, pensionistas, assalariados, motoristas de aplicativo (Uber, moto-entrega, etc.) ou pessoas sem comércio ativo.",
-        "",
-        "Para continuar com a análise, por favor envie:",
-        "",
+        "Para continuar sua análise, envie por favor:",
         "1️⃣ Tipo de comércio",
         "2️⃣ Localização do comércio no Google Maps",
-        "3️⃣ Nome completo (opcional, mas recomendado)",
+        "3️⃣ Nome completo (opcional)",
         "",
-        "Após receber essas informações, encaminharemos seu cadastro para o responsável da sua região, que fará a análise e entrará em contato.",
+        "⚠️ No momento não atendemos aposentados, pensionistas, assalariados, motoristas de aplicativo ou pessoas sem comércio ativo.",
         "",
-        "Obrigado pelo interesse.",
+        "Assim que você enviar essas informações, encaminhamos para o responsável da sua região.",
     ].join("\n");
 }
-
 function buildHowItWorksSnippetPtBr() {
     return [
         "Funciona assim:",
@@ -58,6 +54,51 @@ function buildNotSuitableReplyPtBr(reason) {
     ]
         .filter(Boolean)
         .join("\n");
+}
+
+function buildShortAckPrefix(messageType) {
+    if (messageType === "location") return "Perfeito, recebi sua localização ✅";
+    return "Perfeito ✅";
+}
+
+function buildShortMissingBusinessReply(messageType) {
+    return [
+        buildShortAckPrefix(messageType),
+        "",
+        "Agora só falta o tipo de comércio para eu continuar.",
+    ].join("\n");
+}
+
+function buildShortMissingMapsReply(messageType) {
+    return [
+        buildShortAckPrefix(messageType),
+        "",
+        "Agora só falta a localização do comércio no Google Maps.",
+    ].join("\n");
+}
+
+function buildShortMissingBothReply(messageType) {
+    return [
+        buildShortAckPrefix(messageType),
+        "",
+        "Para continuar, ainda preciso do tipo de comércio e da localização no Google Maps.",
+    ].join("\n");
+}
+
+function buildShortReminderReply({ hasBusiness, hasMaps, messageType }) {
+    if (!hasBusiness && !hasMaps) {
+        return buildShortMissingBothReply(messageType);
+    }
+
+    if (!hasBusiness) {
+        return buildShortMissingBusinessReply(messageType);
+    }
+
+    if (!hasMaps) {
+        return buildShortMissingMapsReply(messageType);
+    }
+
+    return "";
 }
 
 function createBotReplyBuilder({
@@ -104,10 +145,6 @@ function createBotReplyBuilder({
                     "",
                     "Para eu continuar sua análise agora, ainda preciso de:",
                     ...missing,
-                    "",
-                    !hasMaps
-                        ? "Sem a localização do comércio no Google Maps, não consigo encaminhar seu cadastro."
-                        : "Assim que eu receber isso, encaminharei seu cadastro.",
                 ].join("\n"),
                 stage: `how_it_works:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
                 markIntroSent: false,
@@ -143,23 +180,7 @@ function createBotReplyBuilder({
 
         if (!hasBusiness && !hasMaps) {
             return {
-                body: [
-                    messageType === "location" ? "Recebi sua localização ✅" : "Recebi sua mensagem ✅",
-                    "",
-                    "Para continuar com a análise, ainda preciso destas informações obrigatórias:",
-                    "",
-                    "• Tipo de comércio",
-                    "• Localização do comércio no Google Maps",
-                    "",
-                    "Seu nome completo é opcional, mas pode ser enviado também.",
-                    "",
-                    "Você pode enviar a localização de um destes jeitos:",
-                    "• Compartilhando a localização fixa",
-                    "• Mandando o link do Google Maps",
-                    "• Mandando a localização do comércio pelo Google Maps",
-                    "",
-                    "Sem o tipo de comércio e sem a localização do Google Maps, não consigo encaminhar seu cadastro.",
-                ].join("\n"),
+                body: buildShortMissingBothReply(messageType),
                 stage: "missing:business,maps",
                 markIntroSent: false,
             };
@@ -167,17 +188,7 @@ function createBotReplyBuilder({
 
         if (!hasBusiness) {
             return {
-                body: [
-                    messageType === "location" ? "Recebi sua localização ✅" : "Recebi sua mensagem ✅",
-                    "",
-                    "Para continuar com a análise, ainda preciso de uma informação obrigatória:",
-                    "",
-                    "• Tipo de comércio",
-                    "",
-                    "Exemplo: mercadinho, loja de roupas, salão, barbearia, restaurante, oficina, farmácia, padaria, distribuidora, loja de variedades, studio, etc.",
-                    "",
-                    "Seu nome completo é opcional.",
-                ].join("\n"),
+                body: buildShortMissingBusinessReply(messageType),
                 stage: "missing:business",
                 markIntroSent: false,
             };
@@ -185,20 +196,7 @@ function createBotReplyBuilder({
 
         if (!hasMaps) {
             return {
-                body: [
-                    messageType === "location" ? "Recebi sua localização ✅" : "Recebi sua mensagem ✅",
-                    "",
-                    "Para continuar com a análise, ainda preciso da informação obrigatória abaixo:",
-                    "",
-                    "• Localização do comércio no Google Maps",
-                    "",
-                    "Você pode enviar de um destes jeitos:",
-                    "• Compartilhando a localização fixa",
-                    "• Mandando o link do Google Maps",
-                    "• Mandando a localização do comércio pelo Google Maps",
-                    "",
-                    "Sem essa localização, não consigo encaminhar seu cadastro.",
-                ].join("\n"),
+                body: buildShortMissingMapsReply(messageType),
                 stage: "missing:maps",
                 markIntroSent: false,
             };

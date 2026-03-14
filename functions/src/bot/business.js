@@ -10,8 +10,102 @@ const {
 } = require("../utils/geo");
 const { detectUnsupportedProfileSignals } = require("./intents");
 
+function stripEdgePunctuation(text) {
+    return String(text || "")
+        .replace(/^[\s\.,;:!¡?¿"'`~^*_=+\-\\/|()[\]{}<>]+/g, "")
+        .replace(/[\s\.,;:!¡?¿"'`~^*_=+\-\\/|()[\]{}<>]+$/g, "")
+        .trim();
+}
+
+function normalizeForBusinessCheck(text) {
+    return normalizeLooseText(stripEdgePunctuation(text));
+}
+
+function sanitizeBusinessCandidateText(text) {
+    return cleanupExtractedText(stripEdgePunctuation(text || ""));
+}
+
+function isConversationalNonBusinessText(text) {
+    const s = normalizeForBusinessCheck(text);
+    if (!s) return true;
+
+    const exactTokens = [
+        "oi",
+        "ola",
+        "olá",
+        "hello",
+        "bom dia",
+        "boa tarde",
+        "boa noite",
+        "ok",
+        "okay",
+        "ok tudo bem",
+        "esta bem",
+        "está bem",
+        "certo",
+        "ta bom",
+        "tá bom",
+        "entendi",
+        "sim",
+        "nao",
+        "não",
+        "blz",
+        "beleza",
+        "perfeito",
+        "show",
+        "joia",
+        "jóia",
+        "obrigado",
+        "obrigada",
+        "grato",
+        "grata",
+        "valeu",
+        "como funciona",
+        "tenho interesse",
+        "quero saber",
+        "quero informacoes",
+        "quero informações",
+        "mais informacoes",
+        "mais informações",
+        "preciso de informacoes",
+        "preciso de informações",
+        "quero mais informacoes",
+        "quero mais informações",
+        "emprestimo",
+        "empréstimo",
+        "credito",
+        "crédito",
+        "financiamento",
+        "informacao",
+        "informação",
+        "informacoes",
+        "informações",
+    ];
+
+    if (exactTokens.includes(s)) return true;
+
+    const softPhrases = [
+        "tenho interesse",
+        "quero saber",
+        "como funciona",
+        "mais informacoes",
+        "mais informações",
+        "quero informacoes",
+        "quero informações",
+        "preciso de informacoes",
+        "preciso de informações",
+        "quero mais informacoes",
+        "quero mais informações",
+        "bom dia",
+        "boa tarde",
+        "boa noite",
+    ];
+
+    return softPhrases.some((k) => s.includes(normalizeLooseText(k)));
+}
+
 function hasBusinessStarter(text) {
-    return includesAnyNormalized(text, [
+    return includesAnyNormalized(normalizeForBusinessCheck(text), [
         "venda de",
         "loja de",
         "comercio de",
@@ -21,11 +115,27 @@ function hasBusinessStarter(text) {
         "distribuidor de",
         "revenda de",
         "box de",
+        "box na",
+        "box no",
+        "box da",
         "mini box",
         "mini mercado",
         "mini-mercado",
         "ponto de",
         "banca de",
+        "barraca de",
+        "trabalho com",
+        "eu trabalho com",
+        "tenho um box",
+        "tenho uma loja",
+        "tenho uma banca",
+        "tenho uma barraca",
+        "sou dono de",
+        "sou dona de",
+        "meu comercio e",
+        "meu comércio é",
+        "meu negocio e",
+        "meu negócio é",
         "atelier",
         "atelier de",
         "studio",
@@ -64,8 +174,8 @@ function hasBusinessStarter(text) {
         "mecânica",
         "lava jato",
         "auto pecas",
-        "autopeças",
         "auto peças",
+        "autopeças",
         "assistencia tecnica",
         "assistência técnica",
         "conserto de",
@@ -91,111 +201,112 @@ function hasBusinessStarter(text) {
 }
 
 function looksLikeGreetingOrInterestText(text) {
-    const s = normalizeLooseText(text);
-    if (!s) return false;
-
-    const tokens = [
-        "oi",
-        "ola",
-        "olá",
-        "bom dia",
-        "boa tarde",
-        "boa noite",
-        "tenho interesse",
-        "quero informacoes",
-        "quero informações",
-        "quero saber",
-        "tenho interesse no emprestimo",
-        "tenho interesse no empréstimo",
-        "emprestimo",
-        "empréstimo",
-        "credito",
-        "crédito",
-        "financiamento",
-        "como funciona",
-        "mais informacoes",
-        "mais informações",
-        "ok",
-        "ok tudo bem",
-        "esta bem",
-        "está bem",
-        "certo",
-        "ta bom",
-        "tá bom",
-    ];
-
-    return tokens.some((k) => s === normalizeLooseText(k) || s.includes(normalizeLooseText(k)));
+    return isConversationalNonBusinessText(text);
 }
 
 function isLikelyBusinessLine(text) {
-    const s = normalizeLooseText(text);
+    const s = normalizeForBusinessCheck(text);
     if (!s) return false;
 
-    return (
-        hasBusinessStarter(text) ||
-        includesAnyNormalized(s, [
-            "mercado",
-            "mercadinho",
-            "mercantil",
-            "barbearia",
-            "barbeiro",
-            "salao",
-            "salão",
-            "cabeleireira",
-            "cabeleireiro",
-            "lanchonete",
-            "restaurante",
-            "oficina",
-            "farmacia",
-            "farmácia",
-            "deposito",
-            "depósito",
-            "adega",
-            "padaria",
-            "distribuidora",
-            "conveniencia",
-            "conveniência",
-            "studio",
-            "estetica",
-            "estética",
-            "acougue",
-            "açougue",
-            "otica",
-            "ótica",
-            "hortifruti",
-            "borracharia",
-            "bijuteria",
-            "bijuterias",
-            "variedade",
-            "clinica",
-            "clínica",
-            "home care",
-            "churrasco",
-            "cosmeticos",
-            "cosméticos",
-            "roupas",
-            "acessorios",
-            "acessórios",
-            "eletronicos",
-            "eletrônicos",
-            "utilidades",
-            "presentes",
-        ])
-    );
+    if (isConversationalNonBusinessText(s)) return false;
+    if (hasBusinessStarter(s)) return true;
+
+    return includesAnyNormalized(s, [
+        "mercado",
+        "mercadinho",
+        "mercantil",
+        "barbearia",
+        "barbeiro",
+        "salao",
+        "salão",
+        "cabeleireira",
+        "cabeleireiro",
+        "lanchonete",
+        "lanche",
+        "cozinha",
+        "marmita",
+        "marmitaria",
+        "restaurante",
+        "oficina",
+        "farmacia",
+        "farmácia",
+        "deposito",
+        "depósito",
+        "adega",
+        "padaria",
+        "distribuidora",
+        "conveniencia",
+        "conveniência",
+        "studio",
+        "estetica",
+        "estética",
+        "acougue",
+        "açougue",
+        "otica",
+        "ótica",
+        "hortifruti",
+        "borracharia",
+        "bijuteria",
+        "bijuterias",
+        "variedade",
+        "variedades",
+        "clinica",
+        "clínica",
+        "home care",
+        "churrasco",
+        "cosmeticos",
+        "cosméticos",
+        "roupas",
+        "acessorios",
+        "acessórios",
+        "eletronicos",
+        "eletrônicos",
+        "utilidades",
+        "presentes",
+        "box",
+        "ceasa",
+        "banca",
+        "barraca",
+        "feira",
+        "sacolao",
+        "sacolão",
+        "revenda",
+        "atacado",
+        "varejo",
+        "comida",
+        "food truck",
+        "truck",
+        "ford truck",
+        "mecanico",
+        "mecânico",
+        "pecas",
+        "peças",
+        "serralheria",
+        "vidracaria",
+        "manutencao",
+        "manutenção",
+        "assistencia tecnica",
+        "assistência técnica",
+        "conserto",
+        "frango assado",
+        "esquina do lanche",
+    ]);
 }
 
 function sanitizeBusiness(business) {
-    const v = cleanupExtractedText(business);
+    const v = sanitizeBusinessCandidateText(business);
     if (!v) return "";
 
     const s = normalizeLooseText(v);
 
     if (
         looksLikeBrazilAddress(v) ||
+        extractGoogleMapsUrlFromText(v) ||
         s.includes("http://") ||
         s.includes("https://") ||
         s.includes("setup guidance") ||
-        s.includes("whatsapp manager")
+        s.includes("whatsapp manager") ||
+        isConversationalNonBusinessText(v)
     ) {
         return "";
     }
@@ -212,13 +323,14 @@ function normalizeBusinessLabel(text) {
 
     if (includesAnyNormalized(s, ["cabeleireira", "cabeleireiro", "salao", "salão"])) return "Salão de beleza";
     if (includesAnyNormalized(s, ["barbearia", "barbeiro"])) return "Barbearia";
-    if (s.includes("lanchonete")) return "Lanchonete";
-    if (s.includes("hamburgueria")) return "Hamburgueria";
+    if (includesAnyNormalized(s, ["lanchonete", "lanche"])) return "Lanchonete";
+    if (includesAnyNormalized(s, ["hamburgueria", "food truck", "truck", "ford truck"])) return "Food truck";
     if (s.includes("espetaria")) return "Espetaria";
     if (s.includes("pizzaria")) return "Pizzaria";
     if (s.includes("sorveteria")) return "Sorveteria";
     if (s.includes("cafeteria")) return "Cafeteria";
     if (includesAnyNormalized(s, ["acai", "açaí"])) return "Loja de açaí";
+    if (includesAnyNormalized(s, ["cozinha", "marmita", "marmitaria", "comida"])) return "Venda de comida";
     if (s.includes("restaurante")) return "Restaurante";
     if (s.includes("borracharia")) return "Borracharia";
     if (includesAnyNormalized(s, ["otica", "ótica"])) return "Ótica";
@@ -231,7 +343,7 @@ function normalizeBusinessLabel(text) {
     if (includesAnyNormalized(s, ["mercado", "mercantil", "mercearia", "armazem", "armazém", "quitanda"])) return "Mercado";
     if (s.includes("padaria")) return "Padaria";
     if (includesAnyNormalized(s, ["farmacia", "farmácia", "drogaria"])) return "Farmácia";
-    if (includesAnyNormalized(s, ["oficina", "mecanica", "mecânica"])) return "Oficina";
+    if (includesAnyNormalized(s, ["oficina", "mecanica", "mecânica", "mecanico", "mecânico"])) return "Oficina";
     if (s.includes("churrasco")) return "Venda de churrasco";
     if (includesAnyNormalized(s, ["pet shop", "petshop"])) return "Pet shop";
     if (s.includes("papelaria")) return "Papelaria";
@@ -248,28 +360,31 @@ function normalizeBusinessLabel(text) {
     if (includesAnyNormalized(s, ["eletronicos", "eletrônicos"])) return "Loja de eletrônicos";
     if (s.includes("utilidades")) return "Loja de utilidades";
     if (s.includes("presentes")) return "Loja de presentes";
+    if (includesAnyNormalized(s, ["box", "ceasa"])) return "Box / comércio na Ceasa";
+    if (includesAnyNormalized(s, ["banca", "barraca", "feira"])) return "Banca / barraca";
     if (s.includes("studio")) return "Studio";
     if (s.includes("atelier")) return "Atelier";
     if (s.includes("loja")) return "Loja";
-    if (includesAnyNormalized(s, ["comercio de", "comércio de", "casa de", "venda de"])) return raw;
+    if (includesAnyNormalized(s, ["comercio de", "comércio de", "casa de", "venda de", "trabalho com", "revenda de"])) return raw;
 
     return raw;
 }
 
 function getBusinessSignals(text) {
-    const s = normalizeLooseText(text);
+    const s = normalizeForBusinessCheck(text);
     if (!s) return [];
 
     const map = [
         ["salão", ["salao", "salão", "cabeleireira", "cabeleireiro"]],
         ["barbearia", ["barbearia", "barbeiro"]],
-        ["lanchonete", ["lanchonete"]],
-        ["hamburgueria", ["hamburgueria"]],
+        ["lanchonete", ["lanchonete", "lanche"]],
+        ["food truck", ["food truck", "truck", "ford truck"]],
         ["espetaria", ["espetaria"]],
         ["pizzaria", ["pizzaria"]],
         ["sorveteria", ["sorveteria"]],
         ["cafeteria", ["cafeteria"]],
         ["açaí", ["acai", "açaí"]],
+        ["comida", ["cozinha", "marmita", "marmitaria", "comida"]],
         ["restaurante", ["restaurante"]],
         ["borracharia", ["borracharia"]],
         ["ótica", ["otica", "ótica"]],
@@ -280,7 +395,7 @@ function getBusinessSignals(text) {
         ["mercado", ["mercado", "mercadinho", "mercantil", "mercearia", "quitanda", "armazem", "armazém"]],
         ["farmácia", ["farmacia", "farmácia", "drogaria"]],
         ["padaria", ["padaria"]],
-        ["oficina", ["oficina", "mecanica", "mecânica"]],
+        ["oficina", ["oficina", "mecanica", "mecânica", "mecanico", "mecânico"]],
         ["churrasco", ["churrasco"]],
         ["studio", ["studio"]],
         ["atelier", ["atelier"]],
@@ -289,12 +404,15 @@ function getBusinessSignals(text) {
         ["bazar", ["bazar", "bazaar"]],
         ["brechó", ["brecho", "brechó"]],
         ["distribuidora", ["distribuidora"]],
+        ["box", ["box", "ceasa"]],
+        ["banca", ["banca", "barraca", "feira"]],
         ["loja", ["loja"]],
         ["comércio", ["comercio", "comércio"]],
         ["cosméticos", ["cosmeticos", "cosméticos", "perfumaria"]],
         ["roupas", ["roupas", "confeccoes", "confecções"]],
         ["acessórios", ["acessorios", "acessórios"]],
         ["eletrônicos", ["eletronicos", "eletrônicos"]],
+        ["utilidades", ["utilidades", "variedades"]],
         ["tupperware", ["tupperware"]],
         ["jequiti", ["jequiti"]],
         ["romance", ["romance"]],
@@ -311,7 +429,7 @@ function isPossibleBusinessFallbackTextFactory({ looksLikePersonName }) {
         const s = normalizeLooseText(v);
 
         if (!v) return false;
-        if (v.length < 4 || v.length > 120) return false;
+        if (v.length < 3 || v.length > 120) return false;
         if (looksLikeBrazilAddress(v)) return false;
         if (extractGoogleMapsUrlFromText(v)) return false;
         if (looksLikeGreetingOrInterestText(v)) return false;
@@ -320,6 +438,7 @@ function isPossibleBusinessFallbackTextFactory({ looksLikePersonName }) {
         if (!/[a-zA-ZÀ-ÿ]/.test(v)) return false;
 
         if (hasBusinessStarter(v)) return true;
+        if (isLikelyBusinessLine(v)) return true;
 
         if (includesAnyNormalized(s, [
             "servicos",
@@ -350,7 +469,28 @@ function isPossibleBusinessFallbackTextFactory({ looksLikePersonName }) {
             "revenda",
             "distribuicao",
             "distribuição",
+            "ceasa",
+            "box",
+            "banca",
+            "barraca",
+            "cozinha",
+            "lanche",
+            "marmita",
+            "truck",
+            "feira",
+            "mercadoria",
         ])) {
+            return true;
+        }
+
+        const tokenCount = s.split(/\s+/).filter(Boolean).length;
+        if (
+            tokenCount >= 2 &&
+            tokenCount <= 5 &&
+            /[a-zA-ZÀ-ÿ]/.test(v) &&
+            !s.includes("?") &&
+            !isConversationalNonBusinessText(v)
+        ) {
             return true;
         }
 
@@ -378,6 +518,10 @@ function classifyBusinessQuality(rawText, businessLabel, businessRaw) {
         ["studio", "clínica"],
         ["salão", "barbearia"],
         ["bijuterias", "acessórios"],
+        ["box", "comércio"],
+        ["banca", "comércio"],
+        ["lanchonete", "comida"],
+        ["food truck", "comida"],
     ];
 
     const labels = Array.from(new Set(signals));
@@ -414,6 +558,10 @@ function getBusinessFlags(rawText, businessLabel, businessRaw) {
 
     if (businessRaw && signals.length === 0) {
         flags.push("fallback_business_detected");
+    }
+
+    if (includesAnyNormalized(joined, ["box", "ceasa", "banca", "barraca", "truck", "cozinha", "lanche"])) {
+        flags.push("informal_business_text");
     }
 
     return Array.from(new Set(flags));
