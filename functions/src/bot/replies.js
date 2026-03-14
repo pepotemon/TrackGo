@@ -3,6 +3,7 @@ const {
     isCoverageQuestion,
     isHowItWorksQuestion,
     isUrgencyText,
+    isOfficeLocationQuestion,
 } = require("./intents");
 
 function buildIntroMessagePtBr() {
@@ -21,12 +22,13 @@ function buildIntroMessagePtBr() {
         "Assim que você enviar essas informações, encaminhamos para o responsável da sua região.",
     ].join("\n");
 }
+
 function buildHowItWorksSnippetPtBr() {
     return [
         "Funciona assim:",
         "1️⃣ Fazemos uma análise inicial do tipo de comércio e da localização.",
         "2️⃣ Depois encaminhamos para o responsável da sua região.",
-        "3️⃣ Ele entra em contato para explicar valores, condições e próximos passos.",
+        "3️⃣ O responsável entra em contato para explicar valores, condições e próximos passos.",
         "4️⃣ A liberação depende da análise e da visita ao comércio.",
     ].join("\n");
 }
@@ -40,6 +42,36 @@ function buildCoverageReplyPtBr() {
         "2️⃣ Localização do comércio no Google Maps",
         "3️⃣ Nome completo (opcional)",
     ].join("\n");
+}
+
+function buildOfficeLocationReplyPtBr({ hasBusiness, hasMaps }) {
+    const lines = [
+        "Atendemos em várias regiões do Brasil, mas a liberação depende da análise da localização do comércio.",
+    ];
+
+    if (!hasBusiness && !hasMaps) {
+        lines.push("");
+        lines.push("Para eu verificar sua região, envie:");
+        lines.push("1️⃣ Tipo de comércio");
+        lines.push("2️⃣ Localização do comércio no Google Maps");
+        return lines.join("\n");
+    }
+
+    if (!hasMaps) {
+        lines.push("");
+        lines.push("Agora só falta a localização do comércio no Google Maps para eu verificar sua região.");
+        return lines.join("\n");
+    }
+
+    if (!hasBusiness) {
+        lines.push("");
+        lines.push("Agora só falta o tipo de comércio para eu continuar sua análise.");
+        return lines.join("\n");
+    }
+
+    lines.push("");
+    lines.push("Perfeito, com essas informações seguimos para a próxima etapa.");
+    return lines.join("\n");
 }
 
 function buildNotSuitableReplyPtBr(reason) {
@@ -85,20 +117,19 @@ function buildShortMissingBothReply(messageType) {
     ].join("\n");
 }
 
-function buildShortReminderReply({ hasBusiness, hasMaps, messageType }) {
-    if (!hasBusiness && !hasMaps) {
-        return buildShortMissingBothReply(messageType);
-    }
-
-    if (!hasBusiness) {
-        return buildShortMissingBusinessReply(messageType);
-    }
-
-    if (!hasMaps) {
-        return buildShortMissingMapsReply(messageType);
-    }
-
-    return "";
+function buildFinalReplyPtBr({ urgencyIntent, howItWorksIntent }) {
+    return [
+        "Ok, muito obrigado.",
+        "",
+        "Vou encaminhar as informações para o responsável da sua região.",
+        urgencyIntent
+            ? "Como você informou urgência, ele vai analisar assim que possível."
+            : "O retorno normalmente acontece entre 24 e 48 horas, e em alguns casos pode acontecer antes.",
+        "",
+        howItWorksIntent
+            ? "Ele também vai explicar valores, condições e próximos passos."
+            : "Muito obrigado.",
+    ].join("\n");
 }
 
 function createBotReplyBuilder({
@@ -117,6 +148,7 @@ function createBotReplyBuilder({
         const coverageIntent = isCoverageQuestion(lastText);
         const howItWorksIntent = isHowItWorksQuestion(lastText);
         const urgencyIntent = isUrgencyText(lastText);
+        const officeLocationIntent = isOfficeLocationQuestion(lastText);
 
         if (leadQuality === "not_suitable") {
             return {
@@ -131,6 +163,14 @@ function createBotReplyBuilder({
                 body: buildIntroMessagePtBr(),
                 stage: "intro",
                 markIntroSent: true,
+            };
+        }
+
+        if (officeLocationIntent && !(hasBusiness && hasMaps)) {
+            return {
+                body: buildOfficeLocationReplyPtBr({ hasBusiness, hasMaps }),
+                stage: `office_location:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
+                markIntroSent: false,
             };
         }
 
@@ -161,18 +201,7 @@ function createBotReplyBuilder({
 
         if (hasBusiness && hasMaps) {
             return {
-                body: [
-                    "Ok, muito obrigado.",
-                    "",
-                    "Vou encaminhar as informações para o responsável da sua região.",
-                    urgencyIntent
-                        ? "Como você informou urgência, o responsável vai analisar assim que possível."
-                        : "O retorno normalmente acontece entre 24 e 48 horas, e em alguns casos pode acontecer antes.",
-                    "",
-                    howItWorksIntent
-                        ? "Ele também vai explicar valores, condições e próximos passos."
-                        : "Muito obrigado.",
-                ].join("\n"),
+                body: buildFinalReplyPtBr({ urgencyIntent, howItWorksIntent }),
                 stage: howItWorksIntent ? "final:how_it_works" : "final",
                 markIntroSent: false,
             };
@@ -214,6 +243,7 @@ module.exports = {
     buildIntroMessagePtBr,
     buildHowItWorksSnippetPtBr,
     buildCoverageReplyPtBr,
+    buildOfficeLocationReplyPtBr,
     buildNotSuitableReplyPtBr,
     createBotReplyBuilder,
 };

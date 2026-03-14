@@ -5,6 +5,13 @@
 // - así queda sincronizado con la pantalla de leads sin romper el total de verificados
 // - también se cambió el icono de "No aptos" para no confundirlo con rechazados
 // - pendientes de cobranza ahora cuentan SOLO clientes pending asignados (misma lógica del daily)
+// - UI polish:
+//   * se eliminó la botonera superior y se movió al bottom nav
+//   * se quitó el footer de copyright
+//   * se quitó la sombra cuadrada fea de las tarjetas
+//   * más espacio vertical para las cards
+//   * bottom nav con iconos compactos
+//   * Salir sigue destacado en rojo
 
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -109,7 +116,9 @@ function isMetaUnassignedLead(c: ClientDoc) {
     return isMetaLead(c) && assigned.length === 0;
 }
 
-function getDerivedLeadQueueStatus(c: ClientDoc): "verified" | "pending_review" | "incomplete" | "not_suitable" {
+function getDerivedLeadQueueStatus(
+    c: ClientDoc
+): "verified" | "pending_review" | "incomplete" | "not_suitable" {
     const verificationStatus = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
     const leadQuality = String((c as any)?.leadQuality ?? "").trim().toLowerCase();
     const parseStatus = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
@@ -163,6 +172,34 @@ function getLeadQueueStats(clients: ClientDoc[]) {
     };
 }
 
+const COLORS = {
+    bg: "#07111F",
+    card: "rgba(10, 20, 37, 0.74)",
+    border: "rgba(255,255,255,0.08)",
+    borderSoft: "rgba(125, 211, 252, 0.16)",
+
+    text: "#F8FAFC",
+    muted: "#9FB0C4",
+    softText: "#CBD5E1",
+
+    primary: "#5AC8FA",
+    primaryBright: "#7BE0FF",
+    primarySoft: "#BFDBFE",
+
+    ok: "#22C55E",
+    bad: "#F87171",
+    warn: "#FBBF24",
+    info: "#60A5FA",
+
+    logoutBg: "rgba(127, 29, 29, 0.22)",
+    logoutBorder: "rgba(248,113,113,0.18)",
+
+    navBg: "rgba(9, 18, 34, 0.96)",
+    navBorder: "rgba(255,255,255,0.08)",
+    navItem: "rgba(255,255,255,0.04)",
+    navItemActive: "rgba(90,200,250,0.14)",
+};
+
 export default function AdminHomeScreen() {
     const { profile, logout } = useAuth();
     const router = useRouter();
@@ -190,13 +227,13 @@ export default function AdminHomeScreen() {
                 route: "/admin/clients",
             },
             {
-                title: "Leads Meta",
+                title: "Leads",
                 subtitle: "Por revisar, incompletos y no aptos",
                 icon: "funnel-outline",
                 route: "/admin/leads",
             },
             {
-                title: "Contabilidad",
+                title: "Conta",
                 subtitle: "Inversión semanal y ganancia real",
                 icon: "stats-chart-outline",
                 route: "/admin/accounting",
@@ -377,9 +414,41 @@ export default function AdminHomeScreen() {
         label: string;
     }) => (
         <View style={styles.tinyStatWrap} accessibilityLabel={`${label}: ${value}`}>
-            <Ionicons name={icon} size={14} color={color} />
+            <Ionicons name={icon} size={15} color={color} />
             <Text style={styles.tinyStatValue}>{value}</Text>
         </View>
+    );
+
+    const BottomNavItem = ({
+        title,
+        icon,
+        onPress,
+        danger,
+    }: {
+        title: string;
+        icon: any;
+        onPress: () => void;
+        danger?: boolean;
+    }) => (
+        <Pressable
+            onPress={onPress}
+            style={({ pressed }) => [
+                styles.bottomNavItem,
+                danger && styles.bottomNavItemDanger,
+                pressed && styles.pressed,
+            ]}
+        >
+            <View style={[styles.bottomNavIconWrap, danger && styles.bottomNavIconWrapDanger]}>
+                <Ionicons
+                    name={icon}
+                    size={18}
+                    color={danger ? COLORS.bad : COLORS.primaryBright}
+                />
+            </View>
+            <Text style={[styles.bottomNavText, danger && styles.bottomNavTextDanger]}>
+                {title}
+            </Text>
+        </Pressable>
     );
 
     return (
@@ -412,46 +481,42 @@ export default function AdminHomeScreen() {
                                         Hola, <Text style={styles.hSubStrong}>{profile?.name ?? "—"}</Text>
                                     </Text>
                                 </View>
-                            </View>
-
-                            <View style={styles.topToolbar}>
-                                {actions.map((a) => (
-                                    <Pressable
-                                        key={a.route}
-                                        onPress={() => router.push({ pathname: a.route as any })}
-                                        style={({ pressed }) => [styles.topToolBtn, pressed && styles.pressed]}
-                                    >
-                                        <View style={styles.topToolIconWrap}>
-                                            <Ionicons name={a.icon} size={18} color={COLORS.text} />
-                                        </View>
-                                        <Text style={styles.topToolText} numberOfLines={1}>
-                                            {a.title}
-                                        </Text>
-                                    </Pressable>
-                                ))}
 
                                 <Pressable
                                     onPress={logout}
-                                    style={({ pressed }) => [styles.topToolBtn, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.logoutBtn,
+                                        pressed && styles.pressed
+                                    ]}
                                 >
-                                    <View style={[styles.topToolIconWrap, styles.topToolLogout]}>
-                                        <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
-                                    </View>
-                                    <Text style={styles.topToolText} numberOfLines={1}>
-                                        Salir
-                                    </Text>
+                                    <Ionicons
+                                        name="log-out-outline"
+                                        size={20}
+                                        color={COLORS.bad}
+                                    />
                                 </Pressable>
                             </View>
-
                             <View style={styles.quickRow}>
                                 <Pressable
                                     onPress={() => router.push({ pathname: "/admin/report" as any })}
-                                    style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.quickCard,
+                                        pressed && styles.pressed,
+                                    ]}
                                 >
                                     <View style={styles.quickTop}>
-                                        <Ionicons name="cash-outline" size={18} color={COLORS.text} />
+                                        <View style={styles.sectionIconWrap}>
+                                            <Ionicons
+                                                name="cash-outline"
+                                                size={18}
+                                                color={COLORS.primaryBright}
+                                            />
+                                        </View>
+
                                         <View style={[styles.badge, styles.badgeOk]}>
-                                            <Text style={[styles.badgeText, styles.badgeTextOk]}>HOY</Text>
+                                            <Text style={[styles.badgeText, styles.badgeTextOk]}>
+                                                HOY
+                                            </Text>
                                         </View>
                                     </View>
 
@@ -461,9 +526,24 @@ export default function AdminHomeScreen() {
                                     </Text>
 
                                     <View style={styles.tinyRow}>
-                                        <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={todayStats.visited} label="Visitados" />
-                                        <TinyStat icon="close-circle-outline" color={COLORS.bad} value={todayStats.rejected} label="Rechazados" />
-                                        <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
+                                        <TinyStat
+                                            icon="checkmark-circle-outline"
+                                            color={COLORS.ok}
+                                            value={todayStats.visited}
+                                            label="Visitados"
+                                        />
+                                        <TinyStat
+                                            icon="close-circle-outline"
+                                            color={COLORS.bad}
+                                            value={todayStats.rejected}
+                                            label="Rechazados"
+                                        />
+                                        <TinyStat
+                                            icon="time-outline"
+                                            color={COLORS.warn}
+                                            value={pendingNow}
+                                            label="Pendientes"
+                                        />
                                     </View>
 
                                     <Text style={styles.quickSubMuted} numberOfLines={1}>
@@ -473,12 +553,26 @@ export default function AdminHomeScreen() {
 
                                 <Pressable
                                     onPress={() => router.push({ pathname: "/admin/history" as any })}
-                                    style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.quickCard,
+                                        pressed && styles.pressed,
+                                    ]}
                                 >
                                     <View style={styles.quickTop}>
-                                        <Ionicons name="calendar-outline" size={18} color={COLORS.text} />
+                                        <View style={styles.sectionIconWrap}>
+                                            <Ionicons
+                                                name="calendar-outline"
+                                                size={18}
+                                                color={COLORS.primaryBright}
+                                            />
+                                        </View>
+
                                         <View style={[styles.badge, styles.badgePrimary]}>
-                                            <Text style={[styles.badgeText, styles.badgeTextPrimary]}>SEMANA</Text>
+                                            <Text
+                                                style={[styles.badgeText, styles.badgeTextPrimary]}
+                                            >
+                                                SEMANA
+                                            </Text>
                                         </View>
                                     </View>
 
@@ -488,9 +582,24 @@ export default function AdminHomeScreen() {
                                     </Text>
 
                                     <View style={styles.tinyRow}>
-                                        <TinyStat icon="checkmark-circle-outline" color={COLORS.ok} value={weekStats.visited} label="Visitados" />
-                                        <TinyStat icon="close-circle-outline" color={COLORS.bad} value={weekStats.rejected} label="Rechazados" />
-                                        <TinyStat icon="time-outline" color={COLORS.warn} value={pendingNow} label="Pendientes" />
+                                        <TinyStat
+                                            icon="checkmark-circle-outline"
+                                            color={COLORS.ok}
+                                            value={weekStats.visited}
+                                            label="Visitados"
+                                        />
+                                        <TinyStat
+                                            icon="close-circle-outline"
+                                            color={COLORS.bad}
+                                            value={weekStats.rejected}
+                                            label="Rechazados"
+                                        />
+                                        <TinyStat
+                                            icon="time-outline"
+                                            color={COLORS.warn}
+                                            value={pendingNow}
+                                            label="Pendientes"
+                                        />
                                     </View>
 
                                     <Text style={styles.quickSubMuted} numberOfLines={1}>
@@ -501,35 +610,77 @@ export default function AdminHomeScreen() {
 
                             <Pressable
                                 onPress={() => router.push({ pathname: "/admin/leads" as any })}
-                                style={({ pressed }) => [styles.leadsBanner, pressed && styles.pressed]}
+                                style={({ pressed }) => [
+                                    styles.leadsBanner,
+                                    pressed && styles.pressed,
+                                ]}
                             >
                                 <View style={styles.leadsBannerTop}>
                                     <View style={styles.leadsBannerIconWrap}>
-                                        <Ionicons name="funnel-outline" size={18} color={COLORS.text} />
+                                        <Ionicons
+                                            name="funnel-outline"
+                                            size={18}
+                                            color={COLORS.primaryBright}
+                                        />
                                     </View>
 
                                     <View style={[styles.badge, styles.badgePrimarySoft]}>
-                                        <Text style={[styles.badgeText, styles.badgeTextPrimarySoft]}>META LEADS</Text>
+                                        <Text
+                                            style={[
+                                                styles.badgeText,
+                                                styles.badgeTextPrimarySoft,
+                                            ]}
+                                        >
+                                            META LEADS
+                                        </Text>
                                     </View>
                                 </View>
 
                                 <View style={styles.leadsStatsRow}>
-                                    <TinyStat icon="help-circle-outline" color={COLORS.info} value={leadQueueStats.pendingReview} label="Revisión" />
-                                    <TinyStat icon="document-text-outline" color={COLORS.warn} value={leadQueueStats.incomplete} label="Incompletos" />
-                                    <TinyStat icon="ban-outline" color={COLORS.bad} value={leadQueueStats.notSuitable} label="No aptos" />
-                                    <TinyStat icon="checkmark-done-outline" color={COLORS.ok} value={leadQueueStats.verified} label="Verificados" />
+                                    <TinyStat
+                                        icon="help-circle-outline"
+                                        color={COLORS.info}
+                                        value={leadQueueStats.pendingReview}
+                                        label="Revisión"
+                                    />
+                                    <TinyStat
+                                        icon="document-text-outline"
+                                        color={COLORS.warn}
+                                        value={leadQueueStats.incomplete}
+                                        label="Incompletos"
+                                    />
+                                    <TinyStat
+                                        icon="ban-outline"
+                                        color={COLORS.bad}
+                                        value={leadQueueStats.notSuitable}
+                                        label="No aptos"
+                                    />
+                                    <TinyStat
+                                        icon="checkmark-done-outline"
+                                        color={COLORS.ok}
+                                        value={leadQueueStats.verified}
+                                        label="Verificados"
+                                    />
                                 </View>
 
                                 <Text style={styles.quickSubMuted} numberOfLines={1}>
-                                    Cola activa: {leadQueueStats.activeQueue} · Total Meta: {leadQueueStats.total}
+                                    Cola activa: {leadQueueStats.activeQueue} · Total Meta:{" "}
+                                    {leadQueueStats.total}
                                 </Text>
                             </Pressable>
                         </ScrollView>
 
-                        <View pointerEvents="none" style={styles.bottomFadeMask} />
+                        <View style={styles.bottomNavBar}>
+                            {actions.map((a) => (
+                                <BottomNavItem
+                                    key={a.route}
+                                    title={a.title}
+                                    icon={a.icon}
+                                    onPress={() => router.push({ pathname: a.route as any })}
+                                />
+                            ))}
 
-                        <View style={styles.bottomInfoBar}>
-                            <Text style={styles.bottomInfoText}>© {new Date().getFullYear()} TrackGo Admin</Text>
+
                         </View>
                     </View>
                 </View>
@@ -537,21 +688,6 @@ export default function AdminHomeScreen() {
         </SafeAreaView>
     );
 }
-
-const COLORS = {
-    bg: "#0B1220",
-    card: "rgba(17, 24, 39, 0.72)",
-    border: "rgba(255,255,255,0.08)",
-    text: "#F9FAFB",
-    muted: "#9CA3AF",
-
-    ok: "#22C55E",
-    bad: "#F87171",
-    warn: "#FBBF24",
-    info: "#60A5FA",
-
-    primarySoft: "#C4B5FD",
-};
 
 const styles = StyleSheet.create({
     safe: {
@@ -564,12 +700,12 @@ const styles = StyleSheet.create({
     },
 
     bgImage: {
-        opacity: 0.55,
+        opacity: 0.46,
     },
 
     overlay: {
         flex: 1,
-        backgroundColor: "rgba(11,18,32,0.40)",
+        backgroundColor: "rgba(3,10,20,0.54)",
         paddingHorizontal: 16,
     },
 
@@ -578,7 +714,7 @@ const styles = StyleSheet.create({
     },
 
     scrollContent: {
-        paddingBottom: 110,
+        paddingBottom: 106,
     },
 
     header: {
@@ -589,91 +725,139 @@ const styles = StyleSheet.create({
         justifyContent: "space-between",
         gap: 12,
     },
-    headerLeft: { flex: 1, gap: 3 },
-    hTitle: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 0.5 },
-    hSub: { color: "#D1D5DB", fontSize: 13, fontWeight: "700" },
-    hSubStrong: { color: COLORS.text, fontWeight: "900" },
 
-    pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
+    headerLeft: {
+        flex: 1,
+        gap: 3,
+    },
 
-    topToolbar: {
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: 10,
-        marginBottom: 60,
-        top: 20,
-    },
-    topToolBtn: {
-        width: "10.4%",
-        minWidth: 62,
-        alignItems: "center",
-        gap: 6,
-    },
-    topToolIconWrap: {
-        width: 46,
-        height: 46,
-        borderRadius: 16,
-        backgroundColor: "rgba(15, 23, 42, 0.72)",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    topToolLogout: {
-        backgroundColor: "rgba(127, 29, 29, 0.28)",
-        borderColor: "rgba(248,113,113,0.18)",
-    },
-    topToolText: {
+    hTitle: {
         color: COLORS.text,
-        fontSize: 11,
-        fontWeight: "800",
-        textAlign: "center",
+        fontSize: 24,
+        fontWeight: "900",
+        letterSpacing: 0.4,
     },
 
-    quickRow: { flexDirection: "row", gap: 12, marginTop: 2, marginBottom: 14 },
+    hSub: {
+        color: "#D7E2EE",
+        fontSize: 13,
+        fontWeight: "700",
+    },
+
+    hSubStrong: {
+        color: COLORS.text,
+        fontWeight: "900",
+    },
+
+    pressed: {
+        transform: [{ scale: 0.99 }],
+        opacity: 0.96,
+    },
+
+    quickRow: {
+        flexDirection: "row",
+        gap: 12,
+        marginTop: 6,
+        marginBottom: 14,
+    },
+
     quickCard: {
         flex: 1,
         backgroundColor: COLORS.card,
-        borderRadius: 18,
+        borderRadius: 22,
         borderWidth: 1,
         borderColor: COLORS.border,
         padding: 12,
-        gap: 6,
+        gap: 7,
         overflow: "hidden",
     },
 
-    quickTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+    quickTop: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
+
+    sectionIconWrap: {
+        width: 34,
+        height: 34,
+        borderRadius: 12,
+        backgroundColor: "rgba(90,200,250,0.09)",
+        borderWidth: 1,
+        borderColor: "rgba(90,200,250,0.20)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
 
     badge: {
-        paddingHorizontal: 8,
-        height: 24,
+        paddingHorizontal: 10,
+        height: 27,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
     },
-    badgeText: { fontSize: 10, fontWeight: "900", letterSpacing: 0.4 },
-    badgeOk: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.35)" },
-    badgeTextOk: { color: "#86EFAC" },
-    badgePrimary: { backgroundColor: "rgba(124,58,237,0.16)", borderColor: "rgba(124,58,237,0.35)" },
-    badgeTextPrimary: { color: COLORS.primarySoft },
-    badgePrimarySoft: { backgroundColor: "rgba(96,165,250,0.12)", borderColor: "rgba(96,165,250,0.28)" },
-    badgeTextPrimarySoft: { color: "#BFDBFE" },
 
-    quickTitle: { color: COLORS.text, fontSize: 13, fontWeight: "900", marginTop: 2 },
-    quickMoney: { color: COLORS.text, fontSize: 16, fontWeight: "900", marginTop: 1 },
+    badgeText: {
+        fontSize: 11,
+        fontWeight: "900",
+        letterSpacing: 0.4,
+    },
+
+    badgeOk: {
+        backgroundColor: "rgba(34,197,94,0.12)",
+        borderColor: "rgba(34,197,94,0.34)",
+    },
+
+    badgeTextOk: {
+        color: "#86EFAC",
+    },
+
+    badgePrimary: {
+        backgroundColor: "rgba(124,58,237,0.16)",
+        borderColor: "rgba(124,58,237,0.35)",
+    },
+
+    badgeTextPrimary: {
+        color: "#D8B4FE",
+    },
+
+    badgePrimarySoft: {
+        backgroundColor: "rgba(96,165,250,0.12)",
+        borderColor: "rgba(96,165,250,0.28)",
+    },
+
+    badgeTextPrimarySoft: {
+        color: "#BFDBFE",
+    },
+
+    quickTitle: {
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "900",
+        marginTop: 2,
+    },
+
+    quickMoney: {
+        color: COLORS.text,
+        fontSize: 17,
+        fontWeight: "900",
+        marginTop: 1,
+    },
 
     tinyRow: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
         gap: 8,
-        marginTop: 4,
+        marginTop: 5,
     },
+
     tinyStatWrap: {
         flex: 1,
-        height: 30,
-        borderRadius: 12,
+        height: 34,
+        borderRadius: 13,
         backgroundColor: "rgba(255,255,255,0.05)",
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.08)",
@@ -683,67 +867,121 @@ const styles = StyleSheet.create({
         gap: 6,
         paddingHorizontal: 8,
     },
-    tinyStatValue: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
 
-    quickSubMuted: { color: "#CBD5E1", fontSize: 11, fontWeight: "800", opacity: 0.9, marginTop: 2 },
+    tinyStatValue: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+
+    quickSubMuted: {
+        color: COLORS.softText,
+        fontSize: 11,
+        fontWeight: "800",
+        opacity: 0.94,
+        marginTop: 2,
+    },
 
     leadsBanner: {
         backgroundColor: COLORS.card,
-        borderRadius: 18,
+        borderRadius: 22,
         borderWidth: 1,
         borderColor: COLORS.border,
         padding: 14,
         gap: 10,
-        marginBottom: 14,
+        marginBottom: 8,
+        overflow: "hidden",
     },
+
     leadsBannerTop: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
         gap: 10,
     },
+
     leadsBannerIconWrap: {
         width: 42,
         height: 42,
         borderRadius: 14,
-        backgroundColor: "rgba(15, 23, 42, 0.72)",
+        backgroundColor: "rgba(10, 22, 40, 0.82)",
         borderWidth: 1,
-        borderColor: COLORS.border,
+        borderColor: COLORS.borderSoft,
         alignItems: "center",
         justifyContent: "center",
+        shadowColor: COLORS.primary,
+        shadowOpacity: 0.18,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 0 },
+        elevation: 2,
     },
+
     leadsStatsRow: {
         flexDirection: "row",
         flexWrap: "wrap",
         gap: 8,
     },
 
-    bottomFadeMask: {
-        position: "absolute",
-        left: -16,
-        right: -16,
-        bottom: 0,
-        height: 55,
-        backgroundColor: "rgba(11,18,32,0.97)",
-    },
-
-    bottomInfoBar: {
+    bottomNavBar: {
         position: "absolute",
         left: 0,
         right: 0,
         bottom: 10,
-        height: 46,
-        borderRadius: 14,
-        backgroundColor: "rgba(15, 23, 42, 0.82)",
+        height: 66,
+        borderRadius: 20,
+        backgroundColor: COLORS.navBg,
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
+        borderColor: COLORS.navBorder,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingHorizontal: 8,
+    },
+
+    bottomNavItem: {
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+        paddingVertical: 6,
+        borderRadius: 16,
+    },
+
+    bottomNavItemDanger: {},
+
+    bottomNavIconWrap: {
+        width: 34,
+        height: 34,
+        borderRadius: 12,
+        backgroundColor: COLORS.navItem,
+        borderWidth: 1,
+        borderColor: COLORS.borderSoft,
         alignItems: "center",
         justifyContent: "center",
     },
 
-    bottomInfoText: {
-        color: "#CBD5E1",
-        fontSize: 12,
+    bottomNavIconWrapDanger: {
+        backgroundColor: COLORS.logoutBg,
+        borderColor: COLORS.logoutBorder,
+    },
+    logoutBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        backgroundColor: COLORS.logoutBg,
+        borderWidth: 1,
+        borderColor: COLORS.logoutBorder,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    bottomNavText: {
+        color: COLORS.text,
+        fontSize: 10,
         fontWeight: "800",
+    },
+
+    bottomNavTextDanger: {
+        color: "#FECACA",
     },
 });

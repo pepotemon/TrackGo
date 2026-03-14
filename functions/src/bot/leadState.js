@@ -62,12 +62,20 @@ function shouldSendBotReply(client) {
 
     const now = Date.now();
     const diff = now - lastInbound;
-    if (diff < 0 || diff > 24 * 60 * 60 * 1000) return false;
+
+    if (diff < 0 || diff > 24 * 60 * 60 * 1000) {
+        return false;
+    }
 
     const lastBotReplyAt = safeNumber(client?.lastBotReplyAt, 0);
     const lastBotStage = safeString(client?.lastBotStage || "");
     const parseStatus = safeString(client?.parseStatus || "");
     const verificationStatus = safeString(client?.verificationStatus || "");
+    const chatMode = safeString(client?.chatMode || "bot");
+
+    if (chatMode === "human") {
+        return false;
+    }
 
     if (lastBotReplyAt > 0 && now - lastBotReplyAt < 8_000) {
         return false;

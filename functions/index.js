@@ -5,7 +5,6 @@ const {
 
 const { onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-
 const { getAuth } = require("firebase-admin/auth");
 
 const { db } = require("./src/core/firebase");
@@ -15,6 +14,7 @@ const { createReminderMissingInfoJob } = require("./src/cron/reminderMissingInfo
 
 const { looksLikeSystemOrMetaMessage } = (() => {
     const { normalizeLooseText } = require("./src/utils/text");
+
     return {
         looksLikeSystemOrMetaMessage(text, profileName, waId) {
             const s = normalizeLooseText(text);
@@ -47,7 +47,6 @@ const { looksLikeSystemOrMetaMessage } = (() => {
 })();
 
 const { looksLikeBrazilAddress } = require("./src/utils/geo");
-
 const { sendWhatsAppText } = require("./src/whatsapp/sender");
 
 const {
@@ -64,7 +63,6 @@ const namesFactory = require("./src/bot/names");
 
 const { createLeadParser } = require("./src/bot/parser");
 const { createBotReplyBuilder } = require("./src/bot/replies");
-
 const leadState = require("./src/bot/leadState");
 
 const { createUpsertLeadAsClient } = require("./src/whatsapp/upsertLead");
@@ -140,7 +138,6 @@ const buildBotReplyPtBr = createBotReplyBuilder({
 });
 
 async function requireAdminUser(req) {
-
     const authHeader = String(req.headers.authorization || "");
     const match = authHeader.match(/^Bearer\s+(.+)$/i);
 
@@ -184,7 +181,6 @@ async function maybeReplyToLead({
     messageType,
     inboxRef,
 }) {
-
     if (!clientId || !waId) return;
 
     const clientRef = db.doc(`clients/${clientId}`);
@@ -196,24 +192,20 @@ async function maybeReplyToLead({
     const { safeString, safeNumber } = require("./src/utils/text");
 
     if (!isBotAllowedForClient(client)) {
-
         await inboxRef.set({
             botReplyStatus: "skipped",
             botReplyReason: "human_takeover_active",
             botReplyAt: Date.now(),
         }, { merge: true });
-
         return;
     }
 
     if (!leadState.shouldSendBotReply(client)) {
-
         await inboxRef.set({
             botReplyStatus: "skipped",
             botReplyReason: "reply_rules_blocked",
             botReplyAt: Date.now(),
         }, { merge: true });
-
         return;
     }
 
@@ -224,13 +216,11 @@ async function maybeReplyToLead({
     const markIntroSent = !!reply?.markIntroSent;
 
     if (!body || !currentBotStage) {
-
         await inboxRef.set({
             botReplyStatus: "skipped",
             botReplyReason: "empty_reply",
             botReplyAt: Date.now(),
         }, { merge: true });
-
         return;
     }
 
@@ -241,19 +231,16 @@ async function maybeReplyToLead({
         lastBotReplyText === body &&
         lastBotStage === currentBotStage
     ) {
-
         await inboxRef.set({
             botReplyStatus: "skipped",
             botReplyReason: "same_reply_as_previous",
             botReplyAt: Date.now(),
         }, { merge: true });
-
         return;
     }
 
     const sendResult = await sendWhatsAppText(waId, body);
     const now = Date.now();
-
     const whatsappMessageId = safeString(sendResult?.messages?.[0]?.id || "");
 
     await appendClientMessage({
@@ -311,7 +298,6 @@ const processIncomingWhatsappMessage = createProcessIncomingWhatsappMessage({
 });
 
 exports.onClientCreatedAssigned = onDocumentCreated("clients/{clientId}", async (event) => {
-
     const clientId = event.params.clientId;
     const after = event.data?.data() || {};
 
@@ -322,11 +308,9 @@ exports.onClientCreatedAssigned = onDocumentCreated("clients/{clientId}", async 
     } catch (e) {
         console.log("[PUSH] create error:", e);
     }
-
 });
 
 exports.onClientReassigned = onDocumentUpdated("clients/{clientId}", async (event) => {
-
     const clientId = event.params.clientId;
 
     const before = event.data?.before?.data() || {};
@@ -342,8 +326,98 @@ exports.onClientReassigned = onDocumentUpdated("clients/{clientId}", async (even
     } catch (e) {
         console.log("[PUSH] update error:", e);
     }
-
 });
+
+/*
+MANUAL CHAT
+*/
+
+exports.sendManualLeadMessage = onRequest(
+    {
+        region: "us-central1",
+        cors: true,
+    },
+    async (req, res) => {
+        try {
+            if (req.method !== "POST") {
+                res.status(405).json({ ok: false, error: "method_not_allowed" });
+                return;
+            }
+
+            const { uid } = await requireAdminUser(req);
+
+            const body = req.body || {};
+            const clientId = String(body?.clientId || "").trim();
+            const text = String(body?.text || "").trim();
+            const markHumanTakeover = body?.markHumanTakeover !== false;
+
+            if (!clientId) {
+                res.status(400).json({ ok: false, error: "missing_client_id" });
+                return;
+            }
+
+            if (!text) {
+                res.status(400).json({ ok: false, error: "missing_text" });
+                return;
+            }
+
+            const result = await sendManualWhatsAppMessage({
+                clientId,
+                adminUserId: uid,
+                body: text,
+                markHumanTakeover,
+            });
+
+            res.status(200).json(result);
+        } catch (error) {
+            const status = Number(error?.statusCode) || 500;
+            console.error("[WHATSAPP MANUAL] send error:", error);
+            res.status(status).json({
+                ok: false,
+                error: String(error?.message || "manual_send_failed"),
+            });
+        }
+    }
+);
+
+exports.resumeBotLead = onRequest(
+    {
+        region: "us-central1",
+        cors: true,
+    },
+    async (req, res) => {
+        try {
+            if (req.method !== "POST") {
+                res.status(405).json({ ok: false, error: "method_not_allowed" });
+                return;
+            }
+
+            const { uid } = await requireAdminUser(req);
+
+            const body = req.body || {};
+            const clientId = String(body?.clientId || "").trim();
+
+            if (!clientId) {
+                res.status(400).json({ ok: false, error: "missing_client_id" });
+                return;
+            }
+
+            const result = await resumeBotForClient({
+                clientId,
+                adminUserId: uid,
+            });
+
+            res.status(200).json(result);
+        } catch (error) {
+            const status = Number(error?.statusCode) || 500;
+            console.error("[WHATSAPP MANUAL] resume bot error:", error);
+            res.status(status).json({
+                ok: false,
+                error: String(error?.message || "resume_bot_failed"),
+            });
+        }
+    }
+);
 
 /*
 REMINDER AUTOMÁTICO
@@ -369,11 +443,8 @@ exports.whatsappWebhook = onRequest(
         cors: true,
     },
     async (req, res) => {
-
         try {
-
             if (req.method === "GET") {
-
                 const mode = req.query["hub.mode"];
                 const token = req.query["hub.verify_token"];
                 const challenge = req.query["hub.challenge"];
@@ -381,24 +452,19 @@ exports.whatsappWebhook = onRequest(
                 const expectedToken = WHATSAPP_VERIFY_TOKEN.value();
 
                 if (mode === "subscribe" && token === expectedToken) {
-
                     console.log("[WHATSAPP] webhook verified");
                     res.status(200).send(challenge);
                     return;
-
                 }
 
                 console.log("[WHATSAPP] verification failed");
                 res.status(403).send("Forbidden");
                 return;
-
             }
 
             if (req.method !== "POST") {
-
                 res.status(405).send("Method Not Allowed");
                 return;
-
             }
 
             const { safeString } = require("./src/utils/text");
@@ -407,30 +473,22 @@ exports.whatsappWebhook = onRequest(
             const entries = Array.isArray(body?.entry) ? body.entry : [];
 
             for (const entry of entries) {
-
                 const changes = Array.isArray(entry?.changes) ? entry.changes : [];
 
                 for (const change of changes) {
-
                     const field = safeString(change?.field);
                     const value = change?.value || {};
 
                     if (field !== "messages") continue;
 
                     await processIncomingWhatsappMessage(value);
-
                 }
-
             }
 
             res.status(200).send("EVENT_RECEIVED");
-
         } catch (error) {
-
             console.error("[WHATSAPP] webhook fatal error:", error);
             res.status(500).send("internal_error");
-
         }
-
     }
 );

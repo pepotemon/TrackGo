@@ -64,6 +64,28 @@ function isHowItWorksQuestion(text) {
     ]);
 }
 
+function isOfficeLocationQuestion(text) {
+    return includesAnyNormalized(text, [
+        "onde fica o escritorio",
+        "onde fica o escritório",
+        "onde voces ficam",
+        "onde vocês ficam",
+        "onde voces trabalham",
+        "onde vocês trabalham",
+        "onde fica a empresa",
+        "onde e o escritorio",
+        "onde é o escritório",
+        "qual endereco do escritorio",
+        "qual endereço do escritório",
+        "onde e a loja",
+        "onde vocês estao",
+        "onde vocês estão",
+        "onde vcs ficam",
+        "aonde fica o escritorio",
+        "aonde fica o escritório",
+    ]);
+}
+
 function isUrgencyText(text) {
     return includesAnyNormalized(text, [
         "pra ontem",
@@ -218,6 +240,7 @@ function getVerificationStatusFromLead({
 function detectInboundIntent(text) {
     if (isHowItWorksQuestion(text)) return "how_it_works";
     if (isCoverageQuestion(text)) return "coverage";
+    if (isOfficeLocationQuestion(text)) return "office_location";
     if (isUrgencyText(text)) return "urgency";
     return "default";
 }
@@ -225,6 +248,7 @@ function detectInboundIntent(text) {
 module.exports = {
     isCoverageQuestion,
     isHowItWorksQuestion,
+    isOfficeLocationQuestion,
     isUrgencyText,
     detectUnsupportedProfileSignals,
     classifyProfileFromFlags,
