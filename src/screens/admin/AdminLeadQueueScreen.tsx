@@ -86,6 +86,8 @@ type VerificationStatus =
     | "incomplete"
     | "not_suitable";
 
+type QueueScope = "today" | "all";
+
 type MenuAnchor = {
     id: string;
     x: number;
@@ -133,6 +135,18 @@ function toMs(v: any): number {
         return Number.isFinite(parsed) ? parsed : 0;
     }
     return 0;
+}
+
+function isSameLocalDay(aMs?: number, bMs?: number) {
+    if (!aMs || !bMs) return false;
+    const a = new Date(aMs);
+    const b = new Date(bMs);
+
+    return (
+        a.getFullYear() === b.getFullYear() &&
+        a.getMonth() === b.getMonth() &&
+        a.getDate() === b.getDate()
+    );
 }
 
 function formatDateLabel(ms?: number) {
@@ -245,6 +259,14 @@ function getQuickStatusText(c: ClientDoc) {
     return "Listo para revisión";
 }
 
+function getClientBaseDateMs(c: ClientDoc) {
+    return (
+        toMs((c as any)?.createdAt) ||
+        toMs((c as any)?.updatedAt) ||
+        toMs((c as any)?.lastInboundMessageAt)
+    );
+}
+
 export default function AdminLeadQueueScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -256,6 +278,7 @@ export default function AdminLeadQueueScreen() {
 
     const [q, setQ] = useState("");
     const [filter, setFilter] = useState<MetaFilterKey>("pending_review");
+    const [queueScope, setQueueScope] = useState<QueueScope>("all");
     const [busyId, setBusyId] = useState<string | null>(null);
     const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
     const [menuAnchor, setMenuAnchor] = useState<MenuAnchor>(null);
@@ -371,9 +394,35 @@ export default function AdminLeadQueueScreen() {
         };
     }, [metaUnassignedClients]);
 
+    const todayCounts = useMemo(() => {
+        const now = Date.now();
+
+        let pendingReview = 0;
+        let incomplete = 0;
+        let notSuitable = 0;
+
+        for (const c of metaUnassignedClients) {
+            const status = getDerivedVerificationStatus(c);
+            const baseMs = getClientBaseDateMs(c);
+
+            if (!isSameLocalDay(baseMs, now)) continue;
+
+            if (status === "pending_review") pendingReview++;
+            else if (status === "incomplete") incomplete++;
+            else if (status === "not_suitable") notSuitable++;
+        }
+
+        return {
+            pendingReview,
+            incomplete,
+            notSuitable,
+        };
+    }, [metaUnassignedClients]);
+
     const filteredClients = useMemo(() => {
         const qtText = q.trim().toLowerCase();
         const qtDigits = normalizePhone(q);
+        const now = Date.now();
 
         return metaUnassignedClients
             .filter((c) => {
@@ -381,6 +430,16 @@ export default function AdminLeadQueueScreen() {
 
                 if (verification === "verified") return false;
                 if (filter !== "all" && verification !== filter) return false;
+
+                const shouldShowScope =
+                    filter === "pending_review" ||
+                    filter === "incomplete" ||
+                    filter === "not_suitable";
+
+                if (shouldShowScope && queueScope === "today") {
+                    const baseMs = getClientBaseDateMs(c);
+                    if (!isSameLocalDay(baseMs, now)) return false;
+                }
 
                 if (!qtText && !qtDigits) return true;
 
@@ -412,11 +471,30 @@ export default function AdminLeadQueueScreen() {
                 const bMs = toMs((b as any)?.updatedAt) || toMs((b as any)?.createdAt);
                 return bMs - aMs;
             });
-    }, [metaUnassignedClients, q, filter]);
+    }, [metaUnassignedClients, q, filter, queueScope]);
 
     const visibleTotal = useMemo(() => {
         return totals.pendingReview + totals.incomplete + totals.notSuitable;
     }, [totals]);
+
+    const currentScopeAllCount = useMemo(() => {
+        if (filter === "pending_review") return totals.pendingReview;
+        if (filter === "incomplete") return totals.incomplete;
+        if (filter === "not_suitable") return totals.notSuitable;
+        return 0;
+    }, [filter, totals]);
+
+    const currentScopeTodayCount = useMemo(() => {
+        if (filter === "pending_review") return todayCounts.pendingReview;
+        if (filter === "incomplete") return todayCounts.incomplete;
+        if (filter === "not_suitable") return todayCounts.notSuitable;
+        return 0;
+    }, [filter, todayCounts]);
+
+    const showScopeFilter =
+        filter === "pending_review" ||
+        filter === "incomplete" ||
+        filter === "not_suitable";
 
     const phoneExists = (phoneDigits: string, excludeId?: string | null) => {
         const p = normalizePhone(phoneDigits);
@@ -733,6 +811,7 @@ export default function AdminLeadQueueScreen() {
                 onPress={() => {
                     closeMenu();
                     setFilter(k);
+                    if (k === "all") setQueueScope("all");
                 }}
                 style={({ pressed }) => [
                     styles.summaryBadge,
@@ -852,6 +931,74 @@ export default function AdminLeadQueueScreen() {
                             </Pressable>
                         ) : null}
                     </View>
+
+                    {showScopeFilter ? (
+                        <View style={styles.secondaryFilterWrap}>
+                            <View style={styles.secondaryFilterRow}>
+                                <Pressable
+                                    onPress={() => setQueueScope("today")}
+                                    style={({ pressed }) => [
+                                        styles.secondaryFilterPill,
+                                        queueScope === "today" && styles.secondaryFilterPillActive,
+                                        pressed && styles.pressed,
+                                    ]}
+                                >
+                                    <Ionicons
+                                        name="today-outline"
+                                        size={13}
+                                        color={queueScope === "today" ? "#93C5FD" : COLORS.muted}
+                                    />
+                                    <Text
+                                        style={[
+                                            styles.secondaryFilterPillText,
+                                            queueScope === "today" && styles.secondaryFilterPillTextActive,
+                                        ]}
+                                    >
+                                        Hoy
+                                    </Text>
+                                    <Text
+                                        style={[
+                                            styles.secondaryFilterPillCount,
+                                            queueScope === "today" && styles.secondaryFilterPillCountActive,
+                                        ]}
+                                    >
+                                        {currentScopeTodayCount}
+                                    </Text>
+                                </Pressable>
+
+                                <Pressable
+                                    onPress={() => setQueueScope("all")}
+                                    style={({ pressed }) => [
+                                        styles.secondaryFilterPill,
+                                        queueScope === "all" && styles.secondaryFilterPillActive,
+                                        pressed && styles.pressed,
+                                    ]}
+                                >
+                                    <Ionicons
+                                        name="albums-outline"
+                                        size={13}
+                                        color={queueScope === "all" ? "#93C5FD" : COLORS.muted}
+                                    />
+                                    <Text
+                                        style={[
+                                            styles.secondaryFilterPillText,
+                                            queueScope === "all" && styles.secondaryFilterPillTextActive,
+                                        ]}
+                                    >
+                                        Todos
+                                    </Text>
+                                    <Text
+                                        style={[
+                                            styles.secondaryFilterPillCount,
+                                            queueScope === "all" && styles.secondaryFilterPillCountActive,
+                                        ]}
+                                    >
+                                        {currentScopeAllCount}
+                                    </Text>
+                                </Pressable>
+                            </View>
+                        </View>
+                    ) : null}
 
                     <ScrollView
                         contentContainerStyle={styles.listContent}
@@ -1035,7 +1182,11 @@ export default function AdminLeadQueueScreen() {
                             <View style={styles.empty}>
                                 <Ionicons name="file-tray-outline" size={22} color={COLORS.muted} />
                                 <Text style={styles.emptyText}>
-                                    {q.trim() ? "No hay resultados." : "No hay leads Meta pendientes en la cola."}
+                                    {q.trim()
+                                        ? "No hay resultados."
+                                        : showScopeFilter && queueScope === "today"
+                                            ? "No hay leads de hoy en este filtro."
+                                            : "No hay leads Meta pendientes en la cola."}
                                 </Text>
                             </View>
                         ) : null}
@@ -1374,7 +1525,7 @@ const styles = StyleSheet.create({
 
     searchWrap: {
         marginHorizontal: 16,
-        marginBottom: 10,
+        marginBottom: 8,
         flexDirection: "row",
         alignItems: "center",
         gap: 10,
@@ -1405,6 +1556,57 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: "rgba(255,255,255,0.06)",
+    },
+
+    secondaryFilterWrap: {
+        paddingHorizontal: 16,
+        paddingBottom: 10,
+    },
+    secondaryFilterRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    secondaryFilterPill: {
+        minHeight: 32,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "#0F172A",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 7,
+    },
+    secondaryFilterPillActive: {
+        backgroundColor: "rgba(37,99,235,0.10)",
+        borderColor: "rgba(37,99,235,0.26)",
+    },
+    secondaryFilterPillText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    secondaryFilterPillTextActive: {
+        color: "#DDEAFE",
+    },
+    secondaryFilterPillCount: {
+        minWidth: 18,
+        height: 18,
+        borderRadius: 999,
+        paddingHorizontal: 5,
+        textAlign: "center",
+        textAlignVertical: "center",
+        overflow: "hidden",
+        backgroundColor: "rgba(255,255,255,0.06)",
+        color: "#CBD5E1",
+        fontSize: 10,
+        fontWeight: "900",
+        lineHeight: 18,
+    },
+    secondaryFilterPillCountActive: {
+        backgroundColor: "rgba(37,99,235,0.22)",
+        color: "#93C5FD",
     },
 
     listContent: { paddingHorizontal: 16, paddingBottom: 24, gap: 10 },
