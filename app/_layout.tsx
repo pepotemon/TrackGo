@@ -69,7 +69,6 @@ function RootHeader({ title, canGoBack, onGoBack }: RootHeaderProps) {
 
 export default function RootLayout() {
   const router = useRouter();
-
   const lastHandledUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -162,7 +161,7 @@ export default function RootLayout() {
           }}
         >
           {/* USER / ROOT */}
-          <Stack.Screen name="index" options={{ title: "TrackGo" }} />
+          <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="user-history" options={{ title: "TrackGo" }} />
 
           {/* PANTALLAS SIN HEADER PROPIO */}
