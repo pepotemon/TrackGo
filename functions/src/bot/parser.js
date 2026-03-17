@@ -30,7 +30,8 @@ function createLeadParser({
             .filter(Boolean);
 
         const nonEmptyLines = lines.filter(Boolean);
-        const hasMapsCandidate = !!extractGoogleMapsUrlFromText(text);
+        const extractedMapsUrl = extractGoogleMapsUrlFromText(text);
+        const hasMapsCandidate = !!extractedMapsUrl;
 
         const parsedNameLabeled = extractLabeledValue(text, [
             "nome completo",
@@ -73,6 +74,14 @@ function createLeadParser({
             "vendo",
             "venda de",
             "vendas de",
+            "tenho um",
+            "tenho uma",
+            "tenho",
+            "trabalho com",
+            "trabalhamos com",
+            "vendo",
+            "vendas de",
+            "trabalho vendendo",
             "tenho um box",
             "tenho uma loja",
             "tenho uma banca",
@@ -147,6 +156,7 @@ function createLeadParser({
         const fallbackName = sanitizeFallbackProfileName(fallbackProfileName);
         const finalName = explicitName || fallbackName || "";
         const hasBusiness = !!(finalBusiness || businessRaw);
+        const hasAddressCandidate = !!finalAddress;
 
         const profileFlags = detectUnsupportedProfileSignals(text);
         const {
@@ -160,10 +170,12 @@ function createLeadParser({
             ? getBusinessFlags(text, finalBusiness, businessRaw)
             : [];
 
+        // PRIORIDAD NUEVA:
+        // Con Maps ya puede pasar a revisión, aunque todavía falte tipo de comercio.
         const messageParseStatus =
-            hasBusiness && hasMapsCandidate
+            hasMapsCandidate
                 ? "ready"
-                : hasBusiness || hasMapsCandidate || !!finalName
+                : hasBusiness || hasAddressCandidate || !!finalName
                     ? "partial"
                     : "empty";
 

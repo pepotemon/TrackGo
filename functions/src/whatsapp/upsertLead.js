@@ -76,6 +76,42 @@ function pickBetterAddress(prevAddress, nextAddress) {
     return prev;
 }
 
+function pickBetterMapsUrl(prevMapsUrl, nextMapsUrl, hasMapsInThisMessage) {
+    const prev = safeString(prevMapsUrl || "");
+    const next = safeString(nextMapsUrl || "");
+
+    if (hasMapsInThisMessage && next) return next;
+    return prev || next || "";
+}
+
+function pickBetterCoords(prevLat, prevLng, nextLat, nextLng, hasMapsInThisMessage) {
+    if (hasMapsInThisMessage) {
+        if (hasValidCoords(nextLat, nextLng)) {
+            return {
+                lat: nextLat,
+                lng: nextLng,
+            };
+        }
+
+        return {
+            lat: null,
+            lng: null,
+        };
+    }
+
+    if (hasValidCoords(prevLat, prevLng)) {
+        return {
+            lat: prevLat,
+            lng: prevLng,
+        };
+    }
+
+    return {
+        lat: null,
+        lng: null,
+    };
+}
+
 function createUpsertLeadAsClient({
     parseLeadText,
     resolveNextClientName,
@@ -130,6 +166,8 @@ function createUpsertLeadAsClient({
                 profileName,
             });
 
+            const draftCoords = pickBetterCoords(null, null, lat, lng, hasMapsInThisMessage);
+
             const draftClient = {
                 name: resolvedName || "",
                 business: pickBetterBusiness("", parsed.parsedBusiness || ""),
@@ -144,23 +182,28 @@ function createUpsertLeadAsClient({
                 leadQuality,
                 notSuitableReason,
                 phone,
-                mapsUrl: generatedMapsUrl || "",
+                mapsUrl: pickBetterMapsUrl("", generatedMapsUrl, hasMapsInThisMessage),
                 address: pickBetterAddress(
                     "",
                     parsed.parsedAddress || locationAddress || ""
                 ),
-                lat: hasValidCoords(lat, lng) ? lat : null,
-                lng: hasValidCoords(lat, lng) ? lng : null,
+                lat: draftCoords.lat,
+                lng: draftCoords.lng,
                 currentLeadMapsConfirmedAt: hasMapsInThisMessage ? now : 0,
             };
 
             const finalParseStatus = getFinalParseStatus(draftClient);
-            const verificationStatus =
+
+            const verificationStatus = pickVerificationStatus(
+                "",
                 parsed.verificationStatus ||
                 getVerificationStatusFromLead({
                     parseStatus: finalParseStatus,
                     leadQuality,
-                });
+                }),
+                leadQuality,
+                finalParseStatus
+            );
 
             const payload = {
                 ...draftClient,
@@ -260,6 +303,14 @@ function createUpsertLeadAsClient({
             ])
         );
 
+        const mergedCoords = pickBetterCoords(
+            prev.lat,
+            prev.lng,
+            lat,
+            lng,
+            hasMapsInThisMessage
+        );
+
         const mergedClientBase = {
             ...prev,
 
@@ -283,6 +334,7 @@ function createUpsertLeadAsClient({
             profileFlags: mergedProfileFlags,
             profileType: pickProfileType(prev.profileType, profileType),
             leadQuality: pickLeadQuality(prev.leadQuality, leadQuality),
+
             notSuitableReason:
                 safeString(prev.notSuitableReason || "") ||
                 safeString(notSuitableReason || ""),
@@ -292,17 +344,14 @@ function createUpsertLeadAsClient({
                 parsed.parsedAddress || locationAddress
             ),
 
-            mapsUrl: hasMapsInThisMessage
-                ? (generatedMapsUrl || safeString(prev.mapsUrl || ""))
-                : safeString(prev.mapsUrl || ""),
+            mapsUrl: pickBetterMapsUrl(
+                prev.mapsUrl,
+                generatedMapsUrl,
+                hasMapsInThisMessage
+            ),
 
-            lat: hasMapsInThisMessage
-                ? (hasValidCoords(lat, lng) ? lat : null)
-                : (prev.lat !== undefined && prev.lat !== null ? prev.lat : null),
-
-            lng: hasMapsInThisMessage
-                ? (hasValidCoords(lat, lng) ? lng : null)
-                : (prev.lng !== undefined && prev.lng !== null ? prev.lng : null),
+            lat: mergedCoords.lat,
+            lng: mergedCoords.lng,
 
             currentLeadMapsConfirmedAt: hasMapsInThisMessage
                 ? now
@@ -365,6 +414,18 @@ function createUpsertLeadAsClient({
             lastBotReplyAt: safeNumber(prev.lastBotReplyAt, 0),
             lastBotReplyText: safeString(prev.lastBotReplyText || ""),
             lastBotStage: safeString(prev.lastBotStage || ""),
+            lastOutboundAt: safeNumber(prev.lastOutboundAt, 0),
+
+            chatMode: safeString(prev.chatMode || "bot"),
+            botPausedAt: safeNumber(prev.botPausedAt, 0),
+            botPausedBy: safeString(prev.botPausedBy || ""),
+            humanTakeoverAt: safeNumber(prev.humanTakeoverAt, 0),
+            humanTakeoverBy: safeString(prev.humanTakeoverBy || ""),
+            resumeBotAt: safeNumber(prev.resumeBotAt, 0),
+            resumeBotBy: safeString(prev.resumeBotBy || ""),
+            lastManualReplyAt: safeNumber(prev.lastManualReplyAt, 0),
+            lastManualReplyText: safeString(prev.lastManualReplyText || ""),
+            lastManualReplyBy: safeString(prev.lastManualReplyBy || ""),
         };
 
         await found.ref.set(stripUndefined(patch), { merge: true });

@@ -18,6 +18,7 @@ function hasBusinessStarter(text) {
         "trabalho com",
         "trabalhamos com",
         "eu trabalho com",
+        "a gente trabalha com",
         "meu trabalho e",
         "meu trabalho é",
         "tenho um box",
@@ -56,6 +57,8 @@ function hasBusinessStarter(text) {
         "atelier de",
         "studio",
         "studio de",
+        "bar e hotel",
+        "boteco e hotel",
         "espetaria",
         "espetinho",
         "churrasquinho",
@@ -219,6 +222,9 @@ function isLikelyBusinessLine(text) {
         "marmita",
         "marmitaria",
         "restaurante",
+        "hotel",
+        "boteco",
+        "bar",
         "espetinho",
         "churrasquinho",
         "espetaria",
@@ -323,6 +329,10 @@ function normalizeBusinessLabel(text) {
     if (includesAnyNormalized(s, ["lanchonete", "lanche"])) return "Lanchonete";
     if (includesAnyNormalized(s, ["hamburgueria", "food truck", "truck", "ford truck"])) return "Food truck";
     if (includesAnyNormalized(s, ["espetaria", "espetinho", "churrasquinho"])) return "Espetinho / churrasquinho";
+    if (includesAnyNormalized(s, ["bar e hotel", "boteco e hotel"])) return "Bar / hotel";
+    if (s.includes("boteco")) return "Boteco";
+    if (s.includes("hotel")) return "Hotel";
+    if (s.includes("bar")) return "Bar";
     if (s.includes("pizzaria")) return "Pizzaria";
     if (s.includes("sorveteria")) return "Sorveteria";
     if (s.includes("cafeteria")) return "Cafeteria";
@@ -364,7 +374,18 @@ function normalizeBusinessLabel(text) {
     if (s.includes("studio")) return "Studio";
     if (s.includes("atelier")) return "Atelier";
     if (s.includes("loja")) return "Loja";
-    if (includesAnyNormalized(s, ["comercio de", "comércio de", "casa de", "venda de", "vendas de", "trabalho com", "trabalhamos com", "revenda de"])) return raw;
+    if (includesAnyNormalized(s, [
+        "comercio de",
+        "comércio de",
+        "casa de",
+        "venda de",
+        "vendas de",
+        "trabalho com",
+        "trabalhamos com",
+        "revenda de",
+    ])) {
+        return raw;
+    }
 
     return raw;
 }
@@ -379,6 +400,10 @@ function getBusinessSignals(text) {
         ["lanchonete", ["lanchonete", "lanche"]],
         ["food truck", ["food truck", "truck", "ford truck"]],
         ["espetinho", ["espetinho", "churrasquinho", "espetaria"]],
+        ["bar_hotel", ["bar e hotel", "boteco e hotel"]],
+        ["bar", ["bar"]],
+        ["hotel", ["hotel"]],
+        ["boteco", ["boteco"]],
         ["pizzaria", ["pizzaria"]],
         ["sorveteria", ["sorveteria"]],
         ["cafeteria", ["cafeteria"]],
@@ -489,6 +514,9 @@ function isPossibleBusinessFallbackTextFactory({ looksLikePersonName }) {
             "churrasquinho",
             "agua de coco",
             "água de coco",
+            "hotel",
+            "boteco",
+            "bar",
         ])) {
             return true;
         }
@@ -522,6 +550,8 @@ function classifyBusinessQuality(rawText, businessLabel, businessRaw) {
         ["lanchonete", "comida"],
         ["food truck", "comida"],
         ["espetinho", "comida"],
+        ["bar", "hotel"],
+        ["boteco", "hotel"],
     ];
 
     const labels = Array.from(new Set(signals));
@@ -560,7 +590,17 @@ function getBusinessFlags(rawText, businessLabel, businessRaw) {
         flags.push("fallback_business_detected");
     }
 
-    if (includesAnyNormalized(joined, ["box", "ceasa", "banca", "barraca", "truck", "cozinha", "lanche", "espetinho", "churrasquinho"])) {
+    if (includesAnyNormalized(joined, [
+        "box",
+        "ceasa",
+        "banca",
+        "barraca",
+        "truck",
+        "cozinha",
+        "lanche",
+        "espetinho",
+        "churrasquinho",
+    ])) {
         flags.push("informal_business_text");
     }
 

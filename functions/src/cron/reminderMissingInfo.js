@@ -47,7 +47,7 @@ function buildShortMissingInfoReminderPtBr(missingType) {
         return [
             "Olá 👋",
             "",
-            "Ainda preciso do tipo de comércio para continuar sua análise.",
+            "Ainda preciso do tipo de comércio para completar sua análise.",
             "Se ainda tiver interesse, pode me enviar por aqui.",
         ].join("\n");
     }
@@ -56,7 +56,7 @@ function buildShortMissingInfoReminderPtBr(missingType) {
         return [
             "Olá 👋",
             "",
-            "Ainda preciso da localização do comércio no Google Maps para continuar sua análise.",
+            "Ainda preciso da localização do comércio no Google Maps para completar sua análise.",
             "Se ainda tiver interesse, pode me enviar por aqui.",
         ].join("\n");
     }
@@ -64,14 +64,13 @@ function buildShortMissingInfoReminderPtBr(missingType) {
     return [
         "Olá 👋",
         "",
-        "Ainda preciso do tipo de comércio e da localização no Google Maps para continuar sua análise.",
+        "Ainda preciso do tipo de comércio e da localização no Google Maps para completar sua análise.",
         "Se ainda tiver interesse, pode me enviar por aqui.",
     ].join("\n");
 }
 
 function shouldSkipReminder(client, now, reminderCutoffMs) {
     const source = safeString(client?.source || "");
-    const parseStatus = safeString(client?.parseStatus || "");
     const leadQuality = safeString(client?.leadQuality || "");
     const verificationStatus = safeString(client?.verificationStatus || "");
     const introSentAt = safeNumber(client?.initialIntroSentAt, 0);
@@ -105,10 +104,6 @@ function shouldSkipReminder(client, now, reminderCutoffMs) {
         return { skip: true, reason: "already_verified" };
     }
 
-    if (parseStatus === "ready") {
-        return { skip: true, reason: "already_ready" };
-    }
-
     if (assignedTo) {
         return { skip: true, reason: "already_assigned" };
     }
@@ -137,8 +132,6 @@ function shouldSkipReminder(client, now, reminderCutoffMs) {
         return { skip: true, reason: "window_closed" };
     }
 
-    // Evita repetir recordatorio dentro del mismo ciclo actual.
-    // Si ya se mandó después del último inbound, no se vuelve a mandar.
     if (lastMissingInfoReminderAt > 0 && lastMissingInfoReminderAt >= lastInboundMessageAt) {
         return { skip: true, reason: "already_reminded_current_cycle" };
     }

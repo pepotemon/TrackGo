@@ -37,6 +37,11 @@ function isCoverageQuestion(text) {
         "faz no maranhao",
         "faz no maranhão",
         "faz em pernambuco",
+        "atende em",
+        "vocês atendem em",
+        "voces atendem em",
+        "trabalham em",
+        "trabalha em",
         "onde fica o escritorio",
         "onde fica o escritório",
         "onde voces ficam",
@@ -92,7 +97,6 @@ function isUrgencyText(text) {
 function isAmountQuestion(text) {
     return includesAnyNormalized(text, [
         "libera quanto",
-        "libera quanto?",
         "quanto libera",
         "quanto voces liberam",
         "quanto vocês liberam",
@@ -108,6 +112,75 @@ function isAmountQuestion(text) {
         "quanto voces emprestam",
         "quanto vocês emprestam",
     ]);
+}
+
+function isGenericOutOfFlowQuestion(text) {
+    const s = normalizeLooseText(text);
+    if (!s) return false;
+
+    if (
+        isCoverageQuestion(s) ||
+        isHowItWorksQuestion(s) ||
+        isAmountQuestion(s) ||
+        isUrgencyText(s)
+    ) {
+        return false;
+    }
+
+    const genericQuestionPhrases = [
+        "quem e voce",
+        "quem é você",
+        "quem fala",
+        "qual seu nome",
+        "qual o seu nome",
+        "você é robo",
+        "voce é robo",
+        "você é robô",
+        "voce e robo",
+        "voce é robô",
+        "é robo",
+        "e robo",
+        "é robô",
+        "e robô",
+        "tem atendente",
+        "tem pessoa real",
+        "quero falar com atendente",
+        "quero falar com uma pessoa",
+        "quero falar com alguem",
+        "quero falar com alguém",
+        "nao entendi",
+        "não entendi",
+        "entendi nao",
+        "entendi não",
+        "como assim",
+        "pode explicar melhor",
+        "explica isso",
+        "me chama no atendente",
+        "tem loja fisica",
+        "tem loja física",
+        "onde voces ficam mesmo",
+        "onde vocês ficam mesmo",
+    ];
+
+    if (genericQuestionPhrases.some((x) => s.includes(normalizeLooseText(x)))) {
+        return true;
+    }
+
+    const questionWords = [
+        "quem",
+        "qual",
+        "quais",
+        "onde",
+        "porque",
+        "por que",
+        "como assim",
+    ];
+
+    const hasQuestionWord = questionWords.some((w) =>
+        s.includes(normalizeLooseText(w))
+    );
+
+    return s.includes("?") || hasQuestionWord;
 }
 
 function detectUnsupportedProfileSignals(text) {
@@ -167,7 +240,6 @@ function detectUnsupportedProfileSignals(text) {
             "99pop",
             "motorista de aplicativo",
             "motorista de app",
-            "motorista de app?",
             "fazem pra motorista de app",
             "faz pra motorista de app",
             "serve pra motorista de app",
@@ -264,6 +336,7 @@ function detectInboundIntent(text) {
     if (isCoverageQuestion(text)) return "coverage";
     if (isAmountQuestion(text)) return "amount";
     if (isUrgencyText(text)) return "urgency";
+    if (isGenericOutOfFlowQuestion(text)) return "generic_question";
     return "default";
 }
 
@@ -272,6 +345,7 @@ module.exports = {
     isHowItWorksQuestion,
     isUrgencyText,
     isAmountQuestion,
+    isGenericOutOfFlowQuestion,
     detectUnsupportedProfileSignals,
     classifyProfileFromFlags,
     getVerificationStatusFromLead,

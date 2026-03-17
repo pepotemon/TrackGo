@@ -4,6 +4,7 @@ const {
     isHowItWorksQuestion,
     isUrgencyText,
     isAmountQuestion,
+    isGenericOutOfFlowQuestion,
 } = require("./intents");
 
 function buildIntroMessagePtBr() {
@@ -26,7 +27,7 @@ function buildIntroMessagePtBr() {
 function buildHowItWorksSnippetPtBr() {
     return [
         "Funciona assim:",
-        "1️⃣ Fazemos uma análise inicial do tipo de comércio e da localização.",
+        "1️⃣ Fazemos uma análise inicial do cadastro.",
         "2️⃣ Depois encaminhamos para o responsável da sua região.",
         "3️⃣ Ele entra em contato para explicar valores, condições e próximos passos.",
         "4️⃣ A liberação depende da análise e da visita ao comércio.",
@@ -85,7 +86,7 @@ function buildShortMissingBusinessReply(messageType) {
     return [
         buildShortAckPrefix(messageType),
         "",
-        "Agora só falta o tipo de comércio para eu continuar.",
+        "Seu cadastro já pode seguir para análise inicial, mas ainda preciso do tipo de comércio.",
     ].join("\n");
 }
 
@@ -94,6 +95,7 @@ function buildShortMissingMapsReply(messageType) {
         buildShortAckPrefix(messageType),
         "",
         "Agora só falta a localização do comércio no Google Maps.",
+        "Pode ser a localização fixa da residência ou do ponto de trabalho.",
     ].join("\n");
 }
 
@@ -105,17 +107,39 @@ function buildShortMissingBothReply(messageType) {
     ].join("\n");
 }
 
-function buildContextualMissingFooter({ hasBusiness, hasMaps }) {
+function buildAutomaticStillMissingReply({ hasBusiness, hasMaps }) {
     if (!hasBusiness && !hasMaps) {
-        return "Para continuar, ainda preciso do tipo de comércio e da localização no Google Maps.";
+        return [
+            "Desculpe, sou uma atendente automática.",
+            "",
+            "Para te passar com uma pessoa da equipe, ainda preciso de:",
+            "• Tipo de comércio",
+            "• Localização no Google Maps",
+        ].join("\n");
     }
+
     if (!hasBusiness) {
-        return "Para continuar, ainda preciso do tipo de comércio.";
+        return [
+            "Desculpe, sou uma atendente automática.",
+            "",
+            "Seu cadastro já pode seguir para análise inicial, mas ainda preciso do tipo de comércio.",
+        ].join("\n");
     }
+
     if (!hasMaps) {
-        return "Para continuar, ainda preciso da localização do comércio no Google Maps.";
+        return [
+            "Desculpe, sou uma atendente automática.",
+            "",
+            "Para continuar, ainda preciso da localização no Google Maps.",
+            "Pode ser a localização fixa da residência ou do ponto de trabalho.",
+        ].join("\n");
     }
-    return "";
+
+    return [
+        "Desculpe, sou uma atendente automática.",
+        "",
+        "Seu cadastro já foi encaminhado para análise inicial.",
+    ].join("\n");
 }
 
 function createBotReplyBuilder({
@@ -135,6 +159,7 @@ function createBotReplyBuilder({
         const howItWorksIntent = isHowItWorksQuestion(lastText);
         const urgencyIntent = isUrgencyText(lastText);
         const amountIntent = isAmountQuestion(lastText);
+        const genericQuestionIntent = isGenericOutOfFlowQuestion(lastText);
 
         if (leadQuality === "not_suitable") {
             return {
@@ -181,6 +206,19 @@ function createBotReplyBuilder({
                 };
             }
 
+            if (genericQuestionIntent) {
+                return {
+                    body: [
+                        buildIntroMessagePtBr(),
+                        "",
+                        "Sou uma atendente automática.",
+                        "Para te encaminhar para uma pessoa real, preciso desses dados acima.",
+                    ].join("\n"),
+                    stage: "intro:generic_question",
+                    markIntroSent: true,
+                };
+            }
+
             return {
                 body: buildIntroMessagePtBr(),
                 stage: "intro",
@@ -188,56 +226,76 @@ function createBotReplyBuilder({
             };
         }
 
-        if (howItWorksIntent && !(hasBusiness && hasMaps)) {
-            const footer = buildContextualMissingFooter({ hasBusiness, hasMaps });
-
+        if (howItWorksIntent) {
             return {
                 body: [
                     buildHowItWorksSnippetPtBr(),
                     "",
-                    footer,
-                ].filter(Boolean).join("\n"),
+                    !hasBusiness && !hasMaps
+                        ? "Para eu continuar agora, ainda preciso do tipo de comércio e da localização no Google Maps."
+                        : !hasBusiness
+                            ? "Seu cadastro já pode seguir para análise inicial, mas ainda preciso do tipo de comércio."
+                            : !hasMaps
+                                ? "Para continuar, ainda preciso da localização do comércio no Google Maps."
+                                : "Seu cadastro já foi encaminhado para análise inicial.",
+                ].join("\n"),
                 stage: `how_it_works:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
                 markIntroSent: false,
             };
         }
 
-        if (coverageIntent && !(hasBusiness && hasMaps)) {
-            const footer = buildContextualMissingFooter({ hasBusiness, hasMaps });
+        if (coverageIntent) {
+            const baseCoverageReply = hasBusiness && !hasMaps
+                ? buildOfficeLocationReplyPtBr()
+                : buildCoverageReplyPtBr();
 
             return {
                 body: [
-                    buildCoverageReplyPtBr(),
+                    baseCoverageReply,
                     "",
-                    footer,
-                ].filter(Boolean).join("\n"),
+                    !hasBusiness && !hasMaps
+                        ? "Ainda preciso do tipo de comércio e da localização no Google Maps."
+                        : !hasBusiness
+                            ? "Com a localização já consigo verificar a região, mas ainda preciso do tipo de comércio."
+                            : !hasMaps
+                                ? "Agora só falta a localização do comércio no Google Maps."
+                                : "Com essa localização conseguimos seguir com a análise inicial.",
+                ].join("\n"),
                 stage: `coverage_check:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
                 markIntroSent: false,
             };
         }
 
-        if (amountIntent && !(hasBusiness && hasMaps)) {
-            const footer = buildContextualMissingFooter({ hasBusiness, hasMaps });
-
+        if (amountIntent) {
             return {
                 body: [
                     buildAmountReplyPtBr(),
                     "",
-                    footer,
-                ].filter(Boolean).join("\n"),
+                    !hasBusiness && !hasMaps
+                        ? "Para continuar, ainda preciso do tipo de comércio e da localização no Google Maps."
+                        : !hasBusiness
+                            ? "Seu cadastro já pode seguir para análise inicial, mas ainda preciso do tipo de comércio."
+                            : !hasMaps
+                                ? "Agora só falta a localização do comércio no Google Maps."
+                                : "Assim que a equipe analisar, ela explica melhor os próximos passos.",
+                ].join("\n"),
                 stage: `amount_check:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
                 markIntroSent: false,
             };
         }
 
-        if (coverageIntent && hasBusiness && !hasMaps) {
+        if (genericQuestionIntent && !(hasBusiness && hasMaps)) {
             return {
-                body: [
-                    buildOfficeLocationReplyPtBr(),
-                    "",
-                    "Agora só falta a localização do comércio no Google Maps.",
-                ].join("\n"),
-                stage: "coverage_check:maps",
+                body: buildAutomaticStillMissingReply({ hasBusiness, hasMaps }),
+                stage: `fallback:auto:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
+                markIntroSent: false,
+            };
+        }
+
+        if (hasMaps && !hasBusiness) {
+            return {
+                body: buildShortMissingBusinessReply(messageType),
+                stage: "ready:missing_business",
                 markIntroSent: false,
             };
         }
@@ -245,20 +303,16 @@ function createBotReplyBuilder({
         if (hasBusiness && hasMaps) {
             return {
                 body: [
-                    amountIntent
-                        ? buildAmountReplyPtBr()
-                        : "Ok, muito obrigado.",
+                    "Ok, muito obrigado.",
                     "",
                     "Vou encaminhar as informações para o responsável da sua região.",
                     urgencyIntent
                         ? "Como você informou urgência, o responsável vai analisar assim que possível."
                         : "O retorno normalmente acontece entre 24 e 48 horas, e em alguns casos pode acontecer antes.",
                     "",
-                    howItWorksIntent
-                        ? "Ele também vai explicar valores, condições e próximos passos."
-                        : "Muito obrigado.",
+                    "Muito obrigado.",
                 ].join("\n"),
-                stage: howItWorksIntent ? "final:how_it_works" : amountIntent ? "final:amount" : "final",
+                stage: "final",
                 markIntroSent: false,
             };
         }
@@ -288,8 +342,8 @@ function createBotReplyBuilder({
         }
 
         return {
-            body: "",
-            stage: "",
+            body: buildAutomaticStillMissingReply({ hasBusiness, hasMaps }),
+            stage: "fallback:missing_info",
             markIntroSent: false,
         };
     };

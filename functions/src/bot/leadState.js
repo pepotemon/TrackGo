@@ -44,8 +44,10 @@ function getFinalParseStatusFactory({ hasUsefulName }) {
         const hasMaps = hasRequiredMapsForFlow(client);
         const hasName = hasUsefulName(client);
 
-        if (hasBusiness && hasMaps) return "ready";
-        if (hasBusiness || hasMaps || hasName) return "partial";
+        // NUEVA REGLA:
+        // con Maps ya pasa a ready, aunque todavía falte business.
+        if (hasMaps) return "ready";
+        if (hasBusiness || hasName) return "partial";
         return "empty";
     };
 }
@@ -85,6 +87,9 @@ function shouldSendBotReply(client) {
         return false;
     }
 
+    // Si ya está ready y ya cerramos el flujo final, no repetir.
+    // Pero si está ready por Maps y aún falta business, replies.js no usará final,
+    // así que seguirá pudiendo pedir negocio cuando haga falta.
     if (parseStatus === "ready" && lastBotStage.startsWith("final")) {
         return false;
     }
