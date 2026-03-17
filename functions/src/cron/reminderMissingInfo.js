@@ -79,20 +79,52 @@ function shouldSkipReminder(client, now, reminderCutoffMs) {
     const lastMissingInfoReminderAt = safeNumber(client?.lastMissingInfoReminderAt, 0);
     const lastManualReplyAt = safeNumber(client?.lastManualReplyAt, 0);
     const assignedTo = safeString(client?.assignedTo || "");
+    const lastBotStage = safeString(client?.lastBotStage || "");
 
-    if (source !== "whatsapp_meta") return { skip: true, reason: "not_whatsapp_meta" };
-    if (!introSentAt) return { skip: true, reason: "intro_not_sent" };
-    if (!lastInboundMessageAt) return { skip: true, reason: "no_last_inbound" };
+    if (source !== "whatsapp_meta") {
+        return { skip: true, reason: "not_whatsapp_meta" };
+    }
 
-    if (leadQuality === "not_suitable") return { skip: true, reason: "not_suitable" };
-    if (verificationStatus === "verified") return { skip: true, reason: "already_verified" };
-    if (parseStatus === "ready") return { skip: true, reason: "already_ready" };
+    if (!introSentAt) {
+        return { skip: true, reason: "intro_not_sent" };
+    }
 
-    if (assignedTo) return { skip: true, reason: "already_assigned" };
-    if (!isBotAllowedForClient(client)) return { skip: true, reason: "bot_not_allowed" };
+    if (!lastInboundMessageAt) {
+        return { skip: true, reason: "no_last_inbound" };
+    }
+
+    if (leadQuality === "not_suitable") {
+        return { skip: true, reason: "not_suitable_quality" };
+    }
+
+    if (verificationStatus === "not_suitable") {
+        return { skip: true, reason: "not_suitable_verification" };
+    }
+
+    if (verificationStatus === "verified") {
+        return { skip: true, reason: "already_verified" };
+    }
+
+    if (parseStatus === "ready") {
+        return { skip: true, reason: "already_ready" };
+    }
+
+    if (assignedTo) {
+        return { skip: true, reason: "already_assigned" };
+    }
+
+    if (!isBotAllowedForClient(client)) {
+        return { skip: true, reason: "bot_not_allowed" };
+    }
+
+    if (lastBotStage === "final:not_suitable") {
+        return { skip: true, reason: "already_closed_not_suitable" };
+    }
 
     const missingType = getMissingInfoType(client);
-    if (!missingType) return { skip: true, reason: "nothing_missing" };
+    if (!missingType) {
+        return { skip: true, reason: "nothing_missing" };
+    }
 
     const deadlineAt = lastInboundMessageAt + hoursToMs(WINDOW_HOURS);
     const reminderAt = deadlineAt - reminderCutoffMs;
@@ -105,8 +137,10 @@ function shouldSkipReminder(client, now, reminderCutoffMs) {
         return { skip: true, reason: "window_closed" };
     }
 
-    if (lastMissingInfoReminderAt > 0 && lastMissingInfoReminderAt >= introSentAt) {
-        return { skip: true, reason: "already_reminded_current_lead" };
+    // Evita repetir recordatorio dentro del mismo ciclo actual.
+    // Si ya se mandó después del último inbound, no se vuelve a mandar.
+    if (lastMissingInfoReminderAt > 0 && lastMissingInfoReminderAt >= lastInboundMessageAt) {
+        return { skip: true, reason: "already_reminded_current_cycle" };
     }
 
     if (lastManualReplyAt > 0 && lastManualReplyAt >= lastInboundMessageAt) {
@@ -153,17 +187,21 @@ async function processClientReminder({
         },
     });
 
-    await db.doc(`clients/${clientId}`).set(stripUndefined({
-        updatedAt: now,
-        lastOutboundAt: now,
-        lastBotReplyAt: now,
-        lastBotReplyText: body,
-        lastBotStage: `reminder:missing:${missingType}`,
-        lastMissingInfoReminderAt: now,
-        lastMissingInfoReminderType: missingType,
-        lastMissingInfoReminderText: body,
-        lastMissingInfoReminderCount: safeNumber(client?.lastMissingInfoReminderCount, 0) + 1,
-    }), { merge: true });
+    await db.doc(`clients/${clientId}`).set(
+        stripUndefined({
+            updatedAt: now,
+            lastOutboundAt: now,
+            lastBotReplyAt: now,
+            lastBotReplyText: body,
+            lastBotStage: `reminder:missing:${missingType}`,
+            lastMissingInfoReminderAt: now,
+            lastMissingInfoReminderType: missingType,
+            lastMissingInfoReminderText: body,
+            lastMissingInfoReminderCount:
+                safeNumber(client?.lastMissingInfoReminderCount, 0) + 1,
+        }),
+        { merge: true }
+    );
 
     return {
         ok: true,

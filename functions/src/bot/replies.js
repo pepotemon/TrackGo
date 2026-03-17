@@ -3,7 +3,7 @@ const {
     isCoverageQuestion,
     isHowItWorksQuestion,
     isUrgencyText,
-    isOfficeLocationQuestion,
+    isAmountQuestion,
 } = require("./intents");
 
 function buildIntroMessagePtBr() {
@@ -28,14 +28,16 @@ function buildHowItWorksSnippetPtBr() {
         "Funciona assim:",
         "1️⃣ Fazemos uma análise inicial do tipo de comércio e da localização.",
         "2️⃣ Depois encaminhamos para o responsável da sua região.",
-        "3️⃣ O responsável entra em contato para explicar valores, condições e próximos passos.",
+        "3️⃣ Ele entra em contato para explicar valores, condições e próximos passos.",
         "4️⃣ A liberação depende da análise e da visita ao comércio.",
     ].join("\n");
 }
 
 function buildCoverageReplyPtBr() {
     return [
-        "Para confirmar se atendemos sua região, preciso verificar a localização exata do comércio.",
+        "Atendemos em várias regiões do Brasil.",
+        "",
+        "Mas para confirmar sua região, preciso verificar a localização exata do comércio.",
         "",
         "Envie por favor:",
         "1️⃣ Tipo de comércio",
@@ -44,34 +46,20 @@ function buildCoverageReplyPtBr() {
     ].join("\n");
 }
 
-function buildOfficeLocationReplyPtBr({ hasBusiness, hasMaps }) {
-    const lines = [
-        "Atendemos em várias regiões do Brasil, mas a liberação depende da análise da localização do comércio.",
-    ];
+function buildAmountReplyPtBr() {
+    return [
+        "O valor não é definido aqui no chat.",
+        "",
+        "Ele depende da análise do comércio, da localização e da visita do responsável da sua região.",
+    ].join("\n");
+}
 
-    if (!hasBusiness && !hasMaps) {
-        lines.push("");
-        lines.push("Para eu verificar sua região, envie:");
-        lines.push("1️⃣ Tipo de comércio");
-        lines.push("2️⃣ Localização do comércio no Google Maps");
-        return lines.join("\n");
-    }
-
-    if (!hasMaps) {
-        lines.push("");
-        lines.push("Agora só falta a localização do comércio no Google Maps para eu verificar sua região.");
-        return lines.join("\n");
-    }
-
-    if (!hasBusiness) {
-        lines.push("");
-        lines.push("Agora só falta o tipo de comércio para eu continuar sua análise.");
-        return lines.join("\n");
-    }
-
-    lines.push("");
-    lines.push("Perfeito, com essas informações seguimos para a próxima etapa.");
-    return lines.join("\n");
+function buildOfficeLocationReplyPtBr() {
+    return [
+        "Atendemos em várias regiões do Brasil.",
+        "",
+        "Para seguir com sua análise, precisamos da localização do seu comércio no Google Maps e do tipo de comércio.",
+    ].join("\n");
 }
 
 function buildNotSuitableReplyPtBr(reason) {
@@ -117,19 +105,17 @@ function buildShortMissingBothReply(messageType) {
     ].join("\n");
 }
 
-function buildFinalReplyPtBr({ urgencyIntent, howItWorksIntent }) {
-    return [
-        "Ok, muito obrigado.",
-        "",
-        "Vou encaminhar as informações para o responsável da sua região.",
-        urgencyIntent
-            ? "Como você informou urgência, ele vai analisar assim que possível."
-            : "O retorno normalmente acontece entre 24 e 48 horas, e em alguns casos pode acontecer antes.",
-        "",
-        howItWorksIntent
-            ? "Ele também vai explicar valores, condições e próximos passos."
-            : "Muito obrigado.",
-    ].join("\n");
+function buildContextualMissingFooter({ hasBusiness, hasMaps }) {
+    if (!hasBusiness && !hasMaps) {
+        return "Para continuar, ainda preciso do tipo de comércio e da localização no Google Maps.";
+    }
+    if (!hasBusiness) {
+        return "Para continuar, ainda preciso do tipo de comércio.";
+    }
+    if (!hasMaps) {
+        return "Para continuar, ainda preciso da localização do comércio no Google Maps.";
+    }
+    return "";
 }
 
 function createBotReplyBuilder({
@@ -148,7 +134,7 @@ function createBotReplyBuilder({
         const coverageIntent = isCoverageQuestion(lastText);
         const howItWorksIntent = isHowItWorksQuestion(lastText);
         const urgencyIntent = isUrgencyText(lastText);
-        const officeLocationIntent = isOfficeLocationQuestion(lastText);
+        const amountIntent = isAmountQuestion(lastText);
 
         if (leadQuality === "not_suitable") {
             return {
@@ -159,6 +145,42 @@ function createBotReplyBuilder({
         }
 
         if (!introAlreadySent) {
+            if (howItWorksIntent) {
+                return {
+                    body: [
+                        buildIntroMessagePtBr(),
+                        "",
+                        buildHowItWorksSnippetPtBr(),
+                    ].join("\n"),
+                    stage: "intro:how_it_works",
+                    markIntroSent: true,
+                };
+            }
+
+            if (coverageIntent) {
+                return {
+                    body: [
+                        buildIntroMessagePtBr(),
+                        "",
+                        buildCoverageReplyPtBr(),
+                    ].join("\n"),
+                    stage: "intro:coverage",
+                    markIntroSent: true,
+                };
+            }
+
+            if (amountIntent) {
+                return {
+                    body: [
+                        buildIntroMessagePtBr(),
+                        "",
+                        buildAmountReplyPtBr(),
+                    ].join("\n"),
+                    stage: "intro:amount",
+                    markIntroSent: true,
+                };
+            }
+
             return {
                 body: buildIntroMessagePtBr(),
                 stage: "intro",
@@ -166,43 +188,77 @@ function createBotReplyBuilder({
             };
         }
 
-        if (officeLocationIntent && !(hasBusiness && hasMaps)) {
-            return {
-                body: buildOfficeLocationReplyPtBr({ hasBusiness, hasMaps }),
-                stage: `office_location:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
-                markIntroSent: false,
-            };
-        }
-
         if (howItWorksIntent && !(hasBusiness && hasMaps)) {
-            const missing = [];
-            if (!hasBusiness) missing.push("• Tipo de comércio");
-            if (!hasMaps) missing.push("• Localização do comércio no Google Maps");
+            const footer = buildContextualMissingFooter({ hasBusiness, hasMaps });
 
             return {
                 body: [
                     buildHowItWorksSnippetPtBr(),
                     "",
-                    "Para eu continuar sua análise agora, ainda preciso de:",
-                    ...missing,
-                ].join("\n"),
+                    footer,
+                ].filter(Boolean).join("\n"),
                 stage: `how_it_works:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
                 markIntroSent: false,
             };
         }
 
-        if (coverageIntent && !hasMaps) {
+        if (coverageIntent && !(hasBusiness && hasMaps)) {
+            const footer = buildContextualMissingFooter({ hasBusiness, hasMaps });
+
             return {
-                body: buildCoverageReplyPtBr(),
-                stage: "coverage_check",
+                body: [
+                    buildCoverageReplyPtBr(),
+                    "",
+                    footer,
+                ].filter(Boolean).join("\n"),
+                stage: `coverage_check:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
+                markIntroSent: false,
+            };
+        }
+
+        if (amountIntent && !(hasBusiness && hasMaps)) {
+            const footer = buildContextualMissingFooter({ hasBusiness, hasMaps });
+
+            return {
+                body: [
+                    buildAmountReplyPtBr(),
+                    "",
+                    footer,
+                ].filter(Boolean).join("\n"),
+                stage: `amount_check:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
+                markIntroSent: false,
+            };
+        }
+
+        if (coverageIntent && hasBusiness && !hasMaps) {
+            return {
+                body: [
+                    buildOfficeLocationReplyPtBr(),
+                    "",
+                    "Agora só falta a localização do comércio no Google Maps.",
+                ].join("\n"),
+                stage: "coverage_check:maps",
                 markIntroSent: false,
             };
         }
 
         if (hasBusiness && hasMaps) {
             return {
-                body: buildFinalReplyPtBr({ urgencyIntent, howItWorksIntent }),
-                stage: howItWorksIntent ? "final:how_it_works" : "final",
+                body: [
+                    amountIntent
+                        ? buildAmountReplyPtBr()
+                        : "Ok, muito obrigado.",
+                    "",
+                    "Vou encaminhar as informações para o responsável da sua região.",
+                    urgencyIntent
+                        ? "Como você informou urgência, o responsável vai analisar assim que possível."
+                        : "O retorno normalmente acontece entre 24 e 48 horas, e em alguns casos pode acontecer antes.",
+                    "",
+                    howItWorksIntent
+                        ? "Ele também vai explicar valores, condições e próximos passos."
+                        : "Muito obrigado.",
+                ].join("\n"),
+                stage: howItWorksIntent ? "final:how_it_works" : amountIntent ? "final:amount" : "final",
                 markIntroSent: false,
             };
         }
@@ -243,6 +299,7 @@ module.exports = {
     buildIntroMessagePtBr,
     buildHowItWorksSnippetPtBr,
     buildCoverageReplyPtBr,
+    buildAmountReplyPtBr,
     buildOfficeLocationReplyPtBr,
     buildNotSuitableReplyPtBr,
     createBotReplyBuilder,

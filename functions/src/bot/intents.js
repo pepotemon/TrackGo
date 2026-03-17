@@ -37,6 +37,15 @@ function isCoverageQuestion(text) {
         "faz no maranhao",
         "faz no maranhão",
         "faz em pernambuco",
+        "onde fica o escritorio",
+        "onde fica o escritório",
+        "onde voces ficam",
+        "onde vocês ficam",
+        "onde estao localizados",
+        "onde estão localizados",
+        "onde trabalham",
+        "qual endereco do escritorio",
+        "qual endereço do escritório",
     ]);
 }
 
@@ -64,28 +73,6 @@ function isHowItWorksQuestion(text) {
     ]);
 }
 
-function isOfficeLocationQuestion(text) {
-    return includesAnyNormalized(text, [
-        "onde fica o escritorio",
-        "onde fica o escritório",
-        "onde voces ficam",
-        "onde vocês ficam",
-        "onde voces trabalham",
-        "onde vocês trabalham",
-        "onde fica a empresa",
-        "onde e o escritorio",
-        "onde é o escritório",
-        "qual endereco do escritorio",
-        "qual endereço do escritório",
-        "onde e a loja",
-        "onde vocês estao",
-        "onde vocês estão",
-        "onde vcs ficam",
-        "aonde fica o escritorio",
-        "aonde fica o escritório",
-    ]);
-}
-
 function isUrgencyText(text) {
     return includesAnyNormalized(text, [
         "pra ontem",
@@ -99,6 +86,27 @@ function isUrgencyText(text) {
         "ainda hoje",
         "com urgencia",
         "com urgência",
+    ]);
+}
+
+function isAmountQuestion(text) {
+    return includesAnyNormalized(text, [
+        "libera quanto",
+        "libera quanto?",
+        "quanto libera",
+        "quanto voces liberam",
+        "quanto vocês liberam",
+        "qual valor libera",
+        "qual valor voces liberam",
+        "qual valor vocês liberam",
+        "ate quanto libera",
+        "até quanto libera",
+        "quanto pode liberar",
+        "qual valor do emprestimo",
+        "qual valor do empréstimo",
+        "quanto empresta",
+        "quanto voces emprestam",
+        "quanto vocês emprestam",
     ]);
 }
 
@@ -158,6 +166,11 @@ function detectUnsupportedProfileSignals(text) {
             "uber",
             "99pop",
             "motorista de aplicativo",
+            "motorista de app",
+            "motorista de app?",
+            "fazem pra motorista de app",
+            "faz pra motorista de app",
+            "serve pra motorista de app",
             "trabalho de aplicativo",
             "trabalho com aplicativo",
             "trabalho no aplicativo",
@@ -171,6 +184,15 @@ function detectUnsupportedProfileSignals(text) {
             "rappi",
             "loggi",
         ]) ||
+        (
+            (hasWholeWordNormalized(s, "app") || hasWholeWordNormalized(s, "aplicativo")) &&
+            (
+                hasWholeWordNormalized(s, "motorista") ||
+                hasWholeWordNormalized(s, "uber") ||
+                hasWholeWordNormalized(s, "motoboy") ||
+                hasWholeWordNormalized(s, "entregador")
+            )
+        ) ||
         (hasWholeWordNormalized(s, "99") &&
             (hasWholeWordNormalized(s, "motorista") ||
                 hasWholeWordNormalized(s, "app") ||
@@ -240,7 +262,7 @@ function getVerificationStatusFromLead({
 function detectInboundIntent(text) {
     if (isHowItWorksQuestion(text)) return "how_it_works";
     if (isCoverageQuestion(text)) return "coverage";
-    if (isOfficeLocationQuestion(text)) return "office_location";
+    if (isAmountQuestion(text)) return "amount";
     if (isUrgencyText(text)) return "urgency";
     return "default";
 }
@@ -248,8 +270,8 @@ function detectInboundIntent(text) {
 module.exports = {
     isCoverageQuestion,
     isHowItWorksQuestion,
-    isOfficeLocationQuestion,
     isUrgencyText,
+    isAmountQuestion,
     detectUnsupportedProfileSignals,
     classifyProfileFromFlags,
     getVerificationStatusFromLead,

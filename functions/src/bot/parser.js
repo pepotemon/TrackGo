@@ -51,6 +51,10 @@ function createLeadParser({
             "endereço do comércio",
             "endereco da loja",
             "endereço da loja",
+            "local do comercio",
+            "local do comércio",
+            "maps",
+            "google maps",
         ]);
 
         const parsedBusinessLabeled = extractLabeledValue(text, [
@@ -65,10 +69,16 @@ function createLeadParser({
             "ramo",
             "atividade",
             "trabalho com",
+            "trabalhamos com",
+            "vendo",
+            "venda de",
+            "vendas de",
             "tenho um box",
             "tenho uma loja",
             "tenho uma banca",
             "tenho uma barraca",
+            "tenho um espetinho",
+            "sou lojista",
             "meu comercio",
             "meu comércio",
             "meu negocio",
@@ -81,7 +91,11 @@ function createLeadParser({
         let finalBusiness = normalizeBusinessLabel(parsedBusinessLabeled);
 
         if (!finalAddress) {
-            const addrLine = nonEmptyLines.find((line) => looksLikeBrazilAddress(line));
+            const addrLine = nonEmptyLines.find((line) => {
+                if (!line) return false;
+                return looksLikeBrazilAddress(line);
+            });
+
             if (addrLine) {
                 finalAddress = sanitizeAddress(addrLine);
             }
@@ -131,7 +145,6 @@ function createLeadParser({
         }
 
         const fallbackName = sanitizeFallbackProfileName(fallbackProfileName);
-
         const finalName = explicitName || fallbackName || "";
         const hasBusiness = !!(finalBusiness || businessRaw);
 

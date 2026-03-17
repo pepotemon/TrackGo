@@ -101,6 +101,12 @@ const MENU_WIDTH = 186;
 const MENU_HEIGHT = 258;
 const MENU_GAP = 8;
 
+/**
+ * Cache local global del módulo.
+ * Así no se pierde aunque esta pantalla se desmonte al navegar al chat.
+ */
+const localSeenInboundMap: Record<string, number> = {};
+
 function looksLikeMapsUrl(url: string) {
     const u = (url ?? "").trim().toLowerCase();
     return (
@@ -267,6 +273,10 @@ function getClientBaseDateMs(c: ClientDoc) {
     );
 }
 
+function getServerSeenAt(c: ClientDoc) {
+    return toMs((c as any)?.adminQueueLastSeenMessageAt);
+}
+
 export default function AdminLeadQueueScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -282,6 +292,8 @@ export default function AdminLeadQueueScreen() {
     const [busyId, setBusyId] = useState<string | null>(null);
     const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
     const [menuAnchor, setMenuAnchor] = useState<MenuAnchor>(null);
+
+    const [seenTick, setSeenTick] = useState(0);
 
     const [editOpen, setEditOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -370,6 +382,33 @@ export default function AdminLeadQueueScreen() {
         () => clients.filter(isMetaUnassignedLead),
         [clients]
     );
+
+    const getEffectiveSeenAt = (c: ClientDoc) => {
+        const localSeen = localSeenInboundMap[c.id] ?? 0;
+        const serverSeen = getServerSeenAt(c);
+        return Math.max(localSeen, serverSeen);
+    };
+
+    const hasNewInbound = (c: ClientDoc) => {
+        const lastInboundAt = toMs((c as any)?.lastInboundMessageAt);
+        if (!lastInboundAt) return false;
+        return lastInboundAt > getEffectiveSeenAt(c);
+    };
+
+    const markClientSeenInstant = (c: ClientDoc) => {
+        const lastInboundAt = toMs((c as any)?.lastInboundMessageAt);
+        if (!lastInboundAt) return;
+
+        localSeenInboundMap[c.id] = Math.max(localSeenInboundMap[c.id] ?? 0, lastInboundAt);
+        setSeenTick((v) => v + 1);
+
+        void updateClientFields(c.id, {
+            adminQueueLastSeenMessageAt: lastInboundAt,
+            adminQueueSeenAt: Date.now(),
+        } as any).catch(() => {
+            // mantenemos el efecto local aunque Firebase falle
+        });
+    };
 
     const totals = useMemo(() => {
         let verified = 0;
@@ -467,11 +506,16 @@ export default function AdminLeadQueueScreen() {
                 return true;
             })
             .sort((a, b) => {
+                const aNew = hasNewInbound(a) ? 1 : 0;
+                const bNew = hasNewInbound(b) ? 1 : 0;
+
+                if (aNew !== bNew) return bNew - aNew;
+
                 const aMs = toMs((a as any)?.updatedAt) || toMs((a as any)?.createdAt);
                 const bMs = toMs((b as any)?.updatedAt) || toMs((b as any)?.createdAt);
                 return bMs - aMs;
             });
-    }, [metaUnassignedClients, q, filter, queueScope]);
+    }, [metaUnassignedClients, q, filter, queueScope, seenTick]);
 
     const visibleTotal = useMemo(() => {
         return totals.pendingReview + totals.incomplete + totals.notSuitable;
@@ -537,6 +581,12 @@ export default function AdminLeadQueueScreen() {
             String((client as any)?.name ?? "").trim() ||
             String((client as any)?.phone ?? "").trim() ||
             "Lead";
+
+        /**
+         * AQUÍ está el efecto que quieres:
+         * en el mismo tap, antes de navegar, lo marcamos como visto.
+         */
+        markClientSeenInstant(client);
 
         router.push({
             pathname: "/admin/lead-chat" as any,
@@ -1015,6 +1065,7 @@ export default function AdminLeadQueueScreen() {
                             const isBusy = busyId === c.id;
                             const lastInboundText = String((c as any)?.lastInboundText ?? "").trim();
                             const notSuitableReason = getNotSuitableReason(c);
+                            const showNew = hasNewInbound(c);
 
                             return (
                                 <View key={c.id} style={styles.card}>
@@ -1120,6 +1171,12 @@ export default function AdminLeadQueueScreen() {
                                             <View style={styles.inboundHeader}>
                                                 <Ionicons name="chatbubble-ellipses-outline" size={13} color={COLORS.muted} />
                                                 <Text style={styles.inboundTitle}>Último mensaje recibido</Text>
+
+                                                {showNew ? (
+                                                    <View style={styles.newPill}>
+                                                        <Text style={styles.newPillText}>NEW</Text>
+                                                    </View>
+                                                ) : null}
 
                                                 <Pressable
                                                     onPress={() => openChatScreen(c)}
@@ -1756,6 +1813,23 @@ const styles = StyleSheet.create({
         color: "#93C5FD",
         fontSize: 10,
         fontWeight: "900",
+    },
+
+    newPill: {
+        height: 20,
+        paddingHorizontal: 7,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(34,197,94,0.14)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.32)",
+    },
+    newPillText: {
+        color: "#86EFAC",
+        fontSize: 10,
+        fontWeight: "900",
+        letterSpacing: 0.3,
     },
 
     openChatEmptyBtn: {

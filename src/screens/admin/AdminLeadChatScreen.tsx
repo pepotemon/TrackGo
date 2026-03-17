@@ -211,6 +211,32 @@ export default function AdminLeadChatScreen() {
         return () => clearTimeout(t);
     }, [messages]);
 
+
+    useEffect(() => {
+        if (!clientId) return;
+        if (loadingClient || loadingMessages) return;
+
+        const lastInboundFromMessages = messages
+            .filter((m) => String(m.direction ?? "").trim().toLowerCase() === "inbound")
+            .reduce((max, item) => {
+                const created = toMs(item.createdAt);
+                return created > max ? created : max;
+            }, 0);
+
+        const lastInboundFromClient = toMs((client as any)?.lastInboundMessageAt);
+        const lastInboundAt = Math.max(lastInboundFromMessages, lastInboundFromClient);
+        const seenAt = toMs((client as any)?.adminQueueLastSeenMessageAt);
+
+        if (!lastInboundAt) return;
+        if (seenAt >= lastInboundAt) return;
+
+        void updateClientFields(clientId, {
+            adminQueueLastSeenMessageAt: lastInboundAt,
+            adminQueueSeenAt: Date.now(),
+            updatedAt: Date.now(),
+        } as any);
+    }, [clientId, client, messages, loadingClient, loadingMessages]);
+
     const title = useMemo(
         () => getClientDisplayName(client, fallbackName),
         [client, fallbackName]

@@ -96,19 +96,23 @@ function createUpsertLeadAsClient({
         const lat = roundCoord(locationData?.lat);
         const lng = roundCoord(locationData?.lng);
         const locationAddress = cleanupExtractedText(locationData?.address || "");
+
         const generatedMapsUrlFromCoords =
             hasValidCoords(lat, lng) ? buildGoogleMapsUrlFromCoords(lat, lng) : "";
         const generatedMapsUrlFromText = extractGoogleMapsUrlFromText(rawText);
         const generatedMapsUrl =
             generatedMapsUrlFromText || generatedMapsUrlFromCoords || "";
 
-        const hasMapsInThisMessage =
-            !!generatedMapsUrl || hasValidCoords(lat, lng);
+        const hasMapsInThisMessage = !!generatedMapsUrl || hasValidCoords(lat, lng);
 
         const inboundIntent = detectInboundIntent(rawText);
-        const businessFlags = Array.isArray(parsed.businessFlags) ? parsed.businessFlags : [];
+        const businessFlags = Array.isArray(parsed.businessFlags)
+            ? parsed.businessFlags
+            : [];
         const businessQuality = parsed.businessQuality || "unknown";
-        const profileFlags = Array.isArray(parsed.profileFlags) ? parsed.profileFlags : [];
+        const profileFlags = Array.isArray(parsed.profileFlags)
+            ? parsed.profileFlags
+            : [];
         const profileType = parsed.profileType || "business";
         const leadQuality = parsed.leadQuality || "unknown";
         const notSuitableReason = parsed.notSuitableReason || "";
@@ -129,7 +133,10 @@ function createUpsertLeadAsClient({
             const draftClient = {
                 name: resolvedName || "",
                 business: pickBetterBusiness("", parsed.parsedBusiness || ""),
-                businessRaw: pickBetterBusiness("", parsed.parsedBusinessRaw || parsed.parsedBusiness || ""),
+                businessRaw: pickBetterBusiness(
+                    "",
+                    parsed.parsedBusinessRaw || parsed.parsedBusiness || ""
+                ),
                 businessQuality,
                 businessFlags,
                 profileFlags,
@@ -138,7 +145,10 @@ function createUpsertLeadAsClient({
                 notSuitableReason,
                 phone,
                 mapsUrl: generatedMapsUrl || "",
-                address: pickBetterAddress("", parsed.parsedAddress || locationAddress || ""),
+                address: pickBetterAddress(
+                    "",
+                    parsed.parsedAddress || locationAddress || ""
+                ),
                 lat: hasValidCoords(lat, lng) ? lat : null,
                 lng: hasValidCoords(lat, lng) ? lng : null,
                 currentLeadMapsConfirmedAt: hasMapsInThisMessage ? now : 0,
@@ -165,6 +175,7 @@ function createUpsertLeadAsClient({
                 status: "pending",
                 statusBy: null,
                 statusAt: null,
+
                 createdAt: now,
                 updatedAt: now,
                 note: null,
@@ -179,35 +190,51 @@ function createUpsertLeadAsClient({
                 lastInboundIntent: inboundIntent,
                 waId: contactWaId || phone,
                 lastMessageId: messageId || "",
+
                 initialIntroSentAt: 0,
                 lastBotReplyAt: 0,
                 lastBotReplyText: "",
                 lastBotStage: "",
+                lastOutboundAt: 0,
+
+                chatMode: "bot",
+                botPausedAt: 0,
+                botPausedBy: "",
+                humanTakeoverAt: 0,
+                humanTakeoverBy: "",
+                resumeBotAt: 0,
+                resumeBotBy: "",
+                lastManualReplyAt: 0,
+                lastManualReplyText: "",
+                lastManualReplyBy: "",
             };
 
             await newClientRef.set(stripUndefined(payload));
 
-            await inboxRef.set({
-                clientId: newClientRef.id,
-                result: "created",
-                parsedName: draftClient.name || "",
-                parsedAddress: draftClient.address || "",
-                parsedBusiness: draftClient.business || "",
-                parsedBusinessRaw: draftClient.businessRaw || "",
-                businessQuality: draftClient.businessQuality,
-                businessFlags: draftClient.businessFlags,
-                profileFlags: draftClient.profileFlags,
-                profileType: draftClient.profileType,
-                leadQuality: draftClient.leadQuality,
-                notSuitableReason: draftClient.notSuitableReason,
-                verificationStatus,
-                parseStatus: finalParseStatus,
-                processedAt: now,
-                mapsUrl: draftClient.mapsUrl || "",
-                lat: draftClient.lat,
-                lng: draftClient.lng,
-                locationCaptured: !!locationData,
-            }, { merge: true });
+            await inboxRef.set(
+                {
+                    clientId: newClientRef.id,
+                    result: "created",
+                    parsedName: draftClient.name || "",
+                    parsedAddress: draftClient.address || "",
+                    parsedBusiness: draftClient.business || "",
+                    parsedBusinessRaw: draftClient.businessRaw || "",
+                    businessQuality: draftClient.businessQuality,
+                    businessFlags: draftClient.businessFlags,
+                    profileFlags: draftClient.profileFlags,
+                    profileType: draftClient.profileType,
+                    leadQuality: draftClient.leadQuality,
+                    notSuitableReason: draftClient.notSuitableReason,
+                    verificationStatus,
+                    parseStatus: finalParseStatus,
+                    processedAt: now,
+                    mapsUrl: draftClient.mapsUrl || "",
+                    lat: draftClient.lat,
+                    lng: draftClient.lng,
+                    locationCaptured: !!locationData,
+                },
+                { merge: true }
+            );
 
             return {
                 clientId: newClientRef.id,
@@ -235,41 +262,57 @@ function createUpsertLeadAsClient({
 
         const mergedClientBase = {
             ...prev,
+
             name: resolveNextClientName({
                 prevName: prev.name,
                 profileName,
             }),
+
             business: pickBetterBusiness(prev.business, parsed.parsedBusiness || ""),
             businessRaw: pickBetterBusiness(
                 prev.businessRaw,
                 parsed.parsedBusinessRaw || parsed.parsedBusiness || ""
             ),
+
             businessQuality:
                 prev.businessQuality && prev.businessQuality !== "unknown"
                     ? prev.businessQuality
                     : businessQuality,
+
             businessFlags: mergedBusinessFlags,
             profileFlags: mergedProfileFlags,
             profileType: pickProfileType(prev.profileType, profileType),
             leadQuality: pickLeadQuality(prev.leadQuality, leadQuality),
-            notSuitableReason: safeString(prev.notSuitableReason || "") || safeString(notSuitableReason || ""),
-            address: pickBetterAddress(prev.address, parsed.parsedAddress || locationAddress),
-            mapsUrl: safeString(prev.mapsUrl || "") || generatedMapsUrl || "",
-            lat:
-                prev.lat !== undefined && prev.lat !== null
-                    ? prev.lat
-                    : (hasValidCoords(lat, lng) ? lat : null),
-            lng:
-                prev.lng !== undefined && prev.lng !== null
-                    ? prev.lng
-                    : (hasValidCoords(lat, lng) ? lng : null),
+            notSuitableReason:
+                safeString(prev.notSuitableReason || "") ||
+                safeString(notSuitableReason || ""),
+
+            address: pickBetterAddress(
+                prev.address,
+                parsed.parsedAddress || locationAddress
+            ),
+
+            mapsUrl: hasMapsInThisMessage
+                ? (generatedMapsUrl || safeString(prev.mapsUrl || ""))
+                : safeString(prev.mapsUrl || ""),
+
+            lat: hasMapsInThisMessage
+                ? (hasValidCoords(lat, lng) ? lat : null)
+                : (prev.lat !== undefined && prev.lat !== null ? prev.lat : null),
+
+            lng: hasMapsInThisMessage
+                ? (hasValidCoords(lat, lng) ? lng : null)
+                : (prev.lng !== undefined && prev.lng !== null ? prev.lng : null),
+
             currentLeadMapsConfirmedAt: hasMapsInThisMessage
                 ? now
                 : safeNumber(prev.currentLeadMapsConfirmedAt, 0),
+
             lastInboundIntent: inboundIntent,
         };
 
         const finalParseStatus = getFinalParseStatus(mergedClientBase);
+
         const computedVerificationStatus = getVerificationStatusFromLead({
             parseStatus: finalParseStatus,
             leadQuality: mergedClientBase.leadQuality,
@@ -291,6 +334,7 @@ function createUpsertLeadAsClient({
             lastInboundText: rawText || "",
             lastInboundIntent: inboundIntent,
             lastMessageId: messageId || "",
+
             source: prev.source || "whatsapp_meta",
             sourceRef: prev.sourceRef || inboxRef.path,
             waId: contactWaId || phone,
@@ -305,6 +349,7 @@ function createUpsertLeadAsClient({
             leadQuality: mergedClient.leadQuality,
             notSuitableReason: mergedClient.notSuitableReason,
             verificationStatus: mergedClient.verificationStatus,
+
             address: mergedClient.address,
             mapsUrl: mergedClient.mapsUrl,
             lat: mergedClient.lat,
@@ -324,27 +369,30 @@ function createUpsertLeadAsClient({
 
         await found.ref.set(stripUndefined(patch), { merge: true });
 
-        await inboxRef.set({
-            clientId: found.id,
-            result: "updated_existing",
-            parsedName: mergedClient.name || "",
-            parsedAddress: mergedClient.address || "",
-            parsedBusiness: mergedClient.business || "",
-            parsedBusinessRaw: mergedClient.businessRaw || "",
-            businessQuality: mergedClient.businessQuality,
-            businessFlags: mergedClient.businessFlags,
-            profileFlags: mergedClient.profileFlags,
-            profileType: mergedClient.profileType,
-            leadQuality: mergedClient.leadQuality,
-            notSuitableReason: mergedClient.notSuitableReason,
-            verificationStatus: mergedClient.verificationStatus,
-            parseStatus: finalParseStatus,
-            processedAt: now,
-            mapsUrl: mergedClient.mapsUrl || "",
-            lat: mergedClient.lat ?? null,
-            lng: mergedClient.lng ?? null,
-            locationCaptured: !!locationData,
-        }, { merge: true });
+        await inboxRef.set(
+            {
+                clientId: found.id,
+                result: "updated_existing",
+                parsedName: mergedClient.name || "",
+                parsedAddress: mergedClient.address || "",
+                parsedBusiness: mergedClient.business || "",
+                parsedBusinessRaw: mergedClient.businessRaw || "",
+                businessQuality: mergedClient.businessQuality,
+                businessFlags: mergedClient.businessFlags,
+                profileFlags: mergedClient.profileFlags,
+                profileType: mergedClient.profileType,
+                leadQuality: mergedClient.leadQuality,
+                notSuitableReason: mergedClient.notSuitableReason,
+                verificationStatus: mergedClient.verificationStatus,
+                parseStatus: finalParseStatus,
+                processedAt: now,
+                mapsUrl: mergedClient.mapsUrl || "",
+                lat: mergedClient.lat ?? null,
+                lng: mergedClient.lng ?? null,
+                locationCaptured: !!locationData,
+            },
+            { merge: true }
+        );
 
         return {
             clientId: found.id,

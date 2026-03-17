@@ -50,7 +50,8 @@ function createProcessIncomingWhatsappMessage({
                 }
             }
 
-            const contact = contacts.find((c) => normalizePhone(c?.wa_id || "") === waId) || {};
+            const contact =
+                contacts.find((c) => normalizePhone(c?.wa_id || "") === waId) || {};
             const profileName = safeString(contact?.profile?.name);
 
             let textBody = "";
@@ -89,38 +90,51 @@ function createProcessIncomingWhatsappMessage({
 
             const now = Date.now();
 
-            await inboxRef.set({
-                id: messageId,
-                source: "whatsapp_meta",
-                channel: "whatsapp",
-                phone: waId,
-                waId,
-                profileName: profileName || "",
-                rawText: textBody || "",
-                messageType: msgType,
-                createdAt: now,
-                dayKey: dayKeyFromMs(now),
-                parseStatus: "processing",
-                status: "processing",
-                mapsUrl: locationData?.mapsUrl || extractGoogleMapsUrlFromText(textBody) || "",
-                lat: locationData?.lat ?? null,
-                lng: locationData?.lng ?? null,
-                locationAddress: locationData?.address || "",
-                locationName: locationData?.name || "",
-            }, { merge: true });
+            await inboxRef.set(
+                {
+                    id: messageId,
+                    source: "whatsapp_meta",
+                    channel: "whatsapp",
+                    phone: waId,
+                    waId,
+                    profileName: profileName || "",
+                    rawText: textBody || "",
+                    messageType: msgType,
+                    createdAt: now,
+                    dayKey: dayKeyFromMs(now),
+                    parseStatus: "processing",
+                    status: "processing",
+                    mapsUrl:
+                        locationData?.mapsUrl ||
+                        extractGoogleMapsUrlFromText(textBody) ||
+                        "",
+                    lat: locationData?.lat ?? null,
+                    lng: locationData?.lng ?? null,
+                    locationAddress: locationData?.address || "",
+                    locationName: locationData?.name || "",
+                },
+                { merge: true }
+            );
 
             try {
                 if (msgType === "text") {
-                    const isSystemMessage = looksLikeSystemOrMetaMessage(textBody, profileName, waId);
+                    const isSystemMessage = looksLikeSystemOrMetaMessage(
+                        textBody,
+                        profileName,
+                        waId
+                    );
 
                     if (isSystemMessage) {
-                        await inboxRef.set({
-                            status: "processed",
-                            result: "ignored",
-                            ignored: true,
-                            ignoreReason: "system_message",
-                            processedAt: Date.now(),
-                        }, { merge: true });
+                        await inboxRef.set(
+                            {
+                                status: "processed",
+                                result: "ignored",
+                                ignored: true,
+                                ignoreReason: "system_message",
+                                processedAt: Date.now(),
+                            },
+                            { merge: true }
+                        );
 
                         console.log("[WHATSAPP] ignored system message:", {
                             messageId,
@@ -148,51 +162,69 @@ function createProcessIncomingWhatsappMessage({
                     locationData,
                 });
 
-                await appendClientMessage({
-                    clientId: result.clientId,
-                    direction: "inbound",
-                    senderType: "client",
-                    senderId: waId,
-                    text: textBody,
-                    messageType: msgType,
-                    whatsappMessageId: messageId,
-                    status: "received",
-                    meta: {
-                        source: "whatsapp_meta",
-                        profileName: profileName || "",
-                        locationCaptured: !!locationData,
-                        lat: locationData?.lat ?? null,
-                        lng: locationData?.lng ?? null,
-                        mapsUrl: locationData?.mapsUrl || extractGoogleMapsUrlFromText(textBody) || "",
+                if (result?.clientId) {
+                    await appendClientMessage({
+                        clientId: result.clientId,
+                        direction: "inbound",
+                        senderType: "client",
+                        senderId: waId,
+                        text: textBody,
+                        messageType: msgType,
+                        whatsappMessageId: messageId,
+                        status: "received",
+                        meta: {
+                            source: "whatsapp_meta",
+                            profileName: profileName || "",
+                            locationCaptured: !!locationData,
+                            lat: locationData?.lat ?? null,
+                            lng: locationData?.lng ?? null,
+                            mapsUrl:
+                                locationData?.mapsUrl ||
+                                extractGoogleMapsUrlFromText(textBody) ||
+                                "",
+                        },
+                    });
+                }
+
+                await inboxRef.set(
+                    {
+                        status: "processed",
+                        result: result?.result || "updated_existing",
+                        clientId: result?.clientId || "",
+                        parseStatus: result?.parseStatus || "partial",
+                        processedAt: Date.now(),
+                        greetingDetected: isGreetingOnly,
+
+                        parsedName: cleanupExtractedText(result?.mergedClient?.name || ""),
+                        parsedAddress: cleanupExtractedText(
+                            result?.mergedClient?.address || ""
+                        ),
+                        parsedBusiness: cleanupExtractedText(
+                            result?.mergedClient?.business || ""
+                        ),
+                        parsedBusinessRaw: cleanupExtractedText(
+                            result?.mergedClient?.businessRaw || ""
+                        ),
+                        businessQuality: safeString(
+                            result?.mergedClient?.businessQuality || ""
+                        ),
+                        businessFlags: Array.isArray(result?.mergedClient?.businessFlags)
+                            ? result.mergedClient.businessFlags
+                            : [],
+                        profileFlags: Array.isArray(result?.mergedClient?.profileFlags)
+                            ? result.mergedClient.profileFlags
+                            : [],
+                        profileType: safeString(result?.mergedClient?.profileType || ""),
+                        leadQuality: safeString(result?.mergedClient?.leadQuality || ""),
+                        notSuitableReason: safeString(
+                            result?.mergedClient?.notSuitableReason || ""
+                        ),
+                        mapsUrl: safeString(result?.mergedClient?.mapsUrl || ""),
+                        lat: result?.mergedClient?.lat ?? null,
+                        lng: result?.mergedClient?.lng ?? null,
                     },
-                });
-
-                await inboxRef.set({
-                    status: "processed",
-                    result: result.result,
-                    clientId: result.clientId,
-                    parseStatus: result.parseStatus,
-                    processedAt: Date.now(),
-                    greetingDetected: isGreetingOnly,
-
-                    parsedName: cleanupExtractedText(result?.mergedClient?.name || ""),
-                    parsedAddress: cleanupExtractedText(result?.mergedClient?.address || ""),
-                    parsedBusiness: cleanupExtractedText(result?.mergedClient?.business || ""),
-                    parsedBusinessRaw: cleanupExtractedText(result?.mergedClient?.businessRaw || ""),
-                    businessQuality: safeString(result?.mergedClient?.businessQuality || ""),
-                    businessFlags: Array.isArray(result?.mergedClient?.businessFlags)
-                        ? result.mergedClient.businessFlags
-                        : [],
-                    profileFlags: Array.isArray(result?.mergedClient?.profileFlags)
-                        ? result.mergedClient.profileFlags
-                        : [],
-                    profileType: safeString(result?.mergedClient?.profileType || ""),
-                    leadQuality: safeString(result?.mergedClient?.leadQuality || ""),
-                    notSuitableReason: safeString(result?.mergedClient?.notSuitableReason || ""),
-                    mapsUrl: safeString(result?.mergedClient?.mapsUrl || ""),
-                    lat: result?.mergedClient?.lat ?? null,
-                    lng: result?.mergedClient?.lng ?? null,
-                }, { merge: true });
+                    { merge: true }
+                );
 
                 try {
                     const delayMs =
@@ -200,9 +232,12 @@ function createProcessIncomingWhatsappMessage({
                             ? getRandomHumanReplyDelayMs()
                             : 12000;
 
-                    await inboxRef.set({
-                        botReplyPlannedDelayMs: delayMs,
-                    }, { merge: true });
+                    await inboxRef.set(
+                        {
+                            botReplyPlannedDelayMs: delayMs,
+                        },
+                        { merge: true }
+                    );
 
                     await sleep(delayMs);
 
@@ -215,28 +250,36 @@ function createProcessIncomingWhatsappMessage({
                 } catch (botError) {
                     console.error("[WHATSAPP BOT] reply error:", botError);
 
-                    await inboxRef.set({
-                        botReplyStatus: "error",
-                        botReplyError: String(botError?.message || botError || "unknown_bot_error"),
-                        botReplyAt: Date.now(),
-                    }, { merge: true });
+                    await inboxRef.set(
+                        {
+                            botReplyStatus: "error",
+                            botReplyError: String(
+                                botError?.message || botError || "unknown_bot_error"
+                            ),
+                            botReplyAt: Date.now(),
+                        },
+                        { merge: true }
+                    );
                 }
 
                 console.log("[WHATSAPP] processed message:", {
                     messageId,
                     waId,
                     messageType: msgType,
-                    result: result.result,
-                    clientId: result.clientId,
+                    result: result?.result,
+                    clientId: result?.clientId,
                 });
             } catch (error) {
                 console.error("[WHATSAPP] process error:", error);
 
-                await inboxRef.set({
-                    status: "error",
-                    error: String(error?.message || error || "unknown_error"),
-                    processedAt: Date.now(),
-                }, { merge: true });
+                await inboxRef.set(
+                    {
+                        status: "error",
+                        error: String(error?.message || error || "unknown_error"),
+                        processedAt: Date.now(),
+                    },
+                    { merge: true }
+                );
             }
         }
     };
