@@ -28,19 +28,13 @@ import {
     deleteClient,
     getClientLeadHistoryBucket,
     getClientRelevantLeadActivityAt,
-    isClientInActiveLeadQueue,
     subscribeAdminLeadHistory,
-    subscribeAdminLeadQueue,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, UserDoc } from "../../types/models";
 
-type MetaFilterKey =
-    | "pending_review"
-    | "incomplete"
-    | "not_suitable"
-    | "all";
+type HistoryFilterKey = "all" | "incomplete" | "not_suitable";
 
 type VerificationStatus =
     | "verified"
@@ -48,14 +42,12 @@ type VerificationStatus =
     | "incomplete"
     | "not_suitable";
 
-type QueueScope = "today" | "all";
-
 type ActionSheetState = {
     open: boolean;
     clientId: string | null;
 };
 
-type LeadRowVM = {
+type LeadHistoryRowVM = {
     id: string;
     raw: ClientDoc;
     phone: string;
@@ -65,20 +57,16 @@ type LeadRowVM = {
     address: string;
     mapsUrl: string;
     verificationStatus: VerificationStatus;
-    verificationLabel: string;
     quickStatusText: string;
     notSuitableReason: string;
     createdAtMs: number;
     updatedAtMs: number;
     lastInboundAtMs: number;
-    baseDateMs: number;
+    relevantAtMs: number;
+    historyBucket: "incomplete" | "not_suitable";
     lastInboundText: string;
     searchBlob: string;
-    hasNewInbound: boolean;
-    historyBucket: "incomplete" | "not_suitable" | null;
 };
-
-const localSeenInboundMap: Record<string, number> = {};
 
 const COLORS = {
     bg: "#0B1220",
@@ -184,18 +172,6 @@ function toMs(v: any): number {
     return 0;
 }
 
-function isSameLocalDay(aMs?: number, bMs?: number) {
-    if (!aMs || !bMs) return false;
-    const a = new Date(aMs);
-    const b = new Date(bMs);
-
-    return (
-        a.getFullYear() === b.getFullYear() &&
-        a.getMonth() === b.getMonth() &&
-        a.getDate() === b.getDate()
-    );
-}
-
 function formatDateLabel(ms?: number) {
     if (!ms || !Number.isFinite(ms)) return "—";
 
@@ -254,23 +230,17 @@ function getDerivedVerificationStatus(c: ClientDoc): VerificationStatus {
     return "incomplete";
 }
 
-function getVerificationStatusLabel(status: VerificationStatus) {
-    if (status === "verified") return "Verificado";
-    if (status === "pending_review") return "Por revisar";
-    if (status === "not_suitable") return "No apto";
-    return "Incompleto";
-}
-
-function getVerificationStatusFilterLabel(status: VerificationStatus | "all") {
-    if (status === "verified") return "Verificados";
-    if (status === "pending_review") return "Por revisar";
-    if (status === "not_suitable") return "No aptos";
-    if (status === "incomplete") return "Incompletos";
-    return "Todos";
-}
-
 function getNotSuitableReason(c: ClientDoc) {
     return String((c as any)?.notSuitableReason ?? "").trim();
+}
+
+function getPrimarySubtitle(c: ClientDoc) {
+    const business = String((c as any)?.business ?? "").trim();
+    const businessRaw = String((c as any)?.businessRaw ?? "").trim();
+
+    if (business) return business;
+    if (businessRaw) return businessRaw;
+    return "";
 }
 
 function getQuickStatusText(c: ClientDoc) {
@@ -291,10 +261,6 @@ function getQuickStatusText(c: ClientDoc) {
     return "Listo para revisión";
 }
 
-function getServerSeenAt(c: ClientDoc) {
-    return toMs((c as any)?.adminQueueLastSeenMessageAt);
-}
-
 function useDebouncedValue<T>(value: T, delay = 250) {
     const [debounced, setDebounced] = useState(value);
 
@@ -306,28 +272,25 @@ function useDebouncedValue<T>(value: T, delay = 250) {
     return debounced;
 }
 
-function buildLeadVM(c: ClientDoc): LeadRowVM {
+function buildLeadHistoryVM(c: ClientDoc, now: number): LeadHistoryRowVM | null {
+    const historyBucket = getClientLeadHistoryBucket(c, now);
+    if (!historyBucket) return null;
+
     const verificationStatus = getDerivedVerificationStatus(c);
     const createdAtMs = toMs((c as any)?.createdAt);
     const updatedAtMs = toMs((c as any)?.updatedAt);
     const lastInboundAtMs = toMs((c as any)?.lastInboundMessageAt);
-    const localSeen = localSeenInboundMap[c.id] ?? 0;
-    const serverSeen = getServerSeenAt(c);
-    const effectiveSeen = Math.max(localSeen, serverSeen);
-    const hasNewInbound = !!lastInboundAtMs && lastInboundAtMs > effectiveSeen;
 
     const phone = String(c.phone ?? "").trim();
     const waPhone = String((c as any)?.waId ?? c.phone ?? "").trim();
     const name = String((c as any)?.name ?? "").trim();
-    const subtitle = String((c as any)?.business ?? (c as any)?.businessRaw ?? "").trim();
+    const subtitle = getPrimarySubtitle(c);
     const address = String(c.address ?? "").trim();
     const mapsUrl = String(c.mapsUrl ?? "").trim();
     const quickStatusText = getQuickStatusText(c);
     const notSuitableReason = getNotSuitableReason(c);
     const lastInboundText = String((c as any)?.lastInboundText ?? "").trim();
-    const verificationLabel = getVerificationStatusLabel(verificationStatus);
-    const baseDateMs = getClientRelevantLeadActivityAt(c);
-    const historyBucket = getClientLeadHistoryBucket(c);
+    const relevantAtMs = getClientRelevantLeadActivityAt(c);
 
     const searchBlob = `
         ${safeText(name)}
@@ -335,10 +298,10 @@ function buildLeadVM(c: ClientDoc): LeadRowVM {
         ${safeText(address)}
         ${safeText(mapsUrl)}
         ${safeText(phone)}
-        ${safeText(verificationLabel)}
         ${safeText(notSuitableReason)}
         ${safeText(quickStatusText)}
         ${safeText(lastInboundText)}
+        ${safeText(historyBucket)}
     `;
 
     return {
@@ -351,21 +314,54 @@ function buildLeadVM(c: ClientDoc): LeadRowVM {
         address,
         mapsUrl,
         verificationStatus,
-        verificationLabel,
         quickStatusText,
         notSuitableReason,
         createdAtMs,
         updatedAtMs,
         lastInboundAtMs,
-        baseDateMs,
+        relevantAtMs,
+        historyBucket,
         lastInboundText,
         searchBlob,
-        hasNewInbound,
-        historyBucket,
     };
 }
 
-const LeadCard = memo(function LeadCard({
+const FilterPill = memo(function FilterPill({
+    label,
+    value,
+    icon,
+    active,
+    onPress,
+    tint,
+}: {
+    label: string;
+    value: number;
+    icon: any;
+    active: boolean;
+    onPress: () => void;
+    tint: string;
+}) {
+    return (
+        <Pressable
+            onPress={onPress}
+            style={({ pressed }) => [
+                styles.filterPill,
+                active && styles.filterPillActive,
+                pressed && styles.pressed,
+            ]}
+        >
+            <Ionicons name={icon} size={13} color={tint} />
+            <Text style={[styles.filterPillText, active && styles.filterPillTextActive]}>
+                {label}
+            </Text>
+            <Text style={[styles.filterPillCount, active && styles.filterPillCountActive]}>
+                {value}
+            </Text>
+        </Pressable>
+    );
+});
+
+const HistoryLeadCard = memo(function HistoryLeadCard({
     item,
     isBusy,
     onOpenActions,
@@ -373,56 +369,22 @@ const LeadCard = memo(function LeadCard({
     onOpenWsp,
     onOpenChat,
 }: {
-    item: LeadRowVM;
+    item: LeadHistoryRowVM;
     isBusy: boolean;
     onOpenActions: (id: string) => void;
     onOpenMaps: (url?: string) => void;
     onOpenWsp: (phone?: string) => void;
     onOpenChat: (id: string) => void;
 }) {
-    const statusBoxStyle =
-        item.verificationStatus === "pending_review"
-            ? styles.statusBoxBlue
-            : item.verificationStatus === "not_suitable"
-                ? styles.statusBoxRed
-                : styles.statusBoxYellow;
-
-    const statusTextStyle =
-        item.verificationStatus === "pending_review"
-            ? styles.statusBoxTextBlue
-            : item.verificationStatus === "not_suitable"
-                ? styles.statusBoxTextRed
-                : styles.statusBoxTextYellow;
-
-    const statusIconName =
-        item.verificationStatus === "pending_review"
-            ? "search-outline"
-            : item.verificationStatus === "not_suitable"
-                ? "ban-outline"
-                : "warning-outline";
-
-    const statusIconColor =
-        item.verificationStatus === "pending_review"
-            ? "#93C5FD"
-            : item.verificationStatus === "not_suitable"
-                ? "#FCA5A5"
-                : "#FDE68A";
+    const isIncomplete = item.historyBucket === "incomplete";
 
     return (
         <View style={styles.card}>
             <View style={styles.cardTop}>
                 <View style={styles.cardTopMain}>
-                    <View style={styles.topLine}>
-                        <Text style={styles.phone} numberOfLines={1}>
-                            {item.phone || "Sin teléfono"}
-                        </Text>
-
-                        {item.hasNewInbound ? (
-                            <View style={styles.newPillInline}>
-                                <Text style={styles.newPillText}>NEW</Text>
-                            </View>
-                        ) : null}
-                    </View>
+                    <Text style={styles.phone} numberOfLines={1}>
+                        {item.phone || "Sin teléfono"}
+                    </Text>
 
                     {!!item.name ? (
                         <Text style={styles.metaPrimary} numberOfLines={1}>
@@ -449,11 +411,44 @@ const LeadCard = memo(function LeadCard({
                 </Pressable>
             </View>
 
-            <View style={[styles.statusBox, statusBoxStyle]}>
-                <Ionicons name={statusIconName} size={14} color={statusIconColor} />
-                <Text style={[styles.statusBoxText, statusTextStyle]} numberOfLines={2}>
+            <View
+                style={[
+                    styles.statusBox,
+                    isIncomplete ? styles.statusBoxYellow : styles.statusBoxRed,
+                ]}
+            >
+                <Ionicons
+                    name={isIncomplete ? "archive-outline" : "ban-outline"}
+                    size={14}
+                    color={isIncomplete ? "#FDE68A" : "#FCA5A5"}
+                />
+                <Text
+                    style={[
+                        styles.statusBoxText,
+                        isIncomplete ? styles.statusBoxTextYellow : styles.statusBoxTextRed,
+                    ]}
+                    numberOfLines={2}
+                >
                     {item.quickStatusText}
                 </Text>
+            </View>
+
+            <View style={styles.historyBadgeRow}>
+                <View
+                    style={[
+                        styles.historyBadge,
+                        isIncomplete ? styles.historyBadgeYellow : styles.historyBadgeRed,
+                    ]}
+                >
+                    <Text
+                        style={[
+                            styles.historyBadgeText,
+                            isIncomplete ? styles.historyBadgeTextYellow : styles.historyBadgeTextRed,
+                        ]}
+                    >
+                        {isIncomplete ? "Historial · Incompleto" : "Historial · No apto"}
+                    </Text>
+                </View>
             </View>
 
             {!!item.address ? (
@@ -468,8 +463,7 @@ const LeadCard = memo(function LeadCard({
             <View style={styles.assignedRow}>
                 <Ionicons name="time-outline" size={14} color={COLORS.muted} />
                 <Text style={styles.assignedText} numberOfLines={1}>
-                    Creado: {formatDateLabel(item.createdAtMs)} · Relevante:{" "}
-                    {formatDateLabel(item.baseDateMs || item.createdAtMs)}
+                    Creado: {formatDateLabel(item.createdAtMs)} · Relevante: {formatDateLabel(item.relevantAtMs)}
                 </Text>
             </View>
 
@@ -483,7 +477,7 @@ const LeadCard = memo(function LeadCard({
                 >
                     <View style={styles.inboundHeader}>
                         <Ionicons name="chatbubble-ellipses-outline" size={13} color={COLORS.muted} />
-                        <Text style={styles.inboundTitle}>Último mensaje recibido</Text>
+                        <Text style={styles.inboundTitle}>Último mensaje</Text>
 
                         <View style={styles.inboundOpenPill}>
                             <Text style={styles.inboundOpenPillText}>Ir al chat</Text>
@@ -522,7 +516,7 @@ const LeadCard = memo(function LeadCard({
                     <Ionicons name="logo-whatsapp" size={16} color={COLORS.text} />
                 </Pressable>
 
-                {item.verificationStatus === "not_suitable" && !!item.notSuitableReason ? (
+                {item.historyBucket === "not_suitable" && !!item.notSuitableReason ? (
                     <Text style={styles.bottomReasonText} numberOfLines={1}>
                         {item.notSuitableReason}
                     </Text>
@@ -536,80 +530,18 @@ const LeadCard = memo(function LeadCard({
     );
 });
 
-const FooterFilterButton = memo(function FooterFilterButton({
-    label,
-    count,
-    icon,
-    active,
-    tint,
-    onPress,
-}: {
-    label: string;
-    count: number;
-    icon: any;
-    active: boolean;
-    tint: string;
-    onPress: () => void;
-}) {
-    return (
-        <Pressable
-            onPress={onPress}
-            style={({ pressed }) => [
-                styles.footerFilterBtn,
-                active && styles.footerFilterBtnActive,
-                pressed && styles.pressed,
-            ]}
-        >
-            <View style={styles.footerFilterTop}>
-                <Ionicons
-                    name={icon}
-                    size={16}
-                    color={active ? COLORS.text : tint}
-                />
-                <View
-                    style={[
-                        styles.footerFilterCountWrap,
-                        active && styles.footerFilterCountWrapActive,
-                    ]}
-                >
-                    <Text
-                        style={[
-                            styles.footerFilterCount,
-                            active && styles.footerFilterCountActive,
-                        ]}
-                    >
-                        {count}
-                    </Text>
-                </View>
-            </View>
-
-            <Text
-                style={[
-                    styles.footerFilterLabel,
-                    active && styles.footerFilterLabelActive,
-                ]}
-                numberOfLines={1}
-            >
-                {label}
-            </Text>
-        </Pressable>
-    );
-});
-
-export default function AdminLeadQueueScreen() {
+export default function AdminLeadHistoryScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
 
-    const [queueClients, setQueueClients] = useState<ClientDoc[]>([]);
-    const [historyBaseClients, setHistoryBaseClients] = useState<ClientDoc[]>([]);
+    const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
 
     const [q, setQ] = useState("");
     const debouncedQ = useDebouncedValue(q, 280);
 
-    const [filter, setFilter] = useState<MetaFilterKey>("pending_review");
-    const [queueScope, setQueueScope] = useState<QueueScope>("all");
+    const [filter, setFilter] = useState<HistoryFilterKey>("all");
     const [busyId, setBusyId] = useState<string | null>(null);
 
     const [actionSheet, setActionSheet] = useState<ActionSheetState>({
@@ -625,7 +557,7 @@ export default function AdminLeadQueueScreen() {
     const [ePhone, setEPhone] = useState("");
     const [eMapsUrl, setEMapsUrl] = useState("");
     const [eAddress, setEAddress] = useState("");
-    const [eVerificationStatus, setEVerificationStatus] = useState<VerificationStatus>("pending_review");
+    const [eVerificationStatus, setEVerificationStatus] = useState<VerificationStatus>("incomplete");
     const [eNotSuitableReason, setENotSuitableReason] = useState("");
     const [eSaving, setESaving] = useState(false);
 
@@ -636,26 +568,11 @@ export default function AdminLeadQueueScreen() {
     const listRef = useRef<any>(null);
 
     useEffect(() => {
-        const unsubQueue = subscribeAdminLeadQueue(
-            (list) => setQueueClients(list ?? []),
-            {
-                limitCount: 800,
-                verificationStatuses: ["pending_review", "incomplete", "not_suitable"],
-            }
-        );
-
-        const unsubHistory = subscribeAdminLeadHistory(
-            (list) => setHistoryBaseClients(list ?? []),
-            {
-                limitCount: 800,
-                verificationStatuses: ["incomplete", "not_suitable"],
-            }
-        );
-
-        return () => {
-            unsubQueue();
-            unsubHistory();
-        };
+        const unsub = subscribeAdminLeadHistory((list) => setClients(list ?? []), {
+            limitCount: 1200,
+            verificationStatuses: ["incomplete", "not_suitable"],
+        });
+        return () => unsub();
     }, []);
 
     const reloadUsers = useCallback(async () => {
@@ -679,24 +596,18 @@ export default function AdminLeadQueueScreen() {
 
     useEffect(() => {
         closeActionSheet();
-    }, [filter, queueScope, debouncedQ, closeActionSheet]);
+    }, [filter, debouncedQ, closeActionSheet]);
 
-    const activeQueueClients = useMemo(() => {
-        const now = Date.now();
-        return queueClients.filter((c) => isClientInActiveLeadQueue(c, now));
-    }, [queueClients]);
-
-    const historyCandidates = useMemo(() => {
-        const now = Date.now();
-        return historyBaseClients.filter((c) => !!getClientLeadHistoryBucket(c, now));
-    }, [historyBaseClients]);
+    const now = Date.now();
 
     const leadVMs = useMemo(() => {
-        return activeQueueClients.map(buildLeadVM);
-    }, [activeQueueClients]);
+        return clients
+            .map((c) => buildLeadHistoryVM(c, now))
+            .filter((x): x is LeadHistoryRowVM => !!x);
+    }, [clients, now]);
 
     const vmById = useMemo(() => {
-        const map: Record<string, LeadRowVM> = {};
+        const map: Record<string, LeadHistoryRowVM> = {};
         for (const item of leadVMs) {
             map[item.id] = item;
         }
@@ -704,45 +615,16 @@ export default function AdminLeadQueueScreen() {
     }, [leadVMs]);
 
     const totals = useMemo(() => {
-        let verified = 0;
-        let pendingReview = 0;
         let incomplete = 0;
         let notSuitable = 0;
 
         for (const item of leadVMs) {
-            const s = item.verificationStatus;
-            if (s === "verified") verified++;
-            else if (s === "pending_review") pendingReview++;
-            else if (s === "not_suitable") notSuitable++;
-            else incomplete++;
+            if (item.historyBucket === "incomplete") incomplete++;
+            else if (item.historyBucket === "not_suitable") notSuitable++;
         }
 
         return {
-            total: verified + pendingReview + incomplete + notSuitable,
-            verified,
-            pendingReview,
-            incomplete,
-            notSuitable,
-        };
-    }, [leadVMs]);
-
-    const todayCounts = useMemo(() => {
-        const now = Date.now();
-
-        let pendingReview = 0;
-        let incomplete = 0;
-        let notSuitable = 0;
-
-        for (const item of leadVMs) {
-            if (!isSameLocalDay(item.baseDateMs, now)) continue;
-
-            if (item.verificationStatus === "pending_review") pendingReview++;
-            else if (item.verificationStatus === "incomplete") incomplete++;
-            else if (item.verificationStatus === "not_suitable") notSuitable++;
-        }
-
-        return {
-            pendingReview,
+            total: incomplete + notSuitable,
             incomplete,
             notSuitable,
         };
@@ -751,22 +633,9 @@ export default function AdminLeadQueueScreen() {
     const filteredIds = useMemo(() => {
         const qtText = debouncedQ.trim().toLowerCase();
         const qtDigits = normalizePhone(debouncedQ);
-        const now = Date.now();
 
         const list = leadVMs.filter((item) => {
-            const verification = item.verificationStatus;
-
-            if (verification === "verified") return false;
-            if (filter !== "all" && verification !== filter) return false;
-
-            const shouldShowScope =
-                filter === "pending_review" ||
-                filter === "incomplete" ||
-                filter === "not_suitable";
-
-            if (shouldShowScope && queueScope === "today") {
-                if (!isSameLocalDay(item.baseDateMs, now)) return false;
-            }
+            if (filter !== "all" && item.historyBucket !== filter) return false;
 
             if (!qtText && !qtDigits) return true;
 
@@ -777,18 +646,11 @@ export default function AdminLeadQueueScreen() {
         });
 
         list.sort((a, b) => {
-            const aNew = a.hasNewInbound ? 1 : 0;
-            const bNew = b.hasNewInbound ? 1 : 0;
-
-            if (aNew !== bNew) return bNew - aNew;
-
-            const aMs = a.updatedAtMs || a.createdAtMs;
-            const bMs = b.updatedAtMs || b.createdAtMs;
-            return bMs - aMs;
+            return (b.relevantAtMs || b.updatedAtMs || b.createdAtMs) - (a.relevantAtMs || a.updatedAtMs || a.createdAtMs);
         });
 
         return list.map((x) => x.id);
-    }, [leadVMs, debouncedQ, filter, queueScope]);
+    }, [leadVMs, debouncedQ, filter]);
 
     useEffect(() => {
         if (!actionSheet.clientId) return;
@@ -797,44 +659,14 @@ export default function AdminLeadQueueScreen() {
         }
     }, [actionSheet.clientId, vmById, closeActionSheet]);
 
-    const visibleTotal = useMemo(() => {
-        return totals.pendingReview + totals.incomplete + totals.notSuitable;
-    }, [totals]);
-
-    const currentScopeAllCount = useMemo(() => {
-        if (filter === "pending_review") return totals.pendingReview;
-        if (filter === "incomplete") return totals.incomplete;
-        if (filter === "not_suitable") return totals.notSuitable;
-        return visibleTotal;
-    }, [filter, totals, visibleTotal]);
-
-    const currentScopeTodayCount = useMemo(() => {
-        if (filter === "pending_review") return todayCounts.pendingReview;
-        if (filter === "incomplete") return todayCounts.incomplete;
-        if (filter === "not_suitable") return todayCounts.notSuitable;
-        return 0;
-    }, [filter, todayCounts]);
-
-    const showScopeFilter =
-        filter === "pending_review" ||
-        filter === "incomplete" ||
-        filter === "not_suitable";
-
-    const allKnownClients = useMemo(() => {
-        const map = new Map<string, ClientDoc>();
-        for (const c of queueClients) map.set(c.id, c);
-        for (const c of historyBaseClients) map.set(c.id, c);
-        return Array.from(map.values());
-    }, [queueClients, historyBaseClients]);
-
     const phoneExists = useCallback((phoneDigits: string, excludeId?: string | null) => {
         const p = normalizePhone(phoneDigits);
         if (!p) return false;
-        return allKnownClients.some((c) => {
+        return clients.some((c) => {
             if (excludeId && c.id === excludeId) return false;
             return normalizePhone(c.phone ?? "") === p;
         });
-    }, [allKnownClients]);
+    }, [clients]);
 
     const openMaps = useCallback(async (url?: string) => {
         const u = (url ?? "").trim();
@@ -863,26 +695,11 @@ export default function AdminLeadQueueScreen() {
         }
     }, []);
 
-    const markClientSeenInstant = useCallback((vm: LeadRowVM) => {
-        const lastInboundAt = vm.lastInboundAtMs;
-        if (!lastInboundAt) return;
-
-        localSeenInboundMap[vm.id] = Math.max(localSeenInboundMap[vm.id] ?? 0, lastInboundAt);
-
-        void updateClientFields(vm.id, {
-            adminQueueLastSeenMessageAt: lastInboundAt,
-            adminQueueSeenAt: Date.now(),
-        } as any).catch(() => {
-            // efecto local se mantiene aunque Firebase falle
-        });
-    }, []);
-
     const openChatScreen = useCallback((clientId: string) => {
         const vm = vmById[clientId];
         if (!vm) return;
 
         const clientName = vm.name || vm.phone || "Lead";
-        markClientSeenInstant(vm);
 
         router.push({
             pathname: "/admin/lead-chat" as any,
@@ -891,12 +708,7 @@ export default function AdminLeadQueueScreen() {
                 clientName,
             },
         });
-    }, [markClientSeenInstant, router, vmById]);
-
-    const goToHistory = useCallback(() => {
-        closeActionSheet();
-        router.push("/admin/lead-history" as any);
-    }, [closeActionSheet, router]);
+    }, [router, vmById]);
 
     const confirmDelete = useCallback((id: string) => {
         closeActionSheet();
@@ -1023,7 +835,7 @@ export default function AdminLeadQueueScreen() {
         ]);
     }, [applyVerificationStatus, closeActionSheet]);
 
-    const startEdit = useCallback((vm: LeadRowVM) => {
+    const startEdit = useCallback((vm: LeadHistoryRowVM) => {
         closeActionSheet();
         const c = vm.raw;
 
@@ -1036,7 +848,7 @@ export default function AdminLeadQueueScreen() {
         setEAddress((c.address ?? "").toString());
 
         const derivedStatus = getDerivedVerificationStatus(c);
-        setEVerificationStatus(derivedStatus === "verified" ? "pending_review" : derivedStatus);
+        setEVerificationStatus(derivedStatus === "verified" ? "incomplete" : derivedStatus);
         setENotSuitableReason(getNotSuitableReason(c));
         setEditOpen(true);
     }, [closeActionSheet]);
@@ -1050,7 +862,7 @@ export default function AdminLeadQueueScreen() {
         setEPhone("");
         setEMapsUrl("");
         setEAddress("");
-        setEVerificationStatus("pending_review");
+        setEVerificationStatus("incomplete");
         setENotSuitableReason("");
     }, []);
 
@@ -1094,11 +906,11 @@ export default function AdminLeadQueueScreen() {
 
         setESaving(true);
         try {
-            const now = Date.now();
+            const nowMs = Date.now();
             const finalBusiness = cleanBusiness || cleanBusinessRaw;
 
             const patch: any = {
-                updatedAt: now,
+                updatedAt: nowMs,
                 name: cleanName ? cleanName : "",
                 business: cleanBusiness ? cleanBusiness : "",
                 businessRaw: cleanBusinessRaw ? cleanBusinessRaw : finalBusiness,
@@ -1108,7 +920,7 @@ export default function AdminLeadQueueScreen() {
                 address: cleanAddress ? cleanAddress : "",
                 lat,
                 lng,
-                currentLeadMapsConfirmedAt: now,
+                currentLeadMapsConfirmedAt: nowMs,
                 parseStatus: finalBusiness && cleanMaps ? "ready" : "partial",
                 verificationStatus: eVerificationStatus,
                 notSuitableReason: eVerificationStatus === "not_suitable" ? cleanNotSuitableReason : "",
@@ -1157,7 +969,7 @@ export default function AdminLeadQueueScreen() {
         if (!vm) return null;
 
         return (
-            <LeadCard
+            <HistoryLeadCard
                 item={vm}
                 isBusy={busyId === id}
                 onOpenActions={(clientId) => setActionSheet({ open: true, clientId })}
@@ -1178,25 +990,13 @@ export default function AdminLeadQueueScreen() {
                     <View style={[styles.header, { paddingTop: Math.max(10, insets.top * 0.35) }]}>
                         <View style={{ flex: 1, gap: 3 }}>
                             <Text style={styles.hTitle} numberOfLines={1}>
-                                Leads Meta
+                                Historial de Leads
                             </Text>
                             <Text style={styles.hSub} numberOfLines={1}>
-                                Cola activa · visibles <Text style={styles.hStrong}>{filteredIds.length}</Text> · total{" "}
-                                <Text style={styles.hStrong}>{visibleTotal}</Text>
+                                Archivados por inactividad · visibles <Text style={styles.hStrong}>{filteredIds.length}</Text> · total{" "}
+                                <Text style={styles.hStrong}>{totals.total}</Text>
                             </Text>
                         </View>
-
-                        <Pressable
-                            onPress={goToHistory}
-                            style={({ pressed }) => [
-                                styles.headerHistoryBtn,
-                                pressed && styles.pressed,
-                            ]}
-                            accessibilityLabel="Abrir historial de leads"
-                        >
-                            <Ionicons name="archive-outline" size={17} color={COLORS.text} />
-                            <Text style={styles.headerHistoryBtnText}>{historyCandidates.length}</Text>
-                        </Pressable>
 
                         <Pressable
                             onPress={reloadUsers}
@@ -1216,6 +1016,35 @@ export default function AdminLeadQueueScreen() {
                         </Pressable>
                     </View>
 
+                    <View style={styles.filtersWrap}>
+                        <FilterPill
+                            label="Todos"
+                            value={totals.total}
+                            icon="apps-outline"
+                            active={filter === "all"}
+                            onPress={() => setFilter("all")}
+                            tint={COLORS.purple}
+                        />
+
+                        <FilterPill
+                            label="Incompletos"
+                            value={totals.incomplete}
+                            icon="alert-circle-outline"
+                            active={filter === "incomplete"}
+                            onPress={() => setFilter("incomplete")}
+                            tint={COLORS.yellow}
+                        />
+
+                        <FilterPill
+                            label="No aptos"
+                            value={totals.notSuitable}
+                            icon="ban-outline"
+                            active={filter === "not_suitable"}
+                            onPress={() => setFilter("not_suitable")}
+                            tint={COLORS.red}
+                        />
+                    </View>
+
                     <View style={styles.searchWrap}>
                         <Ionicons name="search-outline" size={17} color={COLORS.muted} />
                         <TextInput
@@ -1232,74 +1061,6 @@ export default function AdminLeadQueueScreen() {
                         ) : null}
                     </View>
 
-                    {showScopeFilter ? (
-                        <View style={styles.secondaryFilterWrap}>
-                            <View style={styles.secondaryFilterRow}>
-                                <Pressable
-                                    onPress={() => setQueueScope("today")}
-                                    style={({ pressed }) => [
-                                        styles.secondaryFilterPill,
-                                        queueScope === "today" && styles.secondaryFilterPillActive,
-                                        pressed && styles.pressed,
-                                    ]}
-                                >
-                                    <Ionicons
-                                        name="today-outline"
-                                        size={13}
-                                        color={queueScope === "today" ? "#93C5FD" : COLORS.muted}
-                                    />
-                                    <Text
-                                        style={[
-                                            styles.secondaryFilterPillText,
-                                            queueScope === "today" && styles.secondaryFilterPillTextActive,
-                                        ]}
-                                    >
-                                        Hoy
-                                    </Text>
-                                    <Text
-                                        style={[
-                                            styles.secondaryFilterPillCount,
-                                            queueScope === "today" && styles.secondaryFilterPillCountActive,
-                                        ]}
-                                    >
-                                        {currentScopeTodayCount}
-                                    </Text>
-                                </Pressable>
-
-                                <Pressable
-                                    onPress={() => setQueueScope("all")}
-                                    style={({ pressed }) => [
-                                        styles.secondaryFilterPill,
-                                        queueScope === "all" && styles.secondaryFilterPillActive,
-                                        pressed && styles.pressed,
-                                    ]}
-                                >
-                                    <Ionicons
-                                        name="albums-outline"
-                                        size={13}
-                                        color={queueScope === "all" ? "#93C5FD" : COLORS.muted}
-                                    />
-                                    <Text
-                                        style={[
-                                            styles.secondaryFilterPillText,
-                                            queueScope === "all" && styles.secondaryFilterPillTextActive,
-                                        ]}
-                                    >
-                                        Todos
-                                    </Text>
-                                    <Text
-                                        style={[
-                                            styles.secondaryFilterPillCount,
-                                            queueScope === "all" && styles.secondaryFilterPillCountActive,
-                                        ]}
-                                    >
-                                        {currentScopeAllCount}
-                                    </Text>
-                                </Pressable>
-                            </View>
-                        </View>
-                    ) : null}
-
                     <View style={styles.listWrap}>
                         <FlashList
                             ref={listRef}
@@ -1308,82 +1069,19 @@ export default function AdminLeadQueueScreen() {
                             renderItem={renderItem}
                             keyboardShouldPersistTaps="handled"
                             showsVerticalScrollIndicator={false}
-                            contentContainerStyle={[
-                                styles.listContent,
-                                { paddingBottom: 130 + insets.bottom },
-                            ]}
+                            contentContainerStyle={styles.listContent}
                             onScrollBeginDrag={closeActionSheet}
                             ListEmptyComponent={
                                 <View style={styles.empty}>
-                                    <Ionicons name="file-tray-outline" size={22} color={COLORS.muted} />
+                                    <Ionicons name="archive-outline" size={22} color={COLORS.muted} />
                                     <Text style={styles.emptyText}>
                                         {debouncedQ.trim()
                                             ? "No hay resultados."
-                                            : showScopeFilter && queueScope === "today"
-                                                ? "No hay leads activos de hoy en este filtro."
-                                                : "No hay leads Meta en la cola activa."}
+                                            : "No hay leads archivados en historial."}
                                     </Text>
                                 </View>
                             }
                         />
-                    </View>
-
-                    <View
-                        style={[
-                            styles.footerFilterBar,
-                            { paddingBottom: Math.max(insets.bottom, 10) },
-                        ]}
-                    >
-                        <View style={styles.footerFilterInner}>
-                            <FooterFilterButton
-                                label="Revisar"
-                                count={totals.pendingReview}
-                                icon="shield-checkmark-outline"
-                                active={filter === "pending_review"}
-                                tint="#93C5FD"
-                                onPress={() => {
-                                    closeActionSheet();
-                                    setFilter("pending_review");
-                                }}
-                            />
-
-                            <FooterFilterButton
-                                label="Incompletos"
-                                count={totals.incomplete}
-                                icon="alert-circle-outline"
-                                active={filter === "incomplete"}
-                                tint="#FDE68A"
-                                onPress={() => {
-                                    closeActionSheet();
-                                    setFilter("incomplete");
-                                }}
-                            />
-
-                            <FooterFilterButton
-                                label="No aptos"
-                                count={totals.notSuitable}
-                                icon="ban-outline"
-                                active={filter === "not_suitable"}
-                                tint="#FCA5A5"
-                                onPress={() => {
-                                    closeActionSheet();
-                                    setFilter("not_suitable");
-                                }}
-                            />
-
-                            <FooterFilterButton
-                                label="Todos"
-                                count={visibleTotal}
-                                icon="apps-outline"
-                                active={filter === "all"}
-                                tint="#C4B5FD"
-                                onPress={() => {
-                                    closeActionSheet();
-                                    setFilter("all");
-                                    setQueueScope("all");
-                                }}
-                            />
-                        </View>
                     </View>
 
                     <Modal
@@ -1414,7 +1112,7 @@ export default function AdminLeadQueueScreen() {
                                     style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
                                 >
                                     <Ionicons name="shield-checkmark-outline" size={17} color="#93C5FD" />
-                                    <Text style={styles.sheetItemText}>Marcar por revisar</Text>
+                                    <Text style={styles.sheetItemText}>Mover a por revisar</Text>
                                 </Pressable>
 
                                 <Pressable
@@ -1425,7 +1123,7 @@ export default function AdminLeadQueueScreen() {
                                     style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
                                 >
                                     <Ionicons name="alert-circle-outline" size={17} color="#FDE68A" />
-                                    <Text style={styles.sheetItemText}>Marcar incompleto</Text>
+                                    <Text style={styles.sheetItemText}>Mover a incompleto</Text>
                                 </Pressable>
 
                                 <Pressable
@@ -1440,7 +1138,7 @@ export default function AdminLeadQueueScreen() {
                                     style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
                                 >
                                     <Ionicons name="ban-outline" size={17} color="#FCA5A5" />
-                                    <Text style={styles.sheetItemText}>Marcar no apto</Text>
+                                    <Text style={styles.sheetItemText}>Mover a no apto</Text>
                                 </Pressable>
 
                                 <Pressable
@@ -1489,7 +1187,7 @@ export default function AdminLeadQueueScreen() {
                             <View style={styles.inlineModalWrap}>
                                 <View style={styles.modalCardBig}>
                                     <View style={styles.modalHeader}>
-                                        <Text style={styles.modalTitle}>Editar lead Meta</Text>
+                                        <Text style={styles.modalTitle}>Editar lead archivado</Text>
                                         <Pressable onPress={cancelEdit} style={styles.modalClose}>
                                             <Ionicons name="close" size={18} color={COLORS.text} />
                                         </Pressable>
@@ -1573,11 +1271,16 @@ export default function AdminLeadQueueScreen() {
                                         </View>
 
                                         <View style={styles.field}>
-                                            <Text style={styles.label}>Estado en cola</Text>
+                                            <Text style={styles.label}>Estado</Text>
                                             <View style={styles.segmentRow}>
                                                 {(["pending_review", "incomplete", "not_suitable"] as Exclude<VerificationStatus, "verified">[]).map((s) => {
                                                     const active = eVerificationStatus === s;
-                                                    const label = getVerificationStatusFilterLabel(s);
+                                                    const label =
+                                                        s === "pending_review"
+                                                            ? "Por revisar"
+                                                            : s === "incomplete"
+                                                                ? "Incompleto"
+                                                                : "No apto";
 
                                                     return (
                                                         <Pressable
@@ -1736,7 +1439,6 @@ const styles = StyleSheet.create({
     hTitle: { color: COLORS.text, fontSize: 19, fontWeight: "900" },
     hSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
     hStrong: { color: COLORS.text, fontWeight: "900" },
-
     headerBadge: {
         width: 40,
         height: 40,
@@ -1749,23 +1451,53 @@ const styles = StyleSheet.create({
     },
     headerBadgeDisabled: { opacity: 0.55 },
 
-    headerHistoryBtn: {
-        minWidth: 40,
-        height: 40,
-        borderRadius: 13,
-        backgroundColor: "rgba(124,58,237,0.12)",
-        borderWidth: 1,
-        borderColor: "rgba(124,58,237,0.26)",
-        alignItems: "center",
-        justifyContent: "center",
-        paddingHorizontal: 9,
+    filtersWrap: {
         flexDirection: "row",
-        gap: 6,
+        flexWrap: "wrap",
+        gap: 8,
+        paddingHorizontal: 16,
+        paddingBottom: 8,
     },
-    headerHistoryBtnText: {
-        color: COLORS.text,
-        fontSize: 11,
+    filterPill: {
+        minHeight: 32,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "#0F172A",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 7,
+    },
+    filterPillActive: {
+        backgroundColor: "rgba(124,58,237,0.10)",
+        borderColor: "rgba(124,58,237,0.26)",
+    },
+    filterPillText: {
+        color: COLORS.muted,
+        fontSize: 12,
         fontWeight: "900",
+    },
+    filterPillTextActive: {
+        color: COLORS.text,
+    },
+    filterPillCount: {
+        minWidth: 18,
+        height: 18,
+        borderRadius: 999,
+        paddingHorizontal: 5,
+        textAlign: "center",
+        textAlignVertical: "center",
+        overflow: "hidden",
+        backgroundColor: "rgba(255,255,255,0.06)",
+        color: "#CBD5E1",
+        fontSize: 10,
+        fontWeight: "900",
+        lineHeight: 18,
+    },
+    filterPillCountActive: {
+        backgroundColor: "rgba(124,58,237,0.20)",
+        color: "#C4B5FD",
     },
 
     searchWrap: {
@@ -1808,126 +1540,11 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(255,255,255,0.06)",
     },
 
-    secondaryFilterWrap: {
-        paddingHorizontal: 16,
-        paddingBottom: 10,
-    },
-    secondaryFilterRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-    },
-    secondaryFilterPill: {
-        minHeight: 32,
-        paddingHorizontal: 10,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        backgroundColor: "#0F172A",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 7,
-    },
-    secondaryFilterPillActive: {
-        backgroundColor: "rgba(37,99,235,0.10)",
-        borderColor: "rgba(37,99,235,0.26)",
-    },
-    secondaryFilterPillText: {
-        color: COLORS.muted,
-        fontSize: 12,
-        fontWeight: "900",
-    },
-    secondaryFilterPillTextActive: {
-        color: "#DDEAFE",
-    },
-    secondaryFilterPillCount: {
-        minWidth: 18,
-        height: 18,
-        borderRadius: 999,
-        paddingHorizontal: 5,
-        textAlign: "center",
-        textAlignVertical: "center",
-        overflow: "hidden",
-        backgroundColor: "rgba(255,255,255,0.06)",
-        color: "#CBD5E1",
-        fontSize: 10,
-        fontWeight: "900",
-        lineHeight: 18,
-    },
-    secondaryFilterPillCountActive: {
-        backgroundColor: "rgba(37,99,235,0.22)",
-        color: "#93C5FD",
-    },
-
     listWrap: { flex: 1 },
     listContent: {
         paddingHorizontal: 16,
+        paddingBottom: 28,
         paddingTop: 2,
-    },
-
-    footerFilterBar: {
-        position: "absolute",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        paddingHorizontal: 12,
-        paddingTop: 10,
-        backgroundColor: "rgba(11,18,32,0.92)",
-        borderTopWidth: 1,
-        borderTopColor: "rgba(255,255,255,0.06)",
-    },
-    footerFilterInner: {
-        flexDirection: "row",
-        gap: 8,
-    },
-    footerFilterBtn: {
-        flex: 1,
-        minHeight: 68,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        backgroundColor: "#0F172A",
-        paddingHorizontal: 8,
-        paddingVertical: 10,
-        justifyContent: "space-between",
-    },
-    footerFilterBtnActive: {
-        backgroundColor: "rgba(37,99,235,0.16)",
-        borderColor: "rgba(255,255,255,0.18)",
-    },
-    footerFilterTop: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-    },
-    footerFilterCountWrap: {
-        minWidth: 22,
-        height: 22,
-        borderRadius: 999,
-        paddingHorizontal: 6,
-        backgroundColor: "rgba(255,255,255,0.08)",
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    footerFilterCountWrapActive: {
-        backgroundColor: "rgba(255,255,255,0.16)",
-    },
-    footerFilterCount: {
-        color: COLORS.soft,
-        fontSize: 10,
-        fontWeight: "900",
-    },
-    footerFilterCountActive: {
-        color: COLORS.text,
-    },
-    footerFilterLabel: {
-        color: COLORS.muted,
-        fontSize: 11,
-        fontWeight: "900",
-        marginTop: 8,
-    },
-    footerFilterLabelActive: {
-        color: COLORS.text,
     },
 
     card: {
@@ -1950,13 +1567,7 @@ const styles = StyleSheet.create({
         gap: 4,
         paddingRight: 4,
     },
-    topLine: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-    },
     phone: {
-        flex: 1,
         color: COLORS.text,
         fontSize: 14,
         fontWeight: "900",
@@ -1992,10 +1603,6 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 8,
     },
-    statusBoxBlue: {
-        backgroundColor: "rgba(37,99,235,0.08)",
-        borderColor: "rgba(37,99,235,0.22)",
-    },
     statusBoxYellow: {
         backgroundColor: "rgba(251,191,36,0.08)",
         borderColor: "rgba(251,191,36,0.22)",
@@ -2009,9 +1616,35 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "900",
     },
-    statusBoxTextBlue: { color: "#93C5FD" },
     statusBoxTextYellow: { color: "#FDE68A" },
     statusBoxTextRed: { color: "#FCA5A5" },
+
+    historyBadgeRow: {
+        flexDirection: "row",
+        alignItems: "center",
+    },
+    historyBadge: {
+        minHeight: 24,
+        paddingHorizontal: 9,
+        borderRadius: 999,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    historyBadgeYellow: {
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderColor: "rgba(251,191,36,0.24)",
+    },
+    historyBadgeRed: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.24)",
+    },
+    historyBadgeText: {
+        fontSize: 10,
+        fontWeight: "900",
+    },
+    historyBadgeTextYellow: { color: "#FDE68A" },
+    historyBadgeTextRed: { color: "#FCA5A5" },
 
     infoRow: {
         flexDirection: "row",
@@ -2078,23 +1711,6 @@ const styles = StyleSheet.create({
         color: "#93C5FD",
         fontSize: 10,
         fontWeight: "900",
-    },
-
-    newPillInline: {
-        height: 20,
-        paddingHorizontal: 7,
-        borderRadius: 999,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(34,197,94,0.14)",
-        borderWidth: 1,
-        borderColor: "rgba(34,197,94,0.32)",
-    },
-    newPillText: {
-        color: "#86EFAC",
-        fontSize: 10,
-        fontWeight: "900",
-        letterSpacing: 0.3,
     },
 
     openChatEmptyBtn: {

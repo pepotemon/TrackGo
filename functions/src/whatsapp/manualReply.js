@@ -35,8 +35,8 @@ async function appendClientMessage({
     const payload = stripUndefined({
         id: ref.id,
         clientId: cleanClientId,
-        direction: cleanDirection, // inbound | outbound
-        senderType: cleanSenderType, // client | bot | admin
+        direction: cleanDirection,
+        senderType: cleanSenderType,
         senderId: cleanSenderId || "",
         text: cleanText,
         messageType: cleanMessageType,
@@ -56,11 +56,20 @@ function isBotAllowedForClient(client) {
 
     if (chatMode === "human") return false;
 
-    // si luego quieres que asignar a alguien pause automáticamente el bot,
-    // descomenta esta línea:
+    // si luego quieres que asignar a alguien pause automáticamente el bot:
     // if (assignedTo) return false;
 
     return true;
+}
+
+function shouldClearLeadHistoryOnManualActivity(client) {
+    const verificationStatus = safeString(client?.verificationStatus || "");
+
+    /**
+     * Si es no apto, no lo reactivamos automáticamente por actividad manual.
+     * Si no lo es, sí limpiamos historial persistido.
+     */
+    return verificationStatus !== "not_suitable";
 }
 
 async function sendManualWhatsAppMessage({
@@ -134,6 +143,11 @@ async function sendManualWhatsAppMessage({
         patch.humanTakeoverBy = cleanAdminUserId;
     }
 
+    if (shouldClearLeadHistoryOnManualActivity(client)) {
+        patch.leadHistoryArchivedAt = null;
+        patch.leadHistoryBucket = null;
+    }
+
     await clientRef.set(stripUndefined(patch), { merge: true });
 
     return {
@@ -169,11 +183,14 @@ async function resumeBotForClient({
 
     const now = Date.now();
 
-    await clientRef.set({
-        chatMode: "bot",
-        resumeBotAt: now,
-        resumeBotBy: cleanAdminUserId,
-    }, { merge: true });
+    await clientRef.set(
+        {
+            chatMode: "bot",
+            resumeBotAt: now,
+            resumeBotBy: cleanAdminUserId,
+        },
+        { merge: true }
+    );
 
     return {
         ok: true,

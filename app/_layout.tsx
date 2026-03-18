@@ -1,3 +1,5 @@
+import "react-native-gesture-handler";
+
 import { Ionicons } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
 import { Stack, useRouter } from "expo-router";
@@ -10,6 +12,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import {
   SafeAreaProvider,
   useSafeAreaInsets,
@@ -131,48 +134,47 @@ export default function RootLayout() {
   }, [router]);
 
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <StatusBar
-          barStyle="light-content"
-          translucent={false}
-          backgroundColor="#0B1220"
-        />
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <StatusBar
+            barStyle="light-content"
+            translucent={false}
+            backgroundColor="#0B1220"
+          />
 
-        <Stack
-          screenOptions={{
-            headerShown: true,
-            header: ({ navigation, route, back, options }) => (
-              <RootHeader
-                title={
-                  typeof options.title === "string"
-                    ? options.title
-                    : route.name === "index"
-                      ? "TrackGo"
-                      : "TrackGo"
-                }
-                canGoBack={!!back}
-                onGoBack={() => navigation.goBack()}
-              />
-            ),
-            contentStyle: { backgroundColor: "#0B1220" },
-            animation: "none",
-            animationDuration: 0,
-          }}
-        >
-          {/* USER / ROOT */}
-          <Stack.Screen name="index" options={{ headerShown: false }} />
-          <Stack.Screen name="user-history" options={{ title: "TrackGo" }} />
+          <Stack
+            screenOptions={{
+              headerShown: true,
+              header: ({ navigation, route, back, options }) => (
+                <RootHeader
+                  title={
+                    typeof options.title === "string"
+                      ? options.title
+                      : route.name === "index"
+                        ? "TrackGo"
+                        : "TrackGo"
+                  }
+                  canGoBack={!!back}
+                  onGoBack={() => navigation.goBack()}
+                />
+              ),
+              contentStyle: { backgroundColor: "#0B1220" },
+              animation: "none",
+              animationDuration: 0,
+            }}
+          >
+            <Stack.Screen name="index" options={{ headerShown: false }} />
+            <Stack.Screen name="user-history" options={{ title: "TrackGo" }} />
 
-          {/* PANTALLAS SIN HEADER PROPIO */}
-          <Stack.Screen name="login" options={{ headerShown: false }} />
-          <Stack.Screen name="no-access" options={{ headerShown: false }} />
+            <Stack.Screen name="login" options={{ headerShown: false }} />
+            <Stack.Screen name="no-access" options={{ headerShown: false }} />
 
-          {/* ADMIN MANEJA SU PROPIO LAYOUT Y HEADER */}
-          <Stack.Screen name="admin" options={{ headerShown: false }} />
-        </Stack>
-      </AuthProvider>
-    </SafeAreaProvider>
+            <Stack.Screen name="admin" options={{ headerShown: false }} />
+          </Stack>
+        </AuthProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

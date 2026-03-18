@@ -219,6 +219,9 @@ function createProcessIncomingWhatsappMessage({
                         notSuitableReason: safeString(
                             result?.mergedClient?.notSuitableReason || ""
                         ),
+                        verificationStatus: safeString(
+                            result?.mergedClient?.verificationStatus || ""
+                        ),
                         mapsUrl: safeString(result?.mergedClient?.mapsUrl || ""),
                         lat: result?.mergedClient?.lat ?? null,
                         lng: result?.mergedClient?.lng ?? null,

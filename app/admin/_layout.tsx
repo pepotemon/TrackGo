@@ -127,6 +127,7 @@ export default function AdminLayout() {
             <Stack.Screen name="users" options={{ title: "TrackGo" }} />
             <Stack.Screen name="clients" options={{ title: "TrackGo" }} />
             <Stack.Screen name="leads" options={{ title: "TrackGo" }} />
+            <Stack.Screen name="lead-history" options={{ title: "TrackGo" }} />
             <Stack.Screen name="accounting" options={{ title: "TrackGo" }} />
             <Stack.Screen name="history" options={{ title: "TrackGo" }} />
             <Stack.Screen name="report" options={{ title: "TrackGo" }} />

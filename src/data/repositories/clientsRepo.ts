@@ -2,13 +2,17 @@ import {
     addDoc,
     deleteDoc,
     doc,
+    getDocs,
     limit,
     onSnapshot,
     orderBy,
     query,
+    startAfter,
     updateDoc,
     where,
     writeBatch,
+    type DocumentData,
+    type QueryDocumentSnapshot,
     type Unsubscribe,
 } from "firebase/firestore";
 import { db } from "../../config/firebase";
@@ -16,6 +20,7 @@ import type {
     ClientAutoFlag,
     ClientBusinessQuality,
     ClientDoc,
+    ClientLeadHistoryBucket,
     ClientLeadQuality,
     ClientParseStatus,
     ClientProfileType,
@@ -198,54 +203,199 @@ function normalizeAutoFlags(value: unknown): ClientAutoFlag[] | undefined {
     return Array.from(new Set(list));
 }
 
+function clampPositiveInt(value: unknown, fallback: number, max: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.min(Math.floor(n), max);
+}
+
+function toMs(v: any): number {
+    if (!v) return 0;
+    if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+    if (v instanceof Date) return v.getTime();
+    if (typeof v?.toMillis === "function") return v.toMillis();
+    if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+    }
+    return 0;
+}
+
+export const LEAD_HISTORY_STALE_DAYS = 30;
+export const LEAD_HISTORY_STALE_MS = LEAD_HISTORY_STALE_DAYS * 24 * 60 * 60 * 1000;
+
+export type SubscribeAdminClientsOptions = {
+    limitCount?: number;
+    onlyMetaUnassigned?: boolean;
+    verificationStatuses?: ClientVerificationStatus[];
+};
+
+export type SubscribeAdminLeadQueueOptions = {
+    limitCount?: number;
+    verificationStatuses?: Array<"pending_review" | "incomplete" | "not_suitable">;
+};
+
+export type SubscribeAdminLeadHistoryOptions = {
+    limitCount?: number;
+    verificationStatuses?: Array<"incomplete" | "not_suitable">;
+};
+
+export type AdminLeadsPageCursor = QueryDocumentSnapshot<DocumentData> | null;
+
+export type AdminLeadsPageResult = {
+    items: ClientDoc[];
+    cursor: AdminLeadsPageCursor;
+    hasMore: boolean;
+};
+
+export type GetAdminLeadHistoryPageOptions = {
+    pageSize?: number;
+    cursor?: AdminLeadsPageCursor;
+    verificationStatuses?: Array<"incomplete" | "not_suitable">;
+};
+
+export type GetAdminLeadQueuePageOptions = {
+    pageSize?: number;
+    cursor?: AdminLeadsPageCursor;
+    verificationStatuses?: Array<"pending_review" | "incomplete" | "not_suitable">;
+};
+
+/**
+ * Helper para dejar listas pequeñas y válidas para Firestore "in".
+ */
+function normalizeVerificationStatusListForIn(
+    value?: string[] | null
+): ClientVerificationStatus[] {
+    if (!Array.isArray(value)) return [];
+
+    const normalized = value
+        .map((x) => normalizeVerificationStatus(x))
+        .filter((x): x is ClientVerificationStatus => !!x);
+
+    return Array.from(new Set(normalized)).slice(0, 10);
+}
+
+/**
+ * ✅ Actividad relevante para decidir si un lead sigue en cola o ya va a historial.
+ *
+ * Reglas:
+ * - pending_review: no se usa para archivar, siempre queda en principal.
+ * - incomplete: sí se reactiva con nuevo inbound, por eso priorizamos lastInboundMessageAt.
+ * - not_suitable: NO se reactiva automáticamente por inbound; priorizamos el momento del estado.
+ */
+export function getClientRelevantLeadActivityAt(client: ClientDoc): number {
+    const verificationStatus = normalizeVerificationStatus(
+        (client as any)?.verificationStatus
+    ) ?? "incomplete";
+
+    if (verificationStatus === "not_suitable") {
+        return (
+            toMs((client as any)?.verificationStatusChangedAt) ||
+            toMs(client.updatedAt) ||
+            toMs(client.createdAt)
+        );
+    }
+
+    return (
+        toMs((client as any)?.lastInboundMessageAt) ||
+        toMs((client as any)?.verificationStatusChangedAt) ||
+        toMs(client.updatedAt) ||
+        toMs(client.createdAt)
+    );
+}
+
+export function getClientLeadHistoryBucket(
+    client: ClientDoc,
+    now = Date.now()
+): ClientLeadHistoryBucket | null {
+    const status = normalizeVerificationStatus((client as any)?.verificationStatus);
+
+    if (status !== "incomplete" && status !== "not_suitable") return null;
+
+    const relevantAt = getClientRelevantLeadActivityAt(client);
+    if (!relevantAt) return null;
+
+    const isStale = now - relevantAt >= LEAD_HISTORY_STALE_MS;
+    if (!isStale) return null;
+
+    return status as ClientLeadHistoryBucket;
+}
+
+export function isClientInLeadHistory(client: ClientDoc, now = Date.now()) {
+    return getClientLeadHistoryBucket(client, now) != null;
+}
+
+export function isClientInActiveLeadQueue(client: ClientDoc, now = Date.now()) {
+    const status = normalizeVerificationStatus((client as any)?.verificationStatus);
+
+    if (status === "pending_review") return true;
+    if (status !== "incomplete" && status !== "not_suitable") return false;
+
+    return !isClientInLeadHistory(client, now);
+}
+
+export function buildLeadHistoryStatePatch(
+    client: ClientDoc,
+    now = Date.now()
+): Partial<ClientDoc> {
+    const bucket = getClientLeadHistoryBucket(client, now);
+
+    if (!bucket) {
+        return {
+            ...({
+                leadHistoryArchivedAt: null,
+                leadHistoryBucket: null,
+            } as any),
+        };
+    }
+
+    return {
+        ...({
+            leadHistoryArchivedAt: toMs((client as any)?.leadHistoryArchivedAt) || now,
+            leadHistoryBucket: bucket,
+        } as any),
+    };
+}
+
 export async function createClient(input: Omit<ClientDoc, "id">) {
     const now = Date.now();
+
+    const normalizedVerification =
+        normalizeVerificationStatus((input as any)?.verificationStatus) ?? "incomplete";
 
     await addDoc(
         col.clients,
         stripUndefined({
             ...input,
             phone: normalizeClientPhone(input.phone),
-            waId: input.waId ? normalizeClientPhone(input.waId) : input.waId,
-            lat: normalizeCoord(input.lat),
-            lng: normalizeCoord(input.lng),
+            waId: (input as any).waId ? normalizeClientPhone((input as any).waId) : (input as any).waId,
+            lat: normalizeCoord((input as any).lat),
+            lng: normalizeCoord((input as any).lng),
 
-            source: input.source ?? "manual",
-            parseStatus: normalizeParseStatus(input.parseStatus) ?? "empty",
-            verificationStatus:
-                normalizeVerificationStatus(input.verificationStatus) ?? "incomplete",
-            leadQuality: normalizeLeadQuality(input.leadQuality) ?? "unknown",
-            profileType: normalizeProfileType(input.profileType) ?? "business",
-            businessQuality: normalizeBusinessQuality(input.businessQuality) ?? "unknown",
+            source: (input as any).source ?? "manual",
+            parseStatus: normalizeParseStatus((input as any).parseStatus) ?? "empty",
+            verificationStatus: normalizedVerification,
+            verificationStatusChangedAt:
+                (input as any).verificationStatusChangedAt ?? now,
 
-            businessFlags: normalizeAutoFlags(input.businessFlags) ?? [],
-            profileFlags: normalizeAutoFlags(input.profileFlags) ?? [],
+            leadQuality: normalizeLeadQuality((input as any).leadQuality) ?? "unknown",
+            profileType: normalizeProfileType((input as any).profileType) ?? "business",
+            businessQuality: normalizeBusinessQuality((input as any).businessQuality) ?? "unknown",
 
-            createdAt: input.createdAt ?? now,
-            updatedAt: input.updatedAt ?? now,
+            businessFlags: normalizeAutoFlags((input as any).businessFlags) ?? [],
+            profileFlags: normalizeAutoFlags((input as any).profileFlags) ?? [],
+
+            leadHistoryArchivedAt: (input as any).leadHistoryArchivedAt ?? null,
+            leadHistoryBucket: (input as any).leadHistoryBucket ?? null,
+
+            createdAt: (input as any).createdAt ?? now,
+            updatedAt: (input as any).updatedAt ?? now,
         } as any)
     );
 }
 
 /**
  * ✅ Actualiza status del client + registra evento diario (SIN INFLAR)
- *
- * FIXES:
- * 1) Si status === "pending": limpia statusBy/statusAt y también limpia rejectedReason/note.
- * 2) dailyEvents idempotente por día y cliente: eventId = dayKey_clientId
- *    (evita duplicar si cambia actor o si togglea varias veces)
- *
- * EXTRA:
- * - Soporta motivos ampliados de rechazo
- * - Guarda el motivo en:
- *   - client.rejectedReason
- *   - client.rejectedReasonText
- *   - dailyEvent.rejectedReason
- *   - dailyEvent.rejectedReasonText
- *
- * ✅ Compat:
- * - string => se interpreta como rejectedReason
- * - object => rejectedReason + note + rejectedReasonText
  */
 export async function updateClientStatus(
     clientId: string,
@@ -350,12 +500,6 @@ export async function updateClientStatus(
 
 /**
  * ✅ Asignación: guarda assignedAt/assignedDayKey y REINICIA estado del cliente.
- *
- * REGLA DE NEGOCIO:
- * - Al reasignar, el cliente vuelve a "pending"
- * - Limpia statusBy/statusAt para que no herede "rejected/visited" del usuario anterior
- * - Limpia rejectedReason/note
- * - updatedAt se actualiza para que suba en el listado
  */
 export async function assignClient(clientId: string, userId: string) {
     const now = Date.now();
@@ -374,21 +518,75 @@ export async function assignClient(clientId: string, userId: string) {
             rejectedReasonText: null,
             note: null,
 
+            leadHistoryArchivedAt: null,
+            leadHistoryBucket: null,
+
             updatedAt: now,
         } as any)
     );
 }
 
 /**
- * Admin realtime subscription
+ * Compat general para pantallas admin existentes.
+ *
+ * - Si no mandas options: se comporta prácticamente como antes
+ * - Si mandas onlyMetaUnassigned / verificationStatuses: filtra ya desde Firestore
+ *
+ * OJO:
+ * Firestore requerirá índice compuesto si combinas varios where + orderBy.
  */
-export function subscribeAdminClients(callback: (clients: ClientDoc[]) => void): Unsubscribe {
-    const q = query(col.clients, orderBy("updatedAt", "desc"), limit(400));
+export function subscribeAdminClients(
+    callback: (clients: ClientDoc[]) => void,
+    options?: SubscribeAdminClientsOptions
+): Unsubscribe {
+    const finalLimit = clampPositiveInt(options?.limitCount, 400, 1000);
+    const onlyMetaUnassigned = options?.onlyMetaUnassigned === true;
+    const verificationStatuses = normalizeVerificationStatusListForIn(
+        options?.verificationStatuses
+    );
+
+    let qRef;
+
+    if (onlyMetaUnassigned && verificationStatuses.length > 0) {
+        qRef = query(
+            col.clients,
+            where("source", "==", "whatsapp_meta"),
+            where("assignedTo", "==", ""),
+            where("verificationStatus", "in", verificationStatuses),
+            orderBy("updatedAt", "desc"),
+            limit(finalLimit)
+        );
+    } else if (onlyMetaUnassigned) {
+        qRef = query(
+            col.clients,
+            where("source", "==", "whatsapp_meta"),
+            where("assignedTo", "==", ""),
+            orderBy("updatedAt", "desc"),
+            limit(finalLimit)
+        );
+    } else if (verificationStatuses.length > 0) {
+        qRef = query(
+            col.clients,
+            where("verificationStatus", "in", verificationStatuses),
+            orderBy("updatedAt", "desc"),
+            limit(finalLimit)
+        );
+    } else {
+        qRef = query(
+            col.clients,
+            orderBy("updatedAt", "desc"),
+            limit(finalLimit)
+        );
+    }
 
     return onSnapshot(
-        q,
+        qRef,
         (snap) => {
-            const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ClientDoc[];
+            const list = snap.docs.map((d) => ({
+                id: d.id,
+                ...(d.data() as any),
+            })) as ClientDoc[];
+
             callback(list);
         },
         (err) => {
@@ -396,6 +594,192 @@ export function subscribeAdminClients(callback: (clients: ClientDoc[]) => void):
             callback([]);
         }
     );
+}
+
+/**
+ * ✅ Cola activa optimizada para Leads Meta.
+ *
+ * Trae:
+ * - whatsapp_meta
+ * - no asignados
+ * - estados operativos
+ *
+ * La separación "activo vs historial" por tiempo se hace con helpers dinámicos
+ * para no depender todavía de cron/jobs.
+ */
+export function subscribeAdminLeadQueue(
+    callback: (clients: ClientDoc[]) => void,
+    options?: SubscribeAdminLeadQueueOptions
+): Unsubscribe {
+    const finalLimit = clampPositiveInt(options?.limitCount, 250, 1000);
+
+    const statuses = normalizeVerificationStatusListForIn(
+        options?.verificationStatuses ?? ["pending_review", "incomplete", "not_suitable"]
+    );
+
+    const qRef = query(
+        col.clients,
+        where("source", "==", "whatsapp_meta"),
+        where("assignedTo", "==", ""),
+        where("verificationStatus", "in", statuses),
+        orderBy("updatedAt", "desc"),
+        limit(finalLimit)
+    );
+
+    return onSnapshot(
+        qRef,
+        (snap) => {
+            const list = snap.docs.map((d) => ({
+                id: d.id,
+                ...(d.data() as any),
+            })) as ClientDoc[];
+
+            callback(list);
+        },
+        (err) => {
+            console.log("[subscribeAdminLeadQueue] onSnapshot error:", err?.code, err?.message);
+            callback([]);
+        }
+    );
+}
+
+/**
+ * ✅ Historial optimizado de Leads Meta.
+ *
+ * Trae:
+ * - whatsapp_meta
+ * - no asignados
+ * - solo incomplete / not_suitable
+ *
+ * Luego la pantalla filtra dinámicamente los que YA califican como historial.
+ */
+export function subscribeAdminLeadHistory(
+    callback: (clients: ClientDoc[]) => void,
+    options?: SubscribeAdminLeadHistoryOptions
+): Unsubscribe {
+    const finalLimit = clampPositiveInt(options?.limitCount, 400, 1500);
+
+    const statuses = normalizeVerificationStatusListForIn(
+        options?.verificationStatuses ?? ["incomplete", "not_suitable"]
+    );
+
+    const qRef = query(
+        col.clients,
+        where("source", "==", "whatsapp_meta"),
+        where("assignedTo", "==", ""),
+        where("verificationStatus", "in", statuses),
+        orderBy("updatedAt", "desc"),
+        limit(finalLimit)
+    );
+
+    return onSnapshot(
+        qRef,
+        (snap) => {
+            const list = snap.docs.map((d) => ({
+                id: d.id,
+                ...(d.data() as any),
+            })) as ClientDoc[];
+
+            callback(list);
+        },
+        (err) => {
+            console.log("[subscribeAdminLeadHistory] onSnapshot error:", err?.code, err?.message);
+            callback([]);
+        }
+    );
+}
+
+/**
+ * ✅ FASE 2:
+ * Página manual para la cola activa.
+ *
+ * Útil si luego quieres:
+ * - primera página rápida
+ * - cargar más
+ * - combinar realtime + fetch
+ */
+export async function getAdminLeadQueuePage(
+    options?: GetAdminLeadQueuePageOptions
+): Promise<AdminLeadsPageResult> {
+    const pageSize = clampPositiveInt(options?.pageSize, 50, 200);
+    const statuses = normalizeVerificationStatusListForIn(
+        options?.verificationStatuses ?? ["pending_review", "incomplete", "not_suitable"]
+    );
+
+    const constraints: any[] = [
+        where("source", "==", "whatsapp_meta"),
+        where("assignedTo", "==", ""),
+        where("verificationStatus", "in", statuses),
+        orderBy("updatedAt", "desc"),
+        limit(pageSize),
+    ];
+
+    if (options?.cursor) {
+        constraints.splice(constraints.length - 1, 0, startAfter(options.cursor));
+    }
+
+    const qRef = query(col.clients, ...constraints);
+    const snap = await getDocs(qRef);
+
+    const items = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as any),
+    })) as ClientDoc[];
+
+    const cursor = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
+    const hasMore = snap.docs.length >= pageSize;
+
+    return {
+        items,
+        cursor,
+        hasMore,
+    };
+}
+
+/**
+ * ✅ FASE 2:
+ * Página manual para historial.
+ *
+ * Trae los candidatos de historial desde Firestore.
+ * Luego la pantalla sigue aplicando la regla temporal con getClientLeadHistoryBucket(...)
+ * para decidir cuáles mostrar.
+ */
+export async function getAdminLeadHistoryPage(
+    options?: GetAdminLeadHistoryPageOptions
+): Promise<AdminLeadsPageResult> {
+    const pageSize = clampPositiveInt(options?.pageSize, 50, 200);
+    const statuses = normalizeVerificationStatusListForIn(
+        options?.verificationStatuses ?? ["incomplete", "not_suitable"]
+    );
+
+    const constraints: any[] = [
+        where("source", "==", "whatsapp_meta"),
+        where("assignedTo", "==", ""),
+        where("verificationStatus", "in", statuses),
+        orderBy("updatedAt", "desc"),
+        limit(pageSize),
+    ];
+
+    if (options?.cursor) {
+        constraints.splice(constraints.length - 1, 0, startAfter(options.cursor));
+    }
+
+    const qRef = query(col.clients, ...constraints);
+    const snap = await getDocs(qRef);
+
+    const items = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as any),
+    })) as ClientDoc[];
+
+    const cursor = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
+    const hasMore = snap.docs.length >= pageSize;
+
+    return {
+        items,
+        cursor,
+        hasMore,
+    };
 }
 
 // ✅ Actualiza campos editables por admin
@@ -413,6 +797,7 @@ export async function updateClientFields(
         waId: string;
         parseStatus: ClientParseStatus;
         verificationStatus: ClientVerificationStatus;
+        verificationStatusChangedAt: number | null;
         leadQuality: ClientLeadQuality;
         profileType: ClientProfileType;
         notSuitableReason: string | null;
@@ -421,6 +806,8 @@ export async function updateClientFields(
         profileFlags: ClientAutoFlag[];
         currentLeadMapsConfirmedAt: number | null;
         verifiedAt: number | null;
+        verifiedBy: string | null;
+        manualReviewNote: string | null;
         assignedTo: string;
         assignedAt: number;
         assignedDayKey: string;
@@ -430,6 +817,7 @@ export async function updateClientFields(
         autoCapturedAt: number | null;
         initialIntroSentAt: number | null;
         lastInboundMessageAt: number | null;
+        lastOutboundAt: number | null;
         lastInboundText: string | null;
         lastInboundIntent: string | null;
         lastMessageId: string | null;
@@ -439,11 +827,17 @@ export async function updateClientFields(
         rejectedReason: RejectedReason | null;
         rejectedReasonText: string | null;
         note: string | null;
+        adminQueueLastSeenMessageAt: number | null;
+        adminQueueSeenAt: number | null;
+        leadHistoryArchivedAt: number | null;
+        leadHistoryBucket: ClientLeadHistoryBucket | null;
     }>
 ) {
+    const now = Date.now();
+
     const data: any = {
         ...patch,
-        updatedAt: patch.updatedAt ?? Date.now(),
+        updatedAt: patch.updatedAt ?? now,
     };
 
     if (patch.phone !== undefined) {
@@ -473,6 +867,24 @@ export async function updateClientFields(
     if ("verificationStatus" in patch) {
         data.verificationStatus =
             normalizeVerificationStatus(patch.verificationStatus) ?? patch.verificationStatus;
+
+        if (!("verificationStatusChangedAt" in patch)) {
+            data.verificationStatusChangedAt = now;
+        }
+
+        /**
+         * Si el status cambia manualmente, sale de historial lógico.
+         * Luego la regla temporal decidirá si vuelve a caer ahí.
+         */
+        data.leadHistoryArchivedAt = null;
+        data.leadHistoryBucket = null;
+    }
+
+    if ("verificationStatusChangedAt" in patch) {
+        data.verificationStatusChangedAt =
+            patch.verificationStatusChangedAt == null
+                ? null
+                : Number(patch.verificationStatusChangedAt) || null;
     }
 
     if ("parseStatus" in patch) {
@@ -507,6 +919,21 @@ export async function updateClientFields(
         data.note = (patch.note ?? "").trim() || null;
     }
 
+    if ("notSuitableReason" in patch) {
+        data.notSuitableReason = (patch.notSuitableReason ?? "").trim() || null;
+    }
+
+    if ("leadHistoryArchivedAt" in patch) {
+        data.leadHistoryArchivedAt =
+            patch.leadHistoryArchivedAt == null
+                ? null
+                : Number(patch.leadHistoryArchivedAt) || null;
+    }
+
+    if ("leadHistoryBucket" in patch) {
+        data.leadHistoryBucket = patch.leadHistoryBucket ?? null;
+    }
+
     await updateDoc(docRef.client(clientId), stripUndefined(data));
 }
 
@@ -522,7 +949,7 @@ export function subscribeUserClients(
     userId: string,
     callback: (clients: ClientDoc[]) => void
 ): Unsubscribe {
-    const q = query(
+    const qRef = query(
         col.clients,
         where("assignedTo", "==", userId),
         orderBy("updatedAt", "desc"),
@@ -530,9 +957,13 @@ export function subscribeUserClients(
     );
 
     return onSnapshot(
-        q,
+        qRef,
         (snap) => {
-            const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ClientDoc[];
+            const list = snap.docs.map((d) => ({
+                id: d.id,
+                ...(d.data() as any),
+            })) as ClientDoc[];
+
             callback(list);
         },
         (err) => {

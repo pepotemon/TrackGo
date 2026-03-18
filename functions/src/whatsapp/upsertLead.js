@@ -40,14 +40,23 @@ function pickProfileType(prevType, nextType) {
 function pickVerificationStatus(prevStatus, nextStatus, leadQuality, parseStatus) {
     const prev = String(prevStatus || "").trim().toLowerCase();
     const next = String(nextStatus || "").trim().toLowerCase();
+    const quality = String(leadQuality || "").trim().toLowerCase();
+    const parse = String(parseStatus || "").trim().toLowerCase();
 
     if (prev === "verified") return "verified";
 
-    if (String(leadQuality || "").trim().toLowerCase() === "not_suitable") {
+    /**
+     * Regla clave fase 2:
+     * si ya fue marcado como no apto, NO se reactiva automáticamente
+     * por nuevos mensajes. Solo un humano lo cambia.
+     */
+    if (prev === "not_suitable") return "not_suitable";
+
+    if (quality === "not_suitable") {
         return "not_suitable";
     }
 
-    if (String(parseStatus || "").trim().toLowerCase() !== "ready") {
+    if (parse !== "ready") {
         return "incomplete";
     }
 
@@ -109,6 +118,23 @@ function pickBetterCoords(prevLat, prevLng, nextLat, nextLng, hasMapsInThisMessa
     return {
         lat: null,
         lng: null,
+    };
+}
+
+function buildHistoryClearPatchForVerificationStatus(verificationStatus) {
+    const status = safeString(verificationStatus || "");
+
+    /**
+     * Si sigue no apto, conservamos bucket/archivo persistido.
+     * Si no lo es, limpiamos historial persistido para que vuelva a cola activa.
+     */
+    if (status === "not_suitable") {
+        return {};
+    }
+
+    return {
+        leadHistoryArchivedAt: null,
+        leadHistoryBucket: null,
     };
 }
 
@@ -208,6 +234,7 @@ function createUpsertLeadAsClient({
             const payload = {
                 ...draftClient,
                 verificationStatus,
+                verificationStatusChangedAt: now,
                 verifiedAt: null,
                 verifiedBy: null,
                 manualReviewNote: null,
@@ -223,6 +250,7 @@ function createUpsertLeadAsClient({
                 updatedAt: now,
                 note: null,
                 rejectedReason: null,
+                rejectedReasonText: null,
 
                 source: "whatsapp_meta",
                 sourceRef: inboxRef.path,
@@ -250,6 +278,9 @@ function createUpsertLeadAsClient({
                 lastManualReplyAt: 0,
                 lastManualReplyText: "",
                 lastManualReplyBy: "",
+
+                leadHistoryArchivedAt: null,
+                leadHistoryBucket: null,
             };
 
             await newClientRef.set(stripUndefined(payload));
@@ -311,6 +342,8 @@ function createUpsertLeadAsClient({
             hasMapsInThisMessage
         );
 
+        const mergedLeadQuality = pickLeadQuality(prev.leadQuality, leadQuality);
+
         const mergedClientBase = {
             ...prev,
 
@@ -333,11 +366,15 @@ function createUpsertLeadAsClient({
             businessFlags: mergedBusinessFlags,
             profileFlags: mergedProfileFlags,
             profileType: pickProfileType(prev.profileType, profileType),
-            leadQuality: pickLeadQuality(prev.leadQuality, leadQuality),
+            leadQuality: mergedLeadQuality,
 
             notSuitableReason:
-                safeString(prev.notSuitableReason || "") ||
-                safeString(notSuitableReason || ""),
+                mergedLeadQuality === "not_suitable"
+                    ? (
+                        safeString(prev.notSuitableReason || "") ||
+                        safeString(notSuitableReason || "")
+                    )
+                    : "",
 
             address: pickBetterAddress(
                 prev.address,
@@ -367,15 +404,28 @@ function createUpsertLeadAsClient({
             leadQuality: mergedClientBase.leadQuality,
         });
 
+        const nextVerificationStatus = pickVerificationStatus(
+            prev.verificationStatus,
+            computedVerificationStatus,
+            mergedClientBase.leadQuality,
+            finalParseStatus
+        );
+
+        const prevVerificationStatus = safeString(prev.verificationStatus || "");
+        const verificationStatusChangedAt =
+            prevVerificationStatus !== safeString(nextVerificationStatus)
+                ? now
+                : safeNumber(prev.verificationStatusChangedAt, 0);
+
         const mergedClient = {
             ...mergedClientBase,
-            verificationStatus: pickVerificationStatus(
-                prev.verificationStatus,
-                computedVerificationStatus,
-                mergedClientBase.leadQuality,
-                finalParseStatus
-            ),
+            verificationStatus: nextVerificationStatus,
+            verificationStatusChangedAt,
         };
+
+        const historyPatch = buildHistoryClearPatchForVerificationStatus(
+            mergedClient.verificationStatus
+        );
 
         const patch = {
             updatedAt: now,
@@ -398,6 +448,7 @@ function createUpsertLeadAsClient({
             leadQuality: mergedClient.leadQuality,
             notSuitableReason: mergedClient.notSuitableReason,
             verificationStatus: mergedClient.verificationStatus,
+            verificationStatusChangedAt: mergedClient.verificationStatusChangedAt,
 
             address: mergedClient.address,
             mapsUrl: mergedClient.mapsUrl,
@@ -426,6 +477,8 @@ function createUpsertLeadAsClient({
             lastManualReplyAt: safeNumber(prev.lastManualReplyAt, 0),
             lastManualReplyText: safeString(prev.lastManualReplyText || ""),
             lastManualReplyBy: safeString(prev.lastManualReplyBy || ""),
+
+            ...historyPatch,
         };
 
         await found.ref.set(stripUndefined(patch), { merge: true });

@@ -26,7 +26,7 @@ export type UserDoc = {
      * El user puede actualizar esto (rules).
      */
     expoPushToken?: string | null;
-    expoPushTokenUpdatedAt?: number; // ms
+    expoPushTokenUpdatedAt?: number | null; // ms
 };
 
 // ----------------------
@@ -115,6 +115,11 @@ export type ClientVerificationStatus =
  * - hybrid: reservado para futuro
  */
 export type ClientChatMode = "bot" | "human" | "hybrid";
+
+/**
+ * ✅ Nuevo: bucket lógico para historial de leads
+ */
+export type ClientLeadHistoryBucket = "incomplete" | "not_suitable";
 
 export type ClientDoc = {
     id: string;
@@ -273,6 +278,20 @@ export type ClientDoc = {
     manualReviewNote?: string | null;
 
     /**
+     * ✅ Nuevo:
+     * cuándo entró al verificationStatus actual
+     */
+    verificationStatusChangedAt?: number | null;
+
+    /**
+     * ✅ Nuevo:
+     * flags persistidos de historial lógico
+     * (quedan listos para fase 2 / cron / backfill)
+     */
+    leadHistoryArchivedAt?: number | null;
+    leadHistoryBucket?: ClientLeadHistoryBucket | null;
+
+    /**
      * ✅ Nuevo: takeover humano / modo chat
      */
     chatMode?: ClientChatMode;
@@ -289,6 +308,12 @@ export type ClientDoc = {
     lastManualReplyAt?: number | null;
     lastManualReplyText?: string | null;
     lastManualReplyBy?: string | null;
+
+    /**
+     * ✅ Nuevo: cola admin / mensajes vistos
+     */
+    adminQueueLastSeenMessageAt?: number | null;
+    adminQueueSeenAt?: number | null;
 };
 
 // ----------------------
@@ -409,6 +434,7 @@ export type IncomingLeadDoc = {
     profileType?: ClientProfileType;
     leadQuality?: ClientLeadQuality;
     notSuitableReason?: string | null;
+    verificationStatus?: ClientVerificationStatus;
 
     /**
      * ✅ Si llegó ubicación de WhatsApp
