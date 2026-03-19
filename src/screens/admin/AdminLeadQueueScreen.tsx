@@ -76,6 +76,9 @@ type LeadRowVM = {
     searchBlob: string;
     hasNewInbound: boolean;
     historyBucket: "incomplete" | "not_suitable" | null;
+    cityLabel: string;
+    cityNormalized: string;
+    isOutOfCoverage: boolean;
 };
 
 const localSeenInboundMap: Record<string, number> = {};
@@ -104,8 +107,8 @@ function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
 }
 
-function safeText(x?: string) {
-    return (x ?? "").toLowerCase();
+function safeText(x?: string | null) {
+    return String(x ?? "").toLowerCase();
 }
 
 function safeNumber(v: any): number | null {
@@ -306,6 +309,41 @@ function useDebouncedValue<T>(value: T, delay = 250) {
     return debounced;
 }
 
+function stringOrEmpty(v: any) {
+    return String(v ?? "").trim();
+}
+
+function getCityLabel(c: ClientDoc) {
+    const direct =
+        stringOrEmpty((c as any)?.geoCityLabel) ||
+        stringOrEmpty((c as any)?.geoAdminDisplayLabel) ||
+        stringOrEmpty((c as any)?.geoAdminCityLabel) ||
+        stringOrEmpty((c as any)?.geoAdminStateLabel) ||
+        stringOrEmpty((c as any)?.cityLabel) ||
+        stringOrEmpty((c as any)?.leadCityLabel);
+
+    return direct;
+}
+
+function getCityNormalized(c: ClientDoc) {
+    return (
+        stringOrEmpty((c as any)?.geoCityNormalized) ||
+        stringOrEmpty((c as any)?.geoAdminCityNormalized) ||
+        stringOrEmpty((c as any)?.geoAdminStateNormalized) ||
+        stringOrEmpty((c as any)?.cityNormalized) ||
+        stringOrEmpty((c as any)?.leadCityNormalized)
+    );
+}
+
+function getCityOutOfCoverage(c: ClientDoc) {
+    const v =
+        (c as any)?.geoOutOfCoverage ??
+        (c as any)?.cityOutOfCoverage ??
+        false;
+
+    return v === true;
+}
+
 function buildLeadVM(c: ClientDoc): LeadRowVM {
     const verificationStatus = getDerivedVerificationStatus(c);
     const createdAtMs = toMs((c as any)?.createdAt);
@@ -328,6 +366,9 @@ function buildLeadVM(c: ClientDoc): LeadRowVM {
     const verificationLabel = getVerificationStatusLabel(verificationStatus);
     const baseDateMs = getClientRelevantLeadActivityAt(c);
     const historyBucket = getClientLeadHistoryBucket(c);
+    const cityLabel = getCityLabel(c);
+    const cityNormalized = getCityNormalized(c);
+    const isOutOfCoverage = getCityOutOfCoverage(c);
 
     const searchBlob = `
         ${safeText(name)}
@@ -339,6 +380,10 @@ function buildLeadVM(c: ClientDoc): LeadRowVM {
         ${safeText(notSuitableReason)}
         ${safeText(quickStatusText)}
         ${safeText(lastInboundText)}
+        ${safeText(cityLabel)}
+        ${safeText(cityNormalized)}
+        ${safeText((c as any)?.geoAdminStateLabel)}
+        ${safeText((c as any)?.geoAdminDisplayLabel)}
     `;
 
     return {
@@ -362,6 +407,9 @@ function buildLeadVM(c: ClientDoc): LeadRowVM {
         searchBlob,
         hasNewInbound,
         historyBucket,
+        cityLabel,
+        cityNormalized,
+        isOutOfCoverage,
     };
 }
 
@@ -435,6 +483,34 @@ const LeadCard = memo(function LeadCard({
                             {item.subtitle}
                         </Text>
                     ) : null}
+
+                    {!!item.cityLabel ? (
+                        <View
+                            style={[
+                                styles.cityPill,
+                                item.isOutOfCoverage && styles.cityPillOut,
+                            ]}
+                        >
+                            <Ionicons
+                                name={
+                                    item.isOutOfCoverage
+                                        ? "alert-circle-outline"
+                                        : "location-outline"
+                                }
+                                size={12}
+                                color={item.isOutOfCoverage ? "#FDE68A" : "#93C5FD"}
+                            />
+                            <Text
+                                style={[
+                                    styles.cityPillText,
+                                    item.isOutOfCoverage && styles.cityPillTextOut,
+                                ]}
+                                numberOfLines={1}
+                            >
+                                {item.cityLabel}
+                            </Text>
+                        </View>
+                    ) : null}
                 </View>
 
                 <Pressable
@@ -482,7 +558,11 @@ const LeadCard = memo(function LeadCard({
                     ]}
                 >
                     <View style={styles.inboundHeader}>
-                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={COLORS.muted} />
+                        <Ionicons
+                            name="chatbubble-ellipses-outline"
+                            size={13}
+                            color={COLORS.muted}
+                        />
                         <Text style={styles.inboundTitle}>Último mensaje recibido</Text>
 
                         <View style={styles.inboundOpenPill}>
@@ -625,7 +705,8 @@ export default function AdminLeadQueueScreen() {
     const [ePhone, setEPhone] = useState("");
     const [eMapsUrl, setEMapsUrl] = useState("");
     const [eAddress, setEAddress] = useState("");
-    const [eVerificationStatus, setEVerificationStatus] = useState<VerificationStatus>("pending_review");
+    const [eVerificationStatus, setEVerificationStatus] =
+        useState<VerificationStatus>("pending_review");
     const [eNotSuitableReason, setENotSuitableReason] = useState("");
     const [eSaving, setESaving] = useState(false);
 
@@ -827,14 +908,17 @@ export default function AdminLeadQueueScreen() {
         return Array.from(map.values());
     }, [queueClients, historyBaseClients]);
 
-    const phoneExists = useCallback((phoneDigits: string, excludeId?: string | null) => {
-        const p = normalizePhone(phoneDigits);
-        if (!p) return false;
-        return allKnownClients.some((c) => {
-            if (excludeId && c.id === excludeId) return false;
-            return normalizePhone(c.phone ?? "") === p;
-        });
-    }, [allKnownClients]);
+    const phoneExists = useCallback(
+        (phoneDigits: string, excludeId?: string | null) => {
+            const p = normalizePhone(phoneDigits);
+            if (!p) return false;
+            return allKnownClients.some((c) => {
+                if (excludeId && c.id === excludeId) return false;
+                return normalizePhone(c.phone ?? "") === p;
+            });
+        },
+        [allKnownClients]
+    );
 
     const openMaps = useCallback(async (url?: string) => {
         const u = (url ?? "").trim();
@@ -867,7 +951,10 @@ export default function AdminLeadQueueScreen() {
         const lastInboundAt = vm.lastInboundAtMs;
         if (!lastInboundAt) return;
 
-        localSeenInboundMap[vm.id] = Math.max(localSeenInboundMap[vm.id] ?? 0, lastInboundAt);
+        localSeenInboundMap[vm.id] = Math.max(
+            localSeenInboundMap[vm.id] ?? 0,
+            lastInboundAt
+        );
 
         void updateClientFields(vm.id, {
             adminQueueLastSeenMessageAt: lastInboundAt,
@@ -877,169 +964,197 @@ export default function AdminLeadQueueScreen() {
         });
     }, []);
 
-    const openChatScreen = useCallback((clientId: string) => {
-        const vm = vmById[clientId];
-        if (!vm) return;
+    const openChatScreen = useCallback(
+        (clientId: string) => {
+            const vm = vmById[clientId];
+            if (!vm) return;
 
-        const clientName = vm.name || vm.phone || "Lead";
-        markClientSeenInstant(vm);
+            const clientName = vm.name || vm.phone || "Lead";
+            markClientSeenInstant(vm);
 
-        router.push({
-            pathname: "/admin/lead-chat" as any,
-            params: {
-                clientId: vm.id,
-                clientName,
-            },
-        });
-    }, [markClientSeenInstant, router, vmById]);
+            router.push({
+                pathname: "/admin/lead-chat" as any,
+                params: {
+                    clientId: vm.id,
+                    clientName,
+                },
+            });
+        },
+        [markClientSeenInstant, router, vmById]
+    );
 
     const goToHistory = useCallback(() => {
         closeActionSheet();
         router.push("/admin/lead-history" as any);
     }, [closeActionSheet, router]);
 
-    const confirmDelete = useCallback((id: string) => {
-        closeActionSheet();
-        Alert.alert("Eliminar lead", "¿Seguro que quieres eliminar este lead?", [
-            { text: "Cancelar", style: "cancel" },
-            {
-                text: "Eliminar",
-                style: "destructive",
-                onPress: async () => {
-                    try {
-                        await deleteClient(id);
-                    } catch (e: any) {
-                        Alert.alert("Error", e?.message ?? "No se pudo eliminar");
-                    }
-                },
-            },
-        ]);
-    }, [closeActionSheet]);
-
-    const openAssignPicker = useCallback(async (clientId: string) => {
-        closeActionSheet();
-        if (!users.length && !usersLoading) await reloadUsers();
-        setPickerTargetClientId(clientId);
-        setPickerQuery("");
-        setUserPickerOpen(true);
-    }, [closeActionSheet, reloadUsers, users.length, usersLoading]);
-
-    const onPickUser = useCallback(async (u: UserDoc) => {
-        const clientId = pickerTargetClientId;
-        setUserPickerOpen(false);
-        if (!clientId) return;
-
-        Alert.alert(
-            "Confirmar asignación",
-            `¿Asignar este lead a ${u.name || u.email || "este usuario"}?\n\nAl asignarlo, pasará automáticamente a verificado.`,
-            [
-                { text: "Cancelar", style: "cancel", onPress: () => setPickerTargetClientId(null) },
+    const confirmDelete = useCallback(
+        (id: string) => {
+            closeActionSheet();
+            Alert.alert("Eliminar lead", "¿Seguro que quieres eliminar este lead?", [
+                { text: "Cancelar", style: "cancel" },
                 {
-                    text: "Asignar",
+                    text: "Eliminar",
+                    style: "destructive",
                     onPress: async () => {
                         try {
-                            setBusyId(clientId);
-
-                            await updateClientFields(clientId, {
-                                verificationStatus: "verified",
-                                leadQuality: "valid",
-                                notSuitableReason: "",
-                                verifiedAt: Date.now(),
-                                updatedAt: Date.now(),
-                            } as any);
-
-                            await assignClient(clientId, u.id);
+                            await deleteClient(id);
                         } catch (e: any) {
-                            Alert.alert("Error", e?.message ?? "No se pudo asignar");
-                        } finally {
-                            setBusyId(null);
-                            setPickerTargetClientId(null);
+                            Alert.alert("Error", e?.message ?? "No se pudo eliminar");
                         }
                     },
                 },
-            ]
-        );
-    }, [pickerTargetClientId]);
+            ]);
+        },
+        [closeActionSheet]
+    );
 
-    const applyVerificationStatus = useCallback(async (
-        clientId: string,
-        nextStatus: Exclude<VerificationStatus, "verified">,
-        reason?: string
-    ) => {
-        try {
-            setBusyId(clientId);
+    const openAssignPicker = useCallback(
+        async (clientId: string) => {
+            closeActionSheet();
+            if (!users.length && !usersLoading) await reloadUsers();
+            setPickerTargetClientId(clientId);
+            setPickerQuery("");
+            setUserPickerOpen(true);
+        },
+        [closeActionSheet, reloadUsers, users.length, usersLoading]
+    );
+
+    const onPickUser = useCallback(
+        async (u: UserDoc) => {
+            const clientId = pickerTargetClientId;
+            setUserPickerOpen(false);
+            if (!clientId) return;
+
+            Alert.alert(
+                "Confirmar asignación",
+                `¿Asignar este lead a ${u.name || u.email || "este usuario"}?\n\nAl asignarlo, pasará automáticamente a verificado.`,
+                [
+                    {
+                        text: "Cancelar",
+                        style: "cancel",
+                        onPress: () => setPickerTargetClientId(null),
+                    },
+                    {
+                        text: "Asignar",
+                        onPress: async () => {
+                            try {
+                                setBusyId(clientId);
+
+                                await updateClientFields(clientId, {
+                                    verificationStatus: "verified",
+                                    leadQuality: "valid",
+                                    notSuitableReason: "",
+                                    verifiedAt: Date.now(),
+                                    updatedAt: Date.now(),
+                                } as any);
+
+                                await assignClient(clientId, u.id);
+                            } catch (e: any) {
+                                Alert.alert("Error", e?.message ?? "No se pudo asignar");
+                            } finally {
+                                setBusyId(null);
+                                setPickerTargetClientId(null);
+                            }
+                        },
+                    },
+                ]
+            );
+        },
+        [pickerTargetClientId]
+    );
+
+    const applyVerificationStatus = useCallback(
+        async (
+            clientId: string,
+            nextStatus: Exclude<VerificationStatus, "verified">,
+            reason?: string
+        ) => {
+            try {
+                setBusyId(clientId);
+                closeActionSheet();
+
+                const patch: any = {
+                    verificationStatus: nextStatus,
+                    updatedAt: Date.now(),
+                };
+
+                if (nextStatus === "not_suitable") {
+                    patch.leadQuality = "not_suitable";
+                    patch.notSuitableReason = reason?.trim() || "Perfil no apto";
+                } else {
+                    patch.leadQuality = "review";
+                    patch.notSuitableReason = "";
+                }
+
+                await updateClientFields(clientId, patch);
+            } catch (e: any) {
+                Alert.alert("Error", e?.message ?? "No se pudo actualizar");
+            } finally {
+                setBusyId(null);
+            }
+        },
+        [closeActionSheet]
+    );
+
+    const confirmVerificationStatusChange = useCallback(
+        (
+            clientId: string,
+            nextStatus: Exclude<VerificationStatus, "verified">,
+            reason?: string
+        ) => {
             closeActionSheet();
 
-            const patch: any = {
-                verificationStatus: nextStatus,
-                updatedAt: Date.now(),
-            };
+            const title =
+                nextStatus === "pending_review"
+                    ? "Marcar por revisar"
+                    : nextStatus === "incomplete"
+                        ? "Marcar incompleto"
+                        : "Marcar no apto";
 
-            if (nextStatus === "not_suitable") {
-                patch.leadQuality = "not_suitable";
-                patch.notSuitableReason = reason?.trim() || "Perfil no apto";
-            } else {
-                patch.leadQuality = "review";
-                patch.notSuitableReason = "";
-            }
+            const description =
+                nextStatus === "pending_review"
+                    ? "¿Seguro que quieres mover este lead a Por revisar?"
+                    : nextStatus === "incomplete"
+                        ? "¿Seguro que quieres mover este lead a Incompleto?"
+                        : `¿Seguro que quieres mover este lead a No apto${reason ? `?\n\nMotivo: ${reason}` : "?"
+                        }`;
 
-            await updateClientFields(clientId, patch);
-        } catch (e: any) {
-            Alert.alert("Error", e?.message ?? "No se pudo actualizar");
-        } finally {
-            setBusyId(null);
-        }
-    }, [closeActionSheet]);
-
-    const confirmVerificationStatusChange = useCallback((
-        clientId: string,
-        nextStatus: Exclude<VerificationStatus, "verified">,
-        reason?: string
-    ) => {
-        closeActionSheet();
-
-        const title =
-            nextStatus === "pending_review"
-                ? "Marcar por revisar"
-                : nextStatus === "incomplete"
-                    ? "Marcar incompleto"
-                    : "Marcar no apto";
-
-        const description =
-            nextStatus === "pending_review"
-                ? "¿Seguro que quieres mover este lead a Por revisar?"
-                : nextStatus === "incomplete"
-                    ? "¿Seguro que quieres mover este lead a Incompleto?"
-                    : `¿Seguro que quieres mover este lead a No apto${reason ? `?\n\nMotivo: ${reason}` : "?"}`;
-
-        Alert.alert(title, description, [
-            { text: "Cancelar", style: "cancel" },
-            {
-                text: "Confirmar",
-                onPress: () => {
-                    void applyVerificationStatus(clientId, nextStatus, reason);
+            Alert.alert(title, description, [
+                { text: "Cancelar", style: "cancel" },
+                {
+                    text: "Confirmar",
+                    onPress: () => {
+                        void applyVerificationStatus(clientId, nextStatus, reason);
+                    },
                 },
-            },
-        ]);
-    }, [applyVerificationStatus, closeActionSheet]);
+            ]);
+        },
+        [applyVerificationStatus, closeActionSheet]
+    );
 
-    const startEdit = useCallback((vm: LeadRowVM) => {
-        closeActionSheet();
-        const c = vm.raw;
+    const startEdit = useCallback(
+        (vm: LeadRowVM) => {
+            closeActionSheet();
+            const c = vm.raw;
 
-        setEditingId(c.id);
-        setEName(((c as any).name ?? "").toString());
-        setEBusiness(((c as any).business ?? "").toString());
-        setEBusinessRaw(((c as any).businessRaw ?? "").toString());
-        setEPhone((c.phone ?? "").toString());
-        setEMapsUrl((c.mapsUrl ?? "").toString());
-        setEAddress((c.address ?? "").toString());
+            setEditingId(c.id);
+            setEName(((c as any).name ?? "").toString());
+            setEBusiness(((c as any).business ?? "").toString());
+            setEBusinessRaw(((c as any).businessRaw ?? "").toString());
+            setEPhone((c.phone ?? "").toString());
+            setEMapsUrl((c.mapsUrl ?? "").toString());
+            setEAddress((c.address ?? "").toString());
 
-        const derivedStatus = getDerivedVerificationStatus(c);
-        setEVerificationStatus(derivedStatus === "verified" ? "pending_review" : derivedStatus);
-        setENotSuitableReason(getNotSuitableReason(c));
-        setEditOpen(true);
-    }, [closeActionSheet]);
+            const derivedStatus = getDerivedVerificationStatus(c);
+            setEVerificationStatus(
+                derivedStatus === "verified" ? "pending_review" : derivedStatus
+            );
+            setENotSuitableReason(getNotSuitableReason(c));
+            setEditOpen(true);
+        },
+        [closeActionSheet]
+    );
 
     const cancelEdit = useCallback(() => {
         setEditOpen(false);
@@ -1111,11 +1226,10 @@ export default function AdminLeadQueueScreen() {
                 currentLeadMapsConfirmedAt: now,
                 parseStatus: finalBusiness && cleanMaps ? "ready" : "partial",
                 verificationStatus: eVerificationStatus,
-                notSuitableReason: eVerificationStatus === "not_suitable" ? cleanNotSuitableReason : "",
+                notSuitableReason:
+                    eVerificationStatus === "not_suitable" ? cleanNotSuitableReason : "",
                 leadQuality:
-                    eVerificationStatus === "not_suitable"
-                        ? "not_suitable"
-                        : "review",
+                    eVerificationStatus === "not_suitable" ? "not_suitable" : "review",
                 verifiedAt: null,
             };
 
@@ -1152,21 +1266,24 @@ export default function AdminLeadQueueScreen() {
 
     const selectedVm = actionSheet.clientId ? vmById[actionSheet.clientId] : null;
 
-    const renderItem = useCallback<ListRenderItem<string>>(({ item: id }) => {
-        const vm = vmById[id];
-        if (!vm) return null;
+    const renderItem = useCallback<ListRenderItem<string>>(
+        ({ item: id }) => {
+            const vm = vmById[id];
+            if (!vm) return null;
 
-        return (
-            <LeadCard
-                item={vm}
-                isBusy={busyId === id}
-                onOpenActions={(clientId) => setActionSheet({ open: true, clientId })}
-                onOpenMaps={openMaps}
-                onOpenWsp={openWsp}
-                onOpenChat={openChatScreen}
-            />
-        );
-    }, [vmById, busyId, openMaps, openWsp, openChatScreen]);
+            return (
+                <LeadCard
+                    item={vm}
+                    isBusy={busyId === id}
+                    onOpenActions={(clientId) => setActionSheet({ open: true, clientId })}
+                    onOpenMaps={openMaps}
+                    onOpenWsp={openWsp}
+                    onOpenChat={openChatScreen}
+                />
+            );
+        },
+        [vmById, busyId, openMaps, openWsp, openChatScreen]
+    );
 
     const keyExtractor = useCallback((id: string) => id, []);
 
@@ -1175,13 +1292,19 @@ export default function AdminLeadQueueScreen() {
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
             <AdminBackground>
                 <View style={styles.screenOverlay}>
-                    <View style={[styles.header, { paddingTop: Math.max(10, insets.top * 0.35) }]}>
+                    <View
+                        style={[
+                            styles.header,
+                            { paddingTop: Math.max(10, insets.top * 0.35) },
+                        ]}
+                    >
                         <View style={{ flex: 1, gap: 3 }}>
                             <Text style={styles.hTitle} numberOfLines={1}>
                                 Leads Meta
                             </Text>
                             <Text style={styles.hSub} numberOfLines={1}>
-                                Cola activa · visibles <Text style={styles.hStrong}>{filteredIds.length}</Text> · total{" "}
+                                Cola activa · visibles{" "}
+                                <Text style={styles.hStrong}>{filteredIds.length}</Text> · total{" "}
                                 <Text style={styles.hStrong}>{visibleTotal}</Text>
                             </Text>
                         </View>
@@ -1195,7 +1318,9 @@ export default function AdminLeadQueueScreen() {
                             accessibilityLabel="Abrir historial de leads"
                         >
                             <Ionicons name="archive-outline" size={17} color={COLORS.text} />
-                            <Text style={styles.headerHistoryBtnText}>{historyCandidates.length}</Text>
+                            <Text style={styles.headerHistoryBtnText}>
+                                {historyCandidates.length}
+                            </Text>
                         </Pressable>
 
                         <Pressable
@@ -1221,7 +1346,7 @@ export default function AdminLeadQueueScreen() {
                         <TextInput
                             value={q}
                             onChangeText={setQ}
-                            placeholder="Buscar lead, teléfono, negocio, dirección..."
+                            placeholder="Buscar lead, teléfono, negocio, dirección, ciudad..."
                             placeholderTextColor={COLORS.muted}
                             style={styles.searchInput}
                         />
@@ -1239,19 +1364,25 @@ export default function AdminLeadQueueScreen() {
                                     onPress={() => setQueueScope("today")}
                                     style={({ pressed }) => [
                                         styles.secondaryFilterPill,
-                                        queueScope === "today" && styles.secondaryFilterPillActive,
+                                        queueScope === "today" &&
+                                        styles.secondaryFilterPillActive,
                                         pressed && styles.pressed,
                                     ]}
                                 >
                                     <Ionicons
                                         name="today-outline"
                                         size={13}
-                                        color={queueScope === "today" ? "#93C5FD" : COLORS.muted}
+                                        color={
+                                            queueScope === "today"
+                                                ? "#93C5FD"
+                                                : COLORS.muted
+                                        }
                                     />
                                     <Text
                                         style={[
                                             styles.secondaryFilterPillText,
-                                            queueScope === "today" && styles.secondaryFilterPillTextActive,
+                                            queueScope === "today" &&
+                                            styles.secondaryFilterPillTextActive,
                                         ]}
                                     >
                                         Hoy
@@ -1259,7 +1390,8 @@ export default function AdminLeadQueueScreen() {
                                     <Text
                                         style={[
                                             styles.secondaryFilterPillCount,
-                                            queueScope === "today" && styles.secondaryFilterPillCountActive,
+                                            queueScope === "today" &&
+                                            styles.secondaryFilterPillCountActive,
                                         ]}
                                     >
                                         {currentScopeTodayCount}
@@ -1270,19 +1402,25 @@ export default function AdminLeadQueueScreen() {
                                     onPress={() => setQueueScope("all")}
                                     style={({ pressed }) => [
                                         styles.secondaryFilterPill,
-                                        queueScope === "all" && styles.secondaryFilterPillActive,
+                                        queueScope === "all" &&
+                                        styles.secondaryFilterPillActive,
                                         pressed && styles.pressed,
                                     ]}
                                 >
                                     <Ionicons
                                         name="albums-outline"
                                         size={13}
-                                        color={queueScope === "all" ? "#93C5FD" : COLORS.muted}
+                                        color={
+                                            queueScope === "all"
+                                                ? "#93C5FD"
+                                                : COLORS.muted
+                                        }
                                     />
                                     <Text
                                         style={[
                                             styles.secondaryFilterPillText,
-                                            queueScope === "all" && styles.secondaryFilterPillTextActive,
+                                            queueScope === "all" &&
+                                            styles.secondaryFilterPillTextActive,
                                         ]}
                                     >
                                         Todos
@@ -1290,7 +1428,8 @@ export default function AdminLeadQueueScreen() {
                                     <Text
                                         style={[
                                             styles.secondaryFilterPillCount,
-                                            queueScope === "all" && styles.secondaryFilterPillCountActive,
+                                            queueScope === "all" &&
+                                            styles.secondaryFilterPillCountActive,
                                         ]}
                                     >
                                         {currentScopeAllCount}
@@ -1313,9 +1452,14 @@ export default function AdminLeadQueueScreen() {
                                 { paddingBottom: 130 + insets.bottom },
                             ]}
                             onScrollBeginDrag={closeActionSheet}
+
                             ListEmptyComponent={
                                 <View style={styles.empty}>
-                                    <Ionicons name="file-tray-outline" size={22} color={COLORS.muted} />
+                                    <Ionicons
+                                        name="file-tray-outline"
+                                        size={22}
+                                        color={COLORS.muted}
+                                    />
                                     <Text style={styles.emptyText}>
                                         {debouncedQ.trim()
                                             ? "No hay resultados."
@@ -1393,7 +1537,10 @@ export default function AdminLeadQueueScreen() {
                         onRequestClose={closeActionSheet}
                     >
                         <View style={styles.sheetOverlay}>
-                            <Pressable style={StyleSheet.absoluteFillObject} onPress={closeActionSheet} />
+                            <Pressable
+                                style={StyleSheet.absoluteFillObject}
+                                onPress={closeActionSheet}
+                            />
                             <View style={styles.sheetWrap}>
                                 <View style={styles.sheetHandle} />
 
@@ -1409,23 +1556,47 @@ export default function AdminLeadQueueScreen() {
                                 <Pressable
                                     onPress={() => {
                                         if (!selectedVm) return;
-                                        confirmVerificationStatusChange(selectedVm.id, "pending_review");
+                                        confirmVerificationStatusChange(
+                                            selectedVm.id,
+                                            "pending_review"
+                                        );
                                     }}
-                                    style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.sheetItem,
+                                        pressed && styles.pressed,
+                                    ]}
                                 >
-                                    <Ionicons name="shield-checkmark-outline" size={17} color="#93C5FD" />
-                                    <Text style={styles.sheetItemText}>Marcar por revisar</Text>
+                                    <Ionicons
+                                        name="shield-checkmark-outline"
+                                        size={17}
+                                        color="#93C5FD"
+                                    />
+                                    <Text style={styles.sheetItemText}>
+                                        Marcar por revisar
+                                    </Text>
                                 </Pressable>
 
                                 <Pressable
                                     onPress={() => {
                                         if (!selectedVm) return;
-                                        confirmVerificationStatusChange(selectedVm.id, "incomplete");
+                                        confirmVerificationStatusChange(
+                                            selectedVm.id,
+                                            "incomplete"
+                                        );
                                     }}
-                                    style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.sheetItem,
+                                        pressed && styles.pressed,
+                                    ]}
                                 >
-                                    <Ionicons name="alert-circle-outline" size={17} color="#FDE68A" />
-                                    <Text style={styles.sheetItemText}>Marcar incompleto</Text>
+                                    <Ionicons
+                                        name="alert-circle-outline"
+                                        size={17}
+                                        color="#FDE68A"
+                                    />
+                                    <Text style={styles.sheetItemText}>
+                                        Marcar incompleto
+                                    </Text>
                                 </Pressable>
 
                                 <Pressable
@@ -1437,10 +1608,19 @@ export default function AdminLeadQueueScreen() {
                                             selectedVm.notSuitableReason || "Perfil no apto"
                                         );
                                     }}
-                                    style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.sheetItem,
+                                        pressed && styles.pressed,
+                                    ]}
                                 >
-                                    <Ionicons name="ban-outline" size={17} color="#FCA5A5" />
-                                    <Text style={styles.sheetItemText}>Marcar no apto</Text>
+                                    <Ionicons
+                                        name="ban-outline"
+                                        size={17}
+                                        color="#FCA5A5"
+                                    />
+                                    <Text style={styles.sheetItemText}>
+                                        Marcar no apto
+                                    </Text>
                                 </Pressable>
 
                                 <Pressable
@@ -1448,10 +1628,19 @@ export default function AdminLeadQueueScreen() {
                                         if (!selectedVm) return;
                                         void openAssignPicker(selectedVm.id);
                                     }}
-                                    style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.sheetItem,
+                                        pressed && styles.pressed,
+                                    ]}
                                 >
-                                    <Ionicons name="person-add-outline" size={17} color={COLORS.text} />
-                                    <Text style={styles.sheetItemText}>Asignar a usuario</Text>
+                                    <Ionicons
+                                        name="person-add-outline"
+                                        size={17}
+                                        color={COLORS.text}
+                                    />
+                                    <Text style={styles.sheetItemText}>
+                                        Asignar a usuario
+                                    </Text>
                                 </Pressable>
 
                                 <Pressable
@@ -1459,9 +1648,16 @@ export default function AdminLeadQueueScreen() {
                                         if (!selectedVm) return;
                                         startEdit(selectedVm);
                                     }}
-                                    style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.sheetItem,
+                                        pressed && styles.pressed,
+                                    ]}
                                 >
-                                    <Ionicons name="create-outline" size={17} color={COLORS.text} />
+                                    <Ionicons
+                                        name="create-outline"
+                                        size={17}
+                                        color={COLORS.text}
+                                    />
                                     <Text style={styles.sheetItemText}>Editar lead</Text>
                                 </Pressable>
 
@@ -1470,10 +1666,24 @@ export default function AdminLeadQueueScreen() {
                                         if (!selectedVm) return;
                                         confirmDelete(selectedVm.id);
                                     }}
-                                    style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
+                                    style={({ pressed }) => [
+                                        styles.sheetItem,
+                                        pressed && styles.pressed,
+                                    ]}
                                 >
-                                    <Ionicons name="trash-outline" size={17} color={COLORS.rejected} />
-                                    <Text style={[styles.sheetItemText, { color: "#FCA5A5" }]}>Eliminar lead</Text>
+                                    <Ionicons
+                                        name="trash-outline"
+                                        size={17}
+                                        color={COLORS.rejected}
+                                    />
+                                    <Text
+                                        style={[
+                                            styles.sheetItemText,
+                                            { color: "#FCA5A5" },
+                                        ]}
+                                    >
+                                        Eliminar lead
+                                    </Text>
                                 </Pressable>
                             </View>
                         </View>
@@ -1489,14 +1699,26 @@ export default function AdminLeadQueueScreen() {
                             <View style={styles.inlineModalWrap}>
                                 <View style={styles.modalCardBig}>
                                     <View style={styles.modalHeader}>
-                                        <Text style={styles.modalTitle}>Editar lead Meta</Text>
-                                        <Pressable onPress={cancelEdit} style={styles.modalClose}>
-                                            <Ionicons name="close" size={18} color={COLORS.text} />
+                                        <Text style={styles.modalTitle}>
+                                            Editar lead Meta
+                                        </Text>
+                                        <Pressable
+                                            onPress={cancelEdit}
+                                            style={styles.modalClose}
+                                        >
+                                            <Ionicons
+                                                name="close"
+                                                size={18}
+                                                color={COLORS.text}
+                                            />
                                         </Pressable>
                                     </View>
 
                                     <ScrollView
-                                        contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
+                                        contentContainerStyle={{
+                                            gap: 10,
+                                            paddingBottom: 6,
+                                        }}
                                         showsVerticalScrollIndicator={false}
                                         keyboardShouldPersistTaps="handled"
                                     >
@@ -1525,7 +1747,9 @@ export default function AdminLeadQueueScreen() {
                                         </View>
 
                                         <View style={styles.field}>
-                                            <Text style={styles.label}>Negocio original / bruto</Text>
+                                            <Text style={styles.label}>
+                                                Negocio original / bruto
+                                            </Text>
                                             <TextInput
                                                 value={eBusinessRaw}
                                                 onChangeText={setEBusinessRaw}
@@ -1575,21 +1799,40 @@ export default function AdminLeadQueueScreen() {
                                         <View style={styles.field}>
                                             <Text style={styles.label}>Estado en cola</Text>
                                             <View style={styles.segmentRow}>
-                                                {(["pending_review", "incomplete", "not_suitable"] as Exclude<VerificationStatus, "verified">[]).map((s) => {
+                                                {(
+                                                    [
+                                                        "pending_review",
+                                                        "incomplete",
+                                                        "not_suitable",
+                                                    ] as Exclude<
+                                                        VerificationStatus,
+                                                        "verified"
+                                                    >[]
+                                                ).map((s) => {
                                                     const active = eVerificationStatus === s;
-                                                    const label = getVerificationStatusFilterLabel(s);
+                                                    const label =
+                                                        getVerificationStatusFilterLabel(s);
 
                                                     return (
                                                         <Pressable
                                                             key={s}
-                                                            onPress={() => setEVerificationStatus(s)}
+                                                            onPress={() =>
+                                                                setEVerificationStatus(s)
+                                                            }
                                                             style={({ pressed }) => [
                                                                 styles.segmentPill,
-                                                                active && styles.segmentPillActive,
+                                                                active &&
+                                                                styles.segmentPillActive,
                                                                 pressed && styles.pressed,
                                                             ]}
                                                         >
-                                                            <Text style={[styles.segmentPillText, active && styles.segmentPillTextActive]}>
+                                                            <Text
+                                                                style={[
+                                                                    styles.segmentPillText,
+                                                                    active &&
+                                                                    styles.segmentPillTextActive,
+                                                                ]}
+                                                            >
                                                                 {label}
                                                             </Text>
                                                         </Pressable>
@@ -1600,7 +1843,9 @@ export default function AdminLeadQueueScreen() {
 
                                         {eVerificationStatus === "not_suitable" ? (
                                             <View style={styles.field}>
-                                                <Text style={styles.label}>Motivo no apto *</Text>
+                                                <Text style={styles.label}>
+                                                    Motivo no apto *
+                                                </Text>
                                                 <TextInput
                                                     value={eNotSuitableReason}
                                                     onChangeText={setENotSuitableReason}
@@ -1614,11 +1859,20 @@ export default function AdminLeadQueueScreen() {
                                         <View style={{ flexDirection: "row", gap: 10 }}>
                                             <Pressable
                                                 onPress={cancelEdit}
-                                                style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
+                                                style={({ pressed }) => [
+                                                    styles.ghostBtn,
+                                                    pressed && styles.btnPressed,
+                                                ]}
                                                 disabled={eSaving}
                                             >
-                                                <Ionicons name="close-outline" size={18} color={COLORS.text} />
-                                                <Text style={styles.ghostBtnText}>Cancelar</Text>
+                                                <Ionicons
+                                                    name="close-outline"
+                                                    size={18}
+                                                    color={COLORS.text}
+                                                />
+                                                <Text style={styles.ghostBtnText}>
+                                                    Cancelar
+                                                </Text>
                                             </Pressable>
 
                                             <Pressable
@@ -1630,7 +1884,11 @@ export default function AdminLeadQueueScreen() {
                                                 ]}
                                                 disabled={eSaving}
                                             >
-                                                <Ionicons name="save-outline" size={18} color="#fff" />
+                                                <Ionicons
+                                                    name="save-outline"
+                                                    size={18}
+                                                    color="#fff"
+                                                />
                                                 <Text style={styles.primaryBtnText}>
                                                     {eSaving ? "Guardando..." : "Guardar"}
                                                 </Text>
@@ -1652,17 +1910,27 @@ export default function AdminLeadQueueScreen() {
                             <View style={styles.pickerWrap}>
                                 <View style={styles.pickerCard}>
                                     <View style={styles.modalHeader}>
-                                        <Text style={styles.modalTitle}>Asignar lead a</Text>
+                                        <Text style={styles.modalTitle}>
+                                            Asignar lead a
+                                        </Text>
                                         <Pressable
                                             onPress={() => setUserPickerOpen(false)}
                                             style={styles.modalClose}
                                         >
-                                            <Ionicons name="close" size={18} color={COLORS.text} />
+                                            <Ionicons
+                                                name="close"
+                                                size={18}
+                                                color={COLORS.text}
+                                            />
                                         </Pressable>
                                     </View>
 
                                     <View style={styles.searchWrapModal}>
-                                        <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                                        <Ionicons
+                                            name="search-outline"
+                                            size={18}
+                                            color={COLORS.muted}
+                                        />
                                         <TextInput
                                             value={pickerQuery}
                                             onChangeText={setPickerQuery}
@@ -1671,14 +1939,24 @@ export default function AdminLeadQueueScreen() {
                                             style={styles.searchInput}
                                         />
                                         {!!pickerQuery ? (
-                                            <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
-                                                <Ionicons name="close" size={18} color={COLORS.text} />
+                                            <Pressable
+                                                onPress={() => setPickerQuery("")}
+                                                style={styles.clearBtn}
+                                            >
+                                                <Ionicons
+                                                    name="close"
+                                                    size={18}
+                                                    color={COLORS.text}
+                                                />
                                             </Pressable>
                                         ) : null}
                                     </View>
 
                                     <ScrollView
-                                        contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
+                                        contentContainerStyle={{
+                                            gap: 10,
+                                            paddingBottom: 6,
+                                        }}
                                         showsVerticalScrollIndicator={false}
                                         keyboardShouldPersistTaps="handled"
                                     >
@@ -1686,28 +1964,47 @@ export default function AdminLeadQueueScreen() {
                                             <Pressable
                                                 key={u.id}
                                                 onPress={() => void onPickUser(u)}
-                                                style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
+                                                style={({ pressed }) => [
+                                                    styles.userRow,
+                                                    pressed && styles.userRowPressed,
+                                                ]}
                                             >
                                                 <View style={styles.userAvatar}>
-                                                    <Ionicons name="person-outline" size={18} color={COLORS.text} />
+                                                    <Ionicons
+                                                        name="person-outline"
+                                                        size={18}
+                                                        color={COLORS.text}
+                                                    />
                                                 </View>
 
                                                 <View style={{ flex: 1 }}>
-                                                    <Text style={styles.userName} numberOfLines={1}>
+                                                    <Text
+                                                        style={styles.userName}
+                                                        numberOfLines={1}
+                                                    >
                                                         {u.name}
                                                     </Text>
-                                                    <Text style={styles.userEmail} numberOfLines={1}>
+                                                    <Text
+                                                        style={styles.userEmail}
+                                                        numberOfLines={1}
+                                                    >
                                                         {u.email}
                                                     </Text>
                                                 </View>
 
-                                                <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
+                                                <Ionicons
+                                                    name="chevron-forward"
+                                                    size={16}
+                                                    color={COLORS.muted}
+                                                />
                                             </Pressable>
                                         ))}
 
                                         {!pickerUsers.length ? (
                                             <View style={styles.emptySmall}>
-                                                <Text style={styles.emptyText}>No hay resultados.</Text>
+                                                <Text style={styles.emptyText}>
+                                                    No hay resultados.
+                                                </Text>
                                             </View>
                                         ) : null}
                                     </ScrollView>
@@ -1970,6 +2267,34 @@ const styles = StyleSheet.create({
         color: COLORS.muted,
         fontSize: 12,
         fontWeight: "800",
+    },
+
+    cityPill: {
+        alignSelf: "flex-start",
+        marginTop: 2,
+        minHeight: 24,
+        maxWidth: "92%",
+        paddingHorizontal: 9,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: "rgba(37,99,235,0.28)",
+        backgroundColor: "rgba(37,99,235,0.12)",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    cityPillOut: {
+        borderColor: "rgba(251,191,36,0.28)",
+        backgroundColor: "rgba(251,191,36,0.10)",
+    },
+    cityPillText: {
+        color: "#93C5FD",
+        fontSize: 11,
+        fontWeight: "900",
+        flexShrink: 1,
+    },
+    cityPillTextOut: {
+        color: "#FDE68A",
     },
 
     menuBtn: {

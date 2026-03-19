@@ -1,4 +1,8 @@
-const { safeString, safeNumber } = require("../utils/text");
+const { safeString, safeNumber, normalizeLooseText } = require("../utils/text");
+const {
+    extractGoogleMapsUrlFromText,
+    looksLikeBrazilAddress,
+} = require("../utils/geo");
 const {
     isCoverageQuestion,
     isHowItWorksQuestion,
@@ -142,6 +146,119 @@ function buildAutomaticStillMissingReply({ hasBusiness, hasMaps }) {
     ].join("\n");
 }
 
+function looksLikeManualAddressWithoutGoogleMaps(text) {
+    const raw = safeString(text);
+    if (!raw) return false;
+
+    if (extractGoogleMapsUrlFromText(raw)) return false;
+    if (looksLikeBrazilAddress(raw)) return true;
+
+    const s = normalizeLooseText(raw);
+
+    return (
+        s.includes("endereco") ||
+        s.includes("endereço") ||
+        s.includes("localizacao") ||
+        s.includes("localização") ||
+        s.includes("bairro") ||
+        s.includes("rua ") ||
+        s.includes("avenida") ||
+        s.includes("av ") ||
+        s.includes("av. ") ||
+        s.includes("travessa") ||
+        s.includes("rodovia") ||
+        s.includes("cep ")
+    );
+}
+
+function buildMapsMustBeGoogleMapsReply(messageType) {
+    const ack = buildShortAckPrefix(messageType);
+
+    return [
+        ack,
+        "",
+        "Mas a localização precisa ser enviada pelo Google Maps.",
+        "Endereço escrito sozinho não consegue confirmar a localização exata.",
+        "",
+        "Por favor, abra o Google Maps, encontre seu comércio e toque em “Compartilhar”.",
+        "Depois me envie o link aqui no chat.",
+    ].join("\n");
+}
+
+function buildMapsMustBeGoogleMapsReplyWithBusiness(messageType) {
+    const ack = buildShortAckPrefix(messageType);
+
+    return [
+        ack,
+        "",
+        "Já recebi o tipo de comércio, mas a localização precisa ser enviada pelo Google Maps.",
+        "Endereço escrito sozinho não consegue confirmar a localização exata.",
+        "",
+        "Por favor, abra o Google Maps, encontre seu comércio e toque em “Compartilhar”.",
+        "Depois me envie o link aqui no chat.",
+    ].join("\n");
+}
+
+function buildHowItWorksFollowup({ hasBusiness, hasMaps, sentWrittenAddressInsteadOfMaps }) {
+    if (!hasBusiness && !hasMaps) {
+        return "Para eu continuar agora, ainda preciso do tipo de comércio e da localização no Google Maps.";
+    }
+
+    if (!hasBusiness) {
+        return "Seu cadastro já pode seguir para análise inicial, mas ainda preciso do tipo de comércio.";
+    }
+
+    if (!hasMaps && sentWrittenAddressInsteadOfMaps) {
+        return "Recebi o endereço, mas preciso da localização compartilhada pelo Google Maps.";
+    }
+
+    if (!hasMaps) {
+        return "Para continuar, ainda preciso da localização do comércio no Google Maps.";
+    }
+
+    return "Seu cadastro já foi encaminhado para análise inicial.";
+}
+
+function buildCoverageFollowup({ hasBusiness, hasMaps, sentWrittenAddressInsteadOfMaps }) {
+    if (!hasBusiness && !hasMaps) {
+        return "Ainda preciso do tipo de comércio e da localização no Google Maps.";
+    }
+
+    if (!hasBusiness) {
+        return "Com a localização já consigo verificar a região, mas ainda preciso do tipo de comércio.";
+    }
+
+    if (!hasMaps && sentWrittenAddressInsteadOfMaps) {
+        return "Recebi o endereço, mas para confirmar a região preciso do link ou da localização compartilhada pelo Google Maps.";
+    }
+
+    if (!hasMaps) {
+        return "Agora só falta a localização do comércio no Google Maps.";
+    }
+
+    return "Com essa localização conseguimos seguir com a análise inicial.";
+}
+
+function buildAmountFollowup({ hasBusiness, hasMaps, sentWrittenAddressInsteadOfMaps }) {
+    if (!hasBusiness && !hasMaps) {
+        return "Para continuar, ainda preciso do tipo de comércio e da localização no Google Maps.";
+    }
+
+    if (!hasBusiness) {
+        return "Seu cadastro já pode seguir para análise inicial, mas ainda preciso do tipo de comércio.";
+    }
+
+    if (!hasMaps && sentWrittenAddressInsteadOfMaps) {
+        return "Recebi o endereço, mas ainda preciso da localização compartilhada pelo Google Maps.";
+    }
+
+    if (!hasMaps) {
+        return "Agora só falta a localização do comércio no Google Maps.";
+    }
+
+    return "Assim que a equipe analisar, ela explica melhor os próximos passos.";
+}
+
 function createBotReplyBuilder({
     hasUsefulBusiness,
     hasRequiredMapsForFlow,
@@ -160,6 +277,11 @@ function createBotReplyBuilder({
         const urgencyIntent = isUrgencyText(lastText);
         const amountIntent = isAmountQuestion(lastText);
         const genericQuestionIntent = isGenericOutOfFlowQuestion(lastText);
+
+        const inboundHasGoogleMapsLink = !!extractGoogleMapsUrlFromText(lastText);
+        const inboundLooksLikeWrittenAddress = looksLikeManualAddressWithoutGoogleMaps(lastText);
+        const sentWrittenAddressInsteadOfMaps =
+            !hasMaps && !inboundHasGoogleMapsLink && inboundLooksLikeWrittenAddress;
 
         if (leadQuality === "not_suitable") {
             return {
@@ -231,15 +353,13 @@ function createBotReplyBuilder({
                 body: [
                     buildHowItWorksSnippetPtBr(),
                     "",
-                    !hasBusiness && !hasMaps
-                        ? "Para eu continuar agora, ainda preciso do tipo de comércio e da localização no Google Maps."
-                        : !hasBusiness
-                            ? "Seu cadastro já pode seguir para análise inicial, mas ainda preciso do tipo de comércio."
-                            : !hasMaps
-                                ? "Para continuar, ainda preciso da localização do comércio no Google Maps."
-                                : "Seu cadastro já foi encaminhado para análise inicial.",
+                    buildHowItWorksFollowup({
+                        hasBusiness,
+                        hasMaps,
+                        sentWrittenAddressInsteadOfMaps,
+                    }),
                 ].join("\n"),
-                stage: `how_it_works:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
+                stage: `how_it_works:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}:${sentWrittenAddressInsteadOfMaps ? "written_address" : "normal"}`,
                 markIntroSent: false,
             };
         }
@@ -253,15 +373,13 @@ function createBotReplyBuilder({
                 body: [
                     baseCoverageReply,
                     "",
-                    !hasBusiness && !hasMaps
-                        ? "Ainda preciso do tipo de comércio e da localização no Google Maps."
-                        : !hasBusiness
-                            ? "Com a localização já consigo verificar a região, mas ainda preciso do tipo de comércio."
-                            : !hasMaps
-                                ? "Agora só falta a localização do comércio no Google Maps."
-                                : "Com essa localização conseguimos seguir com a análise inicial.",
+                    buildCoverageFollowup({
+                        hasBusiness,
+                        hasMaps,
+                        sentWrittenAddressInsteadOfMaps,
+                    }),
                 ].join("\n"),
-                stage: `coverage_check:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
+                stage: `coverage_check:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}:${sentWrittenAddressInsteadOfMaps ? "written_address" : "normal"}`,
                 markIntroSent: false,
             };
         }
@@ -271,15 +389,13 @@ function createBotReplyBuilder({
                 body: [
                     buildAmountReplyPtBr(),
                     "",
-                    !hasBusiness && !hasMaps
-                        ? "Para continuar, ainda preciso do tipo de comércio e da localização no Google Maps."
-                        : !hasBusiness
-                            ? "Seu cadastro já pode seguir para análise inicial, mas ainda preciso do tipo de comércio."
-                            : !hasMaps
-                                ? "Agora só falta a localização do comércio no Google Maps."
-                                : "Assim que a equipe analisar, ela explica melhor os próximos passos.",
+                    buildAmountFollowup({
+                        hasBusiness,
+                        hasMaps,
+                        sentWrittenAddressInsteadOfMaps,
+                    }),
                 ].join("\n"),
-                stage: `amount_check:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
+                stage: `amount_check:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}:${sentWrittenAddressInsteadOfMaps ? "written_address" : "normal"}`,
                 markIntroSent: false,
             };
         }
@@ -288,6 +404,22 @@ function createBotReplyBuilder({
             return {
                 body: buildAutomaticStillMissingReply({ hasBusiness, hasMaps }),
                 stage: `fallback:auto:${hasBusiness ? "ok" : "business"}:${hasMaps ? "ok" : "maps"}`,
+                markIntroSent: false,
+            };
+        }
+
+        if (!hasMaps && sentWrittenAddressInsteadOfMaps && hasBusiness) {
+            return {
+                body: buildMapsMustBeGoogleMapsReplyWithBusiness(messageType),
+                stage: "missing:maps:written_address",
+                markIntroSent: false,
+            };
+        }
+
+        if (!hasMaps && sentWrittenAddressInsteadOfMaps && !hasBusiness) {
+            return {
+                body: buildMapsMustBeGoogleMapsReply(messageType),
+                stage: "missing:business,maps:written_address",
                 markIntroSent: false,
             };
         }

@@ -11,6 +11,14 @@ const {
     buildGoogleMapsUrlFromCoords,
     extractGoogleMapsUrlFromText,
 } = require("../utils/geo");
+const {
+    buildEmptyTrackGoGeo,
+    resolveTrackGoGeoFromCoords,
+} = require("../utils/trackgoGeo");
+const {
+    buildEmptyReverseGeoBrazil,
+    reverseGeoBrazil,
+} = require("../utils/reverseGeoBrazil");
 const { detectInboundIntent, getVerificationStatusFromLead } = require("../bot/intents");
 const { findClientByPhone, findClientByWaId } = require("./findClient");
 
@@ -121,6 +129,49 @@ function pickBetterCoords(prevLat, prevLng, nextLat, nextLng, hasMapsInThisMessa
     };
 }
 
+function pickTrackGoGeoFields(prevClient, nextGeo, hasMapsInThisMessage) {
+    if (hasMapsInThisMessage) {
+        return nextGeo || buildEmptyTrackGoGeo();
+    }
+
+    return {
+        geoCityLabel: prevClient?.geoCityLabel ?? null,
+        geoCityNormalized: prevClient?.geoCityNormalized ?? null,
+        geoCluster: prevClient?.geoCluster ?? null,
+        geoSource: prevClient?.geoSource ?? null,
+        geoResolvedAt: prevClient?.geoResolvedAt ?? null,
+        geoDistanceToHubKm:
+            prevClient?.geoDistanceToHubKm == null
+                ? null
+                : safeNumber(prevClient.geoDistanceToHubKm),
+        geoOutOfCoverage:
+            typeof prevClient?.geoOutOfCoverage === "boolean"
+                ? prevClient.geoOutOfCoverage
+                : null,
+        geoConfidence: prevClient?.geoConfidence ?? null,
+        geoNearestHubKey: prevClient?.geoNearestHubKey ?? null,
+        geoNearestHubLabel: prevClient?.geoNearestHubLabel ?? null,
+    };
+}
+
+function pickReverseGeoFields(prevClient, nextGeo, hasMapsInThisMessage) {
+    if (hasMapsInThisMessage) {
+        return nextGeo || buildEmptyReverseGeoBrazil();
+    }
+
+    return {
+        geoAdminCityLabel: prevClient?.geoAdminCityLabel ?? null,
+        geoAdminCityNormalized: prevClient?.geoAdminCityNormalized ?? null,
+        geoAdminStateLabel: prevClient?.geoAdminStateLabel ?? null,
+        geoAdminStateNormalized: prevClient?.geoAdminStateNormalized ?? null,
+        geoAdminCountryLabel: prevClient?.geoAdminCountryLabel ?? null,
+        geoAdminCountryNormalized: prevClient?.geoAdminCountryNormalized ?? null,
+        geoAdminSource: prevClient?.geoAdminSource ?? null,
+        geoAdminResolvedAt: prevClient?.geoAdminResolvedAt ?? null,
+        geoAdminDisplayLabel: prevClient?.geoAdminDisplayLabel ?? null,
+    };
+}
+
 function buildHistoryClearPatchForVerificationStatus(verificationStatus) {
     const status = safeString(verificationStatus || "");
 
@@ -167,6 +218,14 @@ function createUpsertLeadAsClient({
 
         const hasMapsInThisMessage = !!generatedMapsUrl || hasValidCoords(lat, lng);
 
+        const resolvedTrackGoGeo = hasValidCoords(lat, lng)
+            ? resolveTrackGoGeoFromCoords(lat, lng, now)
+            : buildEmptyTrackGoGeo();
+
+        const resolvedReverseGeo = hasValidCoords(lat, lng)
+            ? await reverseGeoBrazil(lat, lng, now)
+            : buildEmptyReverseGeoBrazil();
+
         const inboundIntent = detectInboundIntent(rawText);
         const businessFlags = Array.isArray(parsed.businessFlags)
             ? parsed.businessFlags
@@ -193,6 +252,16 @@ function createUpsertLeadAsClient({
             });
 
             const draftCoords = pickBetterCoords(null, null, lat, lng, hasMapsInThisMessage);
+            const trackGoGeoFields = pickTrackGoGeoFields(
+                null,
+                resolvedTrackGoGeo,
+                hasMapsInThisMessage
+            );
+            const reverseGeoFields = pickReverseGeoFields(
+                null,
+                resolvedReverseGeo,
+                hasMapsInThisMessage
+            );
 
             const draftClient = {
                 name: resolvedName || "",
@@ -216,6 +285,8 @@ function createUpsertLeadAsClient({
                 lat: draftCoords.lat,
                 lng: draftCoords.lng,
                 currentLeadMapsConfirmedAt: hasMapsInThisMessage ? now : 0,
+                ...trackGoGeoFields,
+                ...reverseGeoFields,
             };
 
             const finalParseStatus = getFinalParseStatus(draftClient);
@@ -306,6 +377,30 @@ function createUpsertLeadAsClient({
                     lat: draftClient.lat,
                     lng: draftClient.lng,
                     locationCaptured: !!locationData,
+
+                    geoCityLabel: draftClient.geoCityLabel ?? null,
+                    geoCityNormalized: draftClient.geoCityNormalized ?? null,
+                    geoCluster: draftClient.geoCluster ?? null,
+                    geoSource: draftClient.geoSource ?? null,
+                    geoResolvedAt: draftClient.geoResolvedAt ?? null,
+                    geoDistanceToHubKm: draftClient.geoDistanceToHubKm ?? null,
+                    geoOutOfCoverage:
+                        typeof draftClient.geoOutOfCoverage === "boolean"
+                            ? draftClient.geoOutOfCoverage
+                            : null,
+                    geoConfidence: draftClient.geoConfidence ?? null,
+                    geoNearestHubKey: draftClient.geoNearestHubKey ?? null,
+                    geoNearestHubLabel: draftClient.geoNearestHubLabel ?? null,
+
+                    geoAdminCityLabel: draftClient.geoAdminCityLabel ?? null,
+                    geoAdminCityNormalized: draftClient.geoAdminCityNormalized ?? null,
+                    geoAdminStateLabel: draftClient.geoAdminStateLabel ?? null,
+                    geoAdminStateNormalized: draftClient.geoAdminStateNormalized ?? null,
+                    geoAdminCountryLabel: draftClient.geoAdminCountryLabel ?? null,
+                    geoAdminCountryNormalized: draftClient.geoAdminCountryNormalized ?? null,
+                    geoAdminSource: draftClient.geoAdminSource ?? null,
+                    geoAdminResolvedAt: draftClient.geoAdminResolvedAt ?? null,
+                    geoAdminDisplayLabel: draftClient.geoAdminDisplayLabel ?? null,
                 },
                 { merge: true }
             );
@@ -343,6 +438,16 @@ function createUpsertLeadAsClient({
         );
 
         const mergedLeadQuality = pickLeadQuality(prev.leadQuality, leadQuality);
+        const mergedTrackGoGeoFields = pickTrackGoGeoFields(
+            prev,
+            resolvedTrackGoGeo,
+            hasMapsInThisMessage
+        );
+        const mergedReverseGeoFields = pickReverseGeoFields(
+            prev,
+            resolvedReverseGeo,
+            hasMapsInThisMessage
+        );
 
         const mergedClientBase = {
             ...prev,
@@ -395,6 +500,8 @@ function createUpsertLeadAsClient({
                 : safeNumber(prev.currentLeadMapsConfirmedAt, 0),
 
             lastInboundIntent: inboundIntent,
+            ...mergedTrackGoGeoFields,
+            ...mergedReverseGeoFields,
         };
 
         const finalParseStatus = getFinalParseStatus(mergedClientBase);
@@ -457,6 +564,30 @@ function createUpsertLeadAsClient({
             currentLeadMapsConfirmedAt: mergedClient.currentLeadMapsConfirmedAt,
             parseStatus: finalParseStatus,
 
+            geoCityLabel: mergedClient.geoCityLabel ?? null,
+            geoCityNormalized: mergedClient.geoCityNormalized ?? null,
+            geoCluster: mergedClient.geoCluster ?? null,
+            geoSource: mergedClient.geoSource ?? null,
+            geoResolvedAt: mergedClient.geoResolvedAt ?? null,
+            geoDistanceToHubKm: mergedClient.geoDistanceToHubKm ?? null,
+            geoOutOfCoverage:
+                typeof mergedClient.geoOutOfCoverage === "boolean"
+                    ? mergedClient.geoOutOfCoverage
+                    : null,
+            geoConfidence: mergedClient.geoConfidence ?? null,
+            geoNearestHubKey: mergedClient.geoNearestHubKey ?? null,
+            geoNearestHubLabel: mergedClient.geoNearestHubLabel ?? null,
+
+            geoAdminCityLabel: mergedClient.geoAdminCityLabel ?? null,
+            geoAdminCityNormalized: mergedClient.geoAdminCityNormalized ?? null,
+            geoAdminStateLabel: mergedClient.geoAdminStateLabel ?? null,
+            geoAdminStateNormalized: mergedClient.geoAdminStateNormalized ?? null,
+            geoAdminCountryLabel: mergedClient.geoAdminCountryLabel ?? null,
+            geoAdminCountryNormalized: mergedClient.geoAdminCountryNormalized ?? null,
+            geoAdminSource: mergedClient.geoAdminSource ?? null,
+            geoAdminResolvedAt: mergedClient.geoAdminResolvedAt ?? null,
+            geoAdminDisplayLabel: mergedClient.geoAdminDisplayLabel ?? null,
+
             verifiedAt: prev.verifiedAt ?? null,
             verifiedBy: prev.verifiedBy ?? null,
             manualReviewNote: prev.manualReviewNote ?? null,
@@ -504,6 +635,30 @@ function createUpsertLeadAsClient({
                 lat: mergedClient.lat ?? null,
                 lng: mergedClient.lng ?? null,
                 locationCaptured: !!locationData,
+
+                geoCityLabel: mergedClient.geoCityLabel ?? null,
+                geoCityNormalized: mergedClient.geoCityNormalized ?? null,
+                geoCluster: mergedClient.geoCluster ?? null,
+                geoSource: mergedClient.geoSource ?? null,
+                geoResolvedAt: mergedClient.geoResolvedAt ?? null,
+                geoDistanceToHubKm: mergedClient.geoDistanceToHubKm ?? null,
+                geoOutOfCoverage:
+                    typeof mergedClient.geoOutOfCoverage === "boolean"
+                        ? mergedClient.geoOutOfCoverage
+                        : null,
+                geoConfidence: mergedClient.geoConfidence ?? null,
+                geoNearestHubKey: mergedClient.geoNearestHubKey ?? null,
+                geoNearestHubLabel: mergedClient.geoNearestHubLabel ?? null,
+
+                geoAdminCityLabel: mergedClient.geoAdminCityLabel ?? null,
+                geoAdminCityNormalized: mergedClient.geoAdminCityNormalized ?? null,
+                geoAdminStateLabel: mergedClient.geoAdminStateLabel ?? null,
+                geoAdminStateNormalized: mergedClient.geoAdminStateNormalized ?? null,
+                geoAdminCountryLabel: mergedClient.geoAdminCountryLabel ?? null,
+                geoAdminCountryNormalized: mergedClient.geoAdminCountryNormalized ?? null,
+                geoAdminSource: mergedClient.geoAdminSource ?? null,
+                geoAdminResolvedAt: mergedClient.geoAdminResolvedAt ?? null,
+                geoAdminDisplayLabel: mergedClient.geoAdminDisplayLabel ?? null,
             },
             { merge: true }
         );

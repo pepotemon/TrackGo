@@ -114,6 +114,14 @@ function looksLikeKnownRegionMention(text) {
         s.includes("macaiba") ||
         s.includes("macaíba") ||
         s.includes("zona norte") ||
+        s.includes("belo horizonte") ||
+        s.includes("curitiba") ||
+        s.includes("recife") ||
+        s.includes("natal") ||
+        s.includes("sao luis") ||
+        s.includes("são luís") ||
+        s.includes("brasilia") ||
+        s.includes("brasília") ||
         s.includes(" - pa") ||
         s.includes("/pa") ||
         s.includes(" - go") ||
@@ -123,7 +131,15 @@ function looksLikeKnownRegionMention(text) {
         s.includes(" - am") ||
         s.includes("/am") ||
         s.includes(" - ma") ||
-        s.includes("/ma")
+        s.includes("/ma") ||
+        s.includes(" - mg") ||
+        s.includes("/mg") ||
+        s.includes(" - pr") ||
+        s.includes("/pr") ||
+        s.includes(" - pe") ||
+        s.includes("/pe") ||
+        s.includes(" - df") ||
+        s.includes("/df")
     );
 }
 

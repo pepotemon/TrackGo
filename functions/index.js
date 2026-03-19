@@ -192,20 +192,26 @@ async function maybeReplyToLead({
     const { safeString, safeNumber } = require("./src/utils/text");
 
     if (!isBotAllowedForClient(client)) {
-        await inboxRef.set({
-            botReplyStatus: "skipped",
-            botReplyReason: "human_takeover_active",
-            botReplyAt: Date.now(),
-        }, { merge: true });
+        await inboxRef.set(
+            {
+                botReplyStatus: "skipped",
+                botReplyReason: "human_takeover_active",
+                botReplyAt: Date.now(),
+            },
+            { merge: true }
+        );
         return;
     }
 
     if (!leadState.shouldSendBotReply(client)) {
-        await inboxRef.set({
-            botReplyStatus: "skipped",
-            botReplyReason: "reply_rules_blocked",
-            botReplyAt: Date.now(),
-        }, { merge: true });
+        await inboxRef.set(
+            {
+                botReplyStatus: "skipped",
+                botReplyReason: "reply_rules_blocked",
+                botReplyAt: Date.now(),
+            },
+            { merge: true }
+        );
         return;
     }
 
@@ -216,26 +222,29 @@ async function maybeReplyToLead({
     const markIntroSent = !!reply?.markIntroSent;
 
     if (!body || !currentBotStage) {
-        await inboxRef.set({
-            botReplyStatus: "skipped",
-            botReplyReason: "empty_reply",
-            botReplyAt: Date.now(),
-        }, { merge: true });
+        await inboxRef.set(
+            {
+                botReplyStatus: "skipped",
+                botReplyReason: "empty_reply",
+                botReplyAt: Date.now(),
+            },
+            { merge: true }
+        );
         return;
     }
 
     const lastBotReplyText = safeString(client?.lastBotReplyText || "");
     const lastBotStage = safeString(client?.lastBotStage || "");
 
-    if (
-        lastBotReplyText === body &&
-        lastBotStage === currentBotStage
-    ) {
-        await inboxRef.set({
-            botReplyStatus: "skipped",
-            botReplyReason: "same_reply_as_previous",
-            botReplyAt: Date.now(),
-        }, { merge: true });
+    if (lastBotReplyText === body && lastBotStage === currentBotStage) {
+        await inboxRef.set(
+            {
+                botReplyStatus: "skipped",
+                botReplyReason: "same_reply_as_previous",
+                botReplyAt: Date.now(),
+            },
+            { merge: true }
+        );
         return;
     }
 
@@ -272,13 +281,16 @@ async function maybeReplyToLead({
 
     await clientRef.set(clientPatch, { merge: true });
 
-    await inboxRef.set({
-        botReplyStatus: "sent",
-        botReplyText: body,
-        botReplyAt: now,
-        botReplyStage: currentBotStage,
-        botReplyMessageId: whatsappMessageId,
-    }, { merge: true });
+    await inboxRef.set(
+        {
+            botReplyStatus: "sent",
+            botReplyText: body,
+            botReplyAt: now,
+            botReplyStage: currentBotStage,
+            botReplyMessageId: whatsappMessageId,
+        },
+        { merge: true }
+    );
 }
 
 const upsertLeadAsClient = createUpsertLeadAsClient({

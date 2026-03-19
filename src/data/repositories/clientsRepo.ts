@@ -55,6 +55,23 @@ function normalizeCoord(value?: number | null) {
     return Number.isFinite(n) ? n : undefined;
 }
 
+function normalizeNullableString(value?: string | null) {
+    if (value == null) return null;
+    const v = String(value).trim();
+    return v || null;
+}
+
+function normalizeNullableNumber(value?: number | null) {
+    if (value == null) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+
+function normalizeNullableBoolean(value?: boolean | null) {
+    if (value == null) return null;
+    return typeof value === "boolean" ? value : null;
+}
+
 function normalizeRejectReason(value?: string | null): RejectedReason | null {
     if (!value) return null;
 
@@ -194,6 +211,10 @@ function normalizeAutoFlags(value: unknown): ClientAutoFlag[] | undefined {
         "retirement_profile",
         "salary_profile",
         "app_driver_profile",
+        "normalized_business_label",
+        "multi_signal_business",
+        "mixed_business_signals",
+        "fallback_business_detected",
     ];
 
     const list = value
@@ -368,7 +389,9 @@ export async function createClient(input: Omit<ClientDoc, "id">) {
         stripUndefined({
             ...input,
             phone: normalizeClientPhone(input.phone),
-            waId: (input as any).waId ? normalizeClientPhone((input as any).waId) : (input as any).waId,
+            waId: (input as any).waId
+                ? normalizeClientPhone((input as any).waId)
+                : (input as any).waId,
             lat: normalizeCoord((input as any).lat),
             lng: normalizeCoord((input as any).lng),
 
@@ -387,6 +410,27 @@ export async function createClient(input: Omit<ClientDoc, "id">) {
 
             leadHistoryArchivedAt: (input as any).leadHistoryArchivedAt ?? null,
             leadHistoryBucket: (input as any).leadHistoryBucket ?? null,
+
+            geoCityLabel: normalizeNullableString((input as any).geoCityLabel),
+            geoCityNormalized: normalizeNullableString((input as any).geoCityNormalized),
+            geoCluster: normalizeNullableString((input as any).geoCluster),
+            geoSource: normalizeNullableString((input as any).geoSource),
+            geoResolvedAt: normalizeNullableNumber((input as any).geoResolvedAt),
+            geoDistanceToHubKm: normalizeNullableNumber((input as any).geoDistanceToHubKm),
+            geoOutOfCoverage: normalizeNullableBoolean((input as any).geoOutOfCoverage),
+            geoConfidence: normalizeNullableString((input as any).geoConfidence),
+            geoNearestHubKey: normalizeNullableString((input as any).geoNearestHubKey),
+            geoNearestHubLabel: normalizeNullableString((input as any).geoNearestHubLabel),
+
+            geoAdminCityLabel: normalizeNullableString((input as any).geoAdminCityLabel),
+            geoAdminCityNormalized: normalizeNullableString((input as any).geoAdminCityNormalized),
+            geoAdminStateLabel: normalizeNullableString((input as any).geoAdminStateLabel),
+            geoAdminStateNormalized: normalizeNullableString((input as any).geoAdminStateNormalized),
+            geoAdminCountryLabel: normalizeNullableString((input as any).geoAdminCountryLabel),
+            geoAdminCountryNormalized: normalizeNullableString((input as any).geoAdminCountryNormalized),
+            geoAdminSource: normalizeNullableString((input as any).geoAdminSource),
+            geoAdminResolvedAt: normalizeNullableNumber((input as any).geoAdminResolvedAt),
+            geoAdminDisplayLabel: normalizeNullableString((input as any).geoAdminDisplayLabel),
 
             createdAt: (input as any).createdAt ?? now,
             updatedAt: (input as any).updatedAt ?? now,
@@ -572,11 +616,7 @@ export function subscribeAdminClients(
             limit(finalLimit)
         );
     } else {
-        qRef = query(
-            col.clients,
-            orderBy("updatedAt", "desc"),
-            limit(finalLimit)
-        );
+        qRef = query(col.clients, orderBy("updatedAt", "desc"), limit(finalLimit));
     }
 
     return onSnapshot(
@@ -692,11 +732,6 @@ export function subscribeAdminLeadHistory(
 /**
  * ✅ FASE 2:
  * Página manual para la cola activa.
- *
- * Útil si luego quieres:
- * - primera página rápida
- * - cargar más
- * - combinar realtime + fetch
  */
 export async function getAdminLeadQueuePage(
     options?: GetAdminLeadQueuePageOptions
@@ -739,10 +774,6 @@ export async function getAdminLeadQueuePage(
 /**
  * ✅ FASE 2:
  * Página manual para historial.
- *
- * Trae los candidatos de historial desde Firestore.
- * Luego la pantalla sigue aplicando la regla temporal con getClientLeadHistoryBucket(...)
- * para decidir cuáles mostrar.
  */
 export async function getAdminLeadHistoryPage(
     options?: GetAdminLeadHistoryPageOptions
@@ -831,6 +862,27 @@ export async function updateClientFields(
         adminQueueSeenAt: number | null;
         leadHistoryArchivedAt: number | null;
         leadHistoryBucket: ClientLeadHistoryBucket | null;
+
+        geoCityLabel: string | null;
+        geoCityNormalized: string | null;
+        geoCluster: string | null;
+        geoSource: string | null;
+        geoResolvedAt: number | null;
+        geoDistanceToHubKm: number | null;
+        geoOutOfCoverage: boolean | null;
+        geoConfidence: string | null;
+        geoNearestHubKey: string | null;
+        geoNearestHubLabel: string | null;
+
+        geoAdminCityLabel: string | null;
+        geoAdminCityNormalized: string | null;
+        geoAdminStateLabel: string | null;
+        geoAdminStateNormalized: string | null;
+        geoAdminCountryLabel: string | null;
+        geoAdminCountryNormalized: string | null;
+        geoAdminSource: string | null;
+        geoAdminResolvedAt: number | null;
+        geoAdminDisplayLabel: string | null;
     }>
 ) {
     const now = Date.now();
@@ -932,6 +984,84 @@ export async function updateClientFields(
 
     if ("leadHistoryBucket" in patch) {
         data.leadHistoryBucket = patch.leadHistoryBucket ?? null;
+    }
+
+    if ("geoCityLabel" in patch) {
+        data.geoCityLabel = normalizeNullableString(patch.geoCityLabel);
+    }
+
+    if ("geoCityNormalized" in patch) {
+        data.geoCityNormalized = normalizeNullableString(patch.geoCityNormalized);
+    }
+
+    if ("geoCluster" in patch) {
+        data.geoCluster = normalizeNullableString(patch.geoCluster);
+    }
+
+    if ("geoSource" in patch) {
+        data.geoSource = normalizeNullableString(patch.geoSource);
+    }
+
+    if ("geoResolvedAt" in patch) {
+        data.geoResolvedAt = normalizeNullableNumber(patch.geoResolvedAt);
+    }
+
+    if ("geoDistanceToHubKm" in patch) {
+        data.geoDistanceToHubKm = normalizeNullableNumber(patch.geoDistanceToHubKm);
+    }
+
+    if ("geoOutOfCoverage" in patch) {
+        data.geoOutOfCoverage = normalizeNullableBoolean(patch.geoOutOfCoverage);
+    }
+
+    if ("geoConfidence" in patch) {
+        data.geoConfidence = normalizeNullableString(patch.geoConfidence);
+    }
+
+    if ("geoNearestHubKey" in patch) {
+        data.geoNearestHubKey = normalizeNullableString(patch.geoNearestHubKey);
+    }
+
+    if ("geoNearestHubLabel" in patch) {
+        data.geoNearestHubLabel = normalizeNullableString(patch.geoNearestHubLabel);
+    }
+
+    if ("geoAdminCityLabel" in patch) {
+        data.geoAdminCityLabel = normalizeNullableString(patch.geoAdminCityLabel);
+    }
+
+    if ("geoAdminCityNormalized" in patch) {
+        data.geoAdminCityNormalized = normalizeNullableString(patch.geoAdminCityNormalized);
+    }
+
+    if ("geoAdminStateLabel" in patch) {
+        data.geoAdminStateLabel = normalizeNullableString(patch.geoAdminStateLabel);
+    }
+
+    if ("geoAdminStateNormalized" in patch) {
+        data.geoAdminStateNormalized = normalizeNullableString(patch.geoAdminStateNormalized);
+    }
+
+    if ("geoAdminCountryLabel" in patch) {
+        data.geoAdminCountryLabel = normalizeNullableString(patch.geoAdminCountryLabel);
+    }
+
+    if ("geoAdminCountryNormalized" in patch) {
+        data.geoAdminCountryNormalized = normalizeNullableString(
+            patch.geoAdminCountryNormalized
+        );
+    }
+
+    if ("geoAdminSource" in patch) {
+        data.geoAdminSource = normalizeNullableString(patch.geoAdminSource);
+    }
+
+    if ("geoAdminResolvedAt" in patch) {
+        data.geoAdminResolvedAt = normalizeNullableNumber(patch.geoAdminResolvedAt);
+    }
+
+    if ("geoAdminDisplayLabel" in patch) {
+        data.geoAdminDisplayLabel = normalizeNullableString(patch.geoAdminDisplayLabel);
     }
 
     await updateDoc(docRef.client(clientId), stripUndefined(data));

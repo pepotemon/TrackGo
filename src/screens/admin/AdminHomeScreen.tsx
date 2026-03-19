@@ -1,17 +1,15 @@
 // src/screens/admin/AdminHomeScreen.tsx
-// ✅ FIX:
-// - verified se cuenta como antes (todos los Meta leads verificados)
-// - pending_review / incomplete / not_suitable solo cuentan Meta leads NO asignados
-// - así queda sincronizado con la pantalla de leads sin romper el total de verificados
-// - también se cambió el icono de "No aptos" para no confundirlo con rechazados
-// - pendientes de cobranza ahora cuentan SOLO clientes pending asignados (misma lógica del daily)
-// - UI polish:
-//   * se eliminó la botonera superior y se movió al bottom nav
-//   * se quitó el footer de copyright
-//   * se quitó la sombra cuadrada fea de las tarjetas
-//   * más espacio vertical para las cards
-//   * bottom nav con iconos compactos
-//   * Salir sigue destacado en rojo
+// ✅ OPTIMIZADO:
+// - reduce trabajo repetido en render con useMemo
+// - indexa clients/users una sola vez
+// - evita recomputar filtros pesados múltiples veces
+// - mantiene daily/week stats correctos sin inflar
+// - Meta Leads ahora tiene filtro Semana / Mes
+// - weekly/monthly Meta Leads usa timestamps del estado real:
+//   * verified -> verifiedAt / verificationStatusChangedAt / updatedAt
+//   * pending_review / incomplete / not_suitable -> verificationStatusChangedAt / updatedAt
+// - pending de cobranza sigue contando SOLO clientes pending asignados
+// - sin romper UX actual
 
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -46,6 +44,14 @@ type AdminAction = {
     | "/admin/leads";
 };
 
+type LeadsRangeMode = "week" | "month";
+
+type LeadDerivedStatus =
+    | "verified"
+    | "pending_review"
+    | "incomplete"
+    | "not_suitable";
+
 function dayKeyFromDate(d: Date) {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -61,64 +67,84 @@ function weekRangeKeys(base = new Date()) {
     const d = new Date(base);
     d.setHours(0, 0, 0, 0);
     const jsDay = d.getDay(); // 0=Dom..6=Sáb
-    const diffToMonday = jsDay === 0 ? 6 : jsDay - 1; // lunes=0
+    const diffToMonday = jsDay === 0 ? 6 : jsDay - 1;
     const start = new Date(d);
     start.setDate(d.getDate() - diffToMonday);
+
     const end = new Date(start);
     end.setDate(start.getDate() + 6);
-    return { startKey: dayKeyFromDate(start), endKey: dayKeyFromDate(end) };
+
+    return {
+        startKey: dayKeyFromDate(start),
+        endKey: dayKeyFromDate(end),
+        startMs: start.getTime(),
+        endMs: new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59, 999).getTime(),
+    };
+}
+
+function monthRangeKeys(base = new Date()) {
+    const d = new Date(base);
+    const start = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+    const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    return {
+        startKey: dayKeyFromDate(start),
+        endKey: dayKeyFromDate(end),
+        startMs: start.getTime(),
+        endMs: end.getTime(),
+    };
 }
 
 function toMs(v: any): number {
     if (!v) return 0;
-    if (typeof v === "number") return isFinite(v) ? v : 0;
+    if (typeof v === "number") return Number.isFinite(v) ? v : 0;
     if (v instanceof Date) return v.getTime();
     if (typeof v?.toMillis === "function") return v.toMillis();
     if (typeof v === "string") {
         const n = Number(v);
-        return isFinite(n) ? n : 0;
+        return Number.isFinite(n) ? n : 0;
     }
     return 0;
 }
 
 /**
  * Último evento por clientId dentro del rango.
- * (Luego filtramos por estado actual del client para evitar inflado)
+ * Luego filtramos por status actual del client para no inflar.
  */
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
+
     for (const e of events) {
-        const cid = (e as any)?.clientId;
+        const cid = String((e as any)?.clientId ?? "").trim();
         if (!cid) continue;
 
         const prev = map.get(cid);
         const eMs = toMs((e as any)?.createdAt);
         const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
 
-        if (!prev || eMs >= pMs) map.set(cid, e);
+        if (!prev || eMs >= pMs) {
+            map.set(cid, e);
+        }
     }
+
     return map;
 }
 
 function getRatePerVisit(u?: UserDoc | null) {
     const anyU: any = u as any;
     const n = anyU?.ratePerVisit ?? anyU?.visitFee ?? 0;
-    return typeof n === "number" && isFinite(n) ? n : 0;
+    return typeof n === "number" && Number.isFinite(n) ? n : 0;
 }
 
 function isMetaLead(c: ClientDoc) {
-    const source = String((c as any)?.source ?? "").trim().toLowerCase();
-    return source === "whatsapp_meta";
+    return String((c as any)?.source ?? "").trim().toLowerCase() === "whatsapp_meta";
 }
 
 function isMetaUnassignedLead(c: ClientDoc) {
-    const assigned = String((c as any)?.assignedTo ?? "").trim();
-    return isMetaLead(c) && assigned.length === 0;
+    return isMetaLead(c) && !String((c as any)?.assignedTo ?? "").trim();
 }
 
-function getDerivedLeadQueueStatus(
-    c: ClientDoc
-): "verified" | "pending_review" | "incomplete" | "not_suitable" {
+function getDerivedLeadQueueStatus(c: ClientDoc): LeadDerivedStatus {
     const verificationStatus = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
     const leadQuality = String((c as any)?.leadQuality ?? "").trim().toLowerCase();
     const parseStatus = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
@@ -134,21 +160,45 @@ function getDerivedLeadQueueStatus(
     return "incomplete";
 }
 
-/**
- * ✅ Lógica correcta:
- * - verified: TODOS los Meta leads verificados
- * - pending_review / incomplete / not_suitable: solo Meta NO asignados
- */
-function getLeadQueueStats(clients: ClientDoc[]) {
+function getLeadStatusTimestampMs(c: ClientDoc, status: LeadDerivedStatus) {
+    if (status === "verified") {
+        return (
+            toMs((c as any)?.verifiedAt) ||
+            toMs((c as any)?.verificationStatusChangedAt) ||
+            toMs((c as any)?.updatedAt) ||
+            toMs((c as any)?.createdAt)
+        );
+    }
+
+    return (
+        toMs((c as any)?.verificationStatusChangedAt) ||
+        toMs((c as any)?.updatedAt) ||
+        toMs((c as any)?.createdAt)
+    );
+}
+
+function isWithinRange(ms: number, startMs: number, endMs: number) {
+    if (!ms) return false;
+    return ms >= startMs && ms <= endMs;
+}
+
+function buildLeadStatsForRange(
+    clients: ClientDoc[],
+    startMs: number,
+    endMs: number
+) {
     let verified = 0;
+    let pendingReview = 0;
     let incomplete = 0;
     let notSuitable = 0;
-    let pendingReview = 0;
 
     for (const c of clients) {
         if (!isMetaLead(c)) continue;
 
         const status = getDerivedLeadQueueStatus(c);
+        const statusMs = getLeadStatusTimestampMs(c, status);
+
+        if (!isWithinRange(statusMs, startMs, endMs)) continue;
 
         if (status === "verified") {
             verified += 1;
@@ -158,17 +208,17 @@ function getLeadQueueStats(clients: ClientDoc[]) {
         if (!isMetaUnassignedLead(c)) continue;
 
         if (status === "pending_review") pendingReview += 1;
+        else if (status === "incomplete") incomplete += 1;
         else if (status === "not_suitable") notSuitable += 1;
-        else incomplete += 1;
     }
 
     return {
         verified,
+        pendingReview,
         incomplete,
         notSuitable,
-        pendingReview,
-        total: verified + incomplete + notSuitable + pendingReview,
-        activeQueue: incomplete + notSuitable + pendingReview,
+        activeQueue: pendingReview + incomplete + notSuitable,
+        total: verified + pendingReview + incomplete + notSuitable,
     };
 }
 
@@ -190,6 +240,7 @@ const COLORS = {
     bad: "#F87171",
     warn: "#FBBF24",
     info: "#60A5FA",
+    purple: "#C4B5FD",
 
     logoutBg: "rgba(127, 29, 29, 0.22)",
     logoutBorder: "rgba(248,113,113,0.18)",
@@ -199,6 +250,82 @@ const COLORS = {
     navItem: "rgba(255,255,255,0.04)",
     navItemActive: "rgba(90,200,250,0.14)",
 };
+
+const TinyStat = React.memo(function TinyStat({
+    icon,
+    color,
+    value,
+    label,
+}: {
+    icon: any;
+    color: string;
+    value: number;
+    label: string;
+}) {
+    return (
+        <View style={styles.tinyStatWrap} accessibilityLabel={`${label}: ${value}`}>
+            <Ionicons name={icon} size={15} color={color} />
+            <Text style={styles.tinyStatValue}>{value}</Text>
+        </View>
+    );
+});
+
+const BottomNavItem = React.memo(function BottomNavItem({
+    title,
+    icon,
+    onPress,
+    active,
+}: {
+    title: string;
+    icon: any;
+    onPress: () => void;
+    active?: boolean;
+}) {
+    return (
+        <Pressable
+            onPress={onPress}
+            style={({ pressed }) => [
+                styles.bottomNavItem,
+                active && styles.bottomNavItemActive,
+                pressed && styles.pressed,
+            ]}
+        >
+            <View style={[styles.bottomNavIconWrap, active && styles.bottomNavIconWrapActive]}>
+                <Ionicons
+                    name={icon}
+                    size={18}
+                    color={active ? COLORS.primaryBright : COLORS.primaryBright}
+                />
+            </View>
+            <Text style={styles.bottomNavText}>{title}</Text>
+        </Pressable>
+    );
+});
+
+const RangeTogglePill = React.memo(function RangeTogglePill({
+    active,
+    label,
+    onPress,
+}: {
+    active: boolean;
+    label: string;
+    onPress: () => void;
+}) {
+    return (
+        <Pressable
+            onPress={onPress}
+            style={({ pressed }) => [
+                styles.rangePill,
+                active && styles.rangePillActive,
+                pressed && styles.pressed,
+            ]}
+        >
+            <Text style={[styles.rangePillText, active && styles.rangePillTextActive]}>
+                {label}
+            </Text>
+        </Pressable>
+    );
+});
 
 export default function AdminHomeScreen() {
     const { profile, logout } = useAuth();
@@ -211,6 +338,7 @@ export default function AdminHomeScreen() {
 
     const [refreshing, setRefreshing] = useState(false);
     const [refreshTick, setRefreshTick] = useState(0);
+    const [leadsRangeMode, setLeadsRangeMode] = useState<LeadsRangeMode>("week");
 
     const actions: AdminAction[] = useMemo(
         () => [
@@ -242,13 +370,16 @@ export default function AdminHomeScreen() {
         []
     );
 
+    const weekRange = useMemo(() => weekRangeKeys(new Date()), []);
+    const monthRange = useMemo(() => monthRangeKeys(new Date()), []);
+
     const reloadUsers = useCallback(async () => {
         const u = await listUsers("user");
-        setUsers(u);
+        setUsers(u ?? []);
     }, []);
 
     useEffect(() => {
-        reloadUsers();
+        void reloadUsers();
     }, [reloadUsers]);
 
     useEffect(() => {
@@ -268,51 +399,50 @@ export default function AdminHomeScreen() {
     }, [refreshTick]);
 
     useEffect(() => {
-        const { startKey, endKey } = weekRangeKeys(new Date());
         const unsub = subscribeDailyEventsByRange(
-            startKey,
-            endKey,
+            weekRange.startKey,
+            weekRange.endKey,
             (list) => setWeekEvents(list ?? []),
             (err) => console.log("[AdminHome] week events err:", err?.code, err?.message)
         );
         return () => unsub();
-    }, [refreshTick]);
+    }, [refreshTick, weekRange.startKey, weekRange.endKey]);
 
     const userById = useMemo(() => {
-        const m = new Map<string, UserDoc>();
-        for (const u of users) m.set(u.id, u);
-        return m;
+        const map = new Map<string, UserDoc>();
+        for (const u of users) {
+            map.set(u.id, u);
+        }
+        return map;
     }, [users]);
 
     const clientById = useMemo(() => {
-        const m = new Map<string, ClientDoc>();
-        for (const c of clients) m.set(c.id, c);
-        return m;
+        const map = new Map<string, ClientDoc>();
+        for (const c of clients) {
+            map.set(c.id, c);
+        }
+        return map;
     }, [clients]);
 
-    // ✅ Igual que daily report:
-    // solo clientes actualmente pending Y asignados a un usuario
     const pendingNow = useMemo(() => {
         let count = 0;
         for (const c of clients) {
             if (c.status !== "pending") continue;
-            if (!c.assignedTo) continue;
+            if (!String(c.assignedTo ?? "").trim()) continue;
             count += 1;
         }
         return count;
     }, [clients]);
 
-    const leadQueueStats = useMemo(() => getLeadQueueStats(clients), [clients]);
-
     const shouldCountEvent = useCallback(
         (e: DailyEventDoc) => {
-            const cid = (e as any)?.clientId;
+            const cid = String((e as any)?.clientId ?? "").trim();
             if (!cid) return false;
 
-            const c = clientById.get(cid);
-            if (!c) return false;
+            const client = clientById.get(cid);
+            if (!client) return false;
 
-            return c.status === e.type;
+            return client.status === e.type;
         },
         [clientById]
     );
@@ -322,7 +452,6 @@ export default function AdminHomeScreen() {
 
         let visited = 0;
         let rejected = 0;
-
         const perUserVisits: Record<string, number> = {};
         const perUserAmount: Record<string, number> = {};
 
@@ -338,8 +467,7 @@ export default function AdminHomeScreen() {
         }
 
         for (const [uid, cnt] of Object.entries(perUserVisits)) {
-            const rate = getRatePerVisit(userById.get(uid));
-            perUserAmount[uid] = cnt * rate;
+            perUserAmount[uid] = cnt * getRatePerVisit(userById.get(uid));
         }
 
         const amountTotal = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
@@ -353,15 +481,20 @@ export default function AdminHomeScreen() {
             }
         }
 
-        return { visited, rejected, amountTotal, topUid, topAmount };
-    }, [todayEvents, userById, shouldCountEvent]);
+        return {
+            visited,
+            rejected,
+            amountTotal,
+            topUid,
+            topAmount,
+        };
+    }, [todayEvents, shouldCountEvent, userById]);
 
     const weekStats = useMemo(() => {
         const latest = latestEventByClient(weekEvents);
 
         let visited = 0;
         let rejected = 0;
-
         const perUserVisits: Record<string, number> = {};
         const perUserAmount: Record<string, number> = {};
 
@@ -377,20 +510,34 @@ export default function AdminHomeScreen() {
         }
 
         for (const [uid, cnt] of Object.entries(perUserVisits)) {
-            const rate = getRatePerVisit(userById.get(uid));
-            perUserAmount[uid] = cnt * rate;
+            perUserAmount[uid] = cnt * getRatePerVisit(userById.get(uid));
         }
 
         const amountTotal = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
-        return { visited, rejected, amountTotal };
-    }, [weekEvents, userById, shouldCountEvent]);
+
+        return {
+            visited,
+            rejected,
+            amountTotal,
+        };
+    }, [weekEvents, shouldCountEvent, userById]);
 
     const topUserLabel = useMemo(() => {
         if (!todayStats.topUid) return "—";
-        const u = userById.get(todayStats.topUid);
-        const name = u?.name?.trim() || "Usuario";
+        const user = userById.get(todayStats.topUid);
+        const name = user?.name?.trim() || "Usuario";
         return `${name} · R$ ${todayStats.topAmount.toFixed(2)}`;
     }, [todayStats.topUid, todayStats.topAmount, userById]);
+
+    const weeklyLeadStats = useMemo(() => {
+        return buildLeadStatsForRange(clients, weekRange.startMs, weekRange.endMs);
+    }, [clients, weekRange.startMs, weekRange.endMs]);
+
+    const monthlyLeadStats = useMemo(() => {
+        return buildLeadStatsForRange(clients, monthRange.startMs, monthRange.endMs);
+    }, [clients, monthRange.startMs, monthRange.endMs]);
+
+    const visibleLeadStats = leadsRangeMode === "week" ? weeklyLeadStats : monthlyLeadStats;
 
     const onRefresh = useCallback(async () => {
         setRefreshing(true);
@@ -401,55 +548,6 @@ export default function AdminHomeScreen() {
             setRefreshing(false);
         }
     }, [reloadUsers]);
-
-    const TinyStat = ({
-        icon,
-        color,
-        value,
-        label,
-    }: {
-        icon: any;
-        color: string;
-        value: number;
-        label: string;
-    }) => (
-        <View style={styles.tinyStatWrap} accessibilityLabel={`${label}: ${value}`}>
-            <Ionicons name={icon} size={15} color={color} />
-            <Text style={styles.tinyStatValue}>{value}</Text>
-        </View>
-    );
-
-    const BottomNavItem = ({
-        title,
-        icon,
-        onPress,
-        danger,
-    }: {
-        title: string;
-        icon: any;
-        onPress: () => void;
-        danger?: boolean;
-    }) => (
-        <Pressable
-            onPress={onPress}
-            style={({ pressed }) => [
-                styles.bottomNavItem,
-                danger && styles.bottomNavItemDanger,
-                pressed && styles.pressed,
-            ]}
-        >
-            <View style={[styles.bottomNavIconWrap, danger && styles.bottomNavIconWrapDanger]}>
-                <Ionicons
-                    name={icon}
-                    size={18}
-                    color={danger ? COLORS.bad : COLORS.primaryBright}
-                />
-            </View>
-            <Text style={[styles.bottomNavText, danger && styles.bottomNavTextDanger]}>
-                {title}
-            </Text>
-        </Pressable>
-    );
 
     return (
         <SafeAreaView style={styles.safe} edges={["bottom"]}>
@@ -473,6 +571,7 @@ export default function AdminHomeScreen() {
                                 />
                             }
                             showsVerticalScrollIndicator={false}
+                            removeClippedSubviews
                         >
                             <View style={styles.header}>
                                 <View style={styles.headerLeft}>
@@ -486,7 +585,7 @@ export default function AdminHomeScreen() {
                                     onPress={logout}
                                     style={({ pressed }) => [
                                         styles.logoutBtn,
-                                        pressed && styles.pressed
+                                        pressed && styles.pressed,
                                     ]}
                                 >
                                     <Ionicons
@@ -496,6 +595,7 @@ export default function AdminHomeScreen() {
                                     />
                                 </Pressable>
                             </View>
+
                             <View style={styles.quickRow}>
                                 <Pressable
                                     onPress={() => router.push({ pathname: "/admin/report" as any })}
@@ -568,9 +668,7 @@ export default function AdminHomeScreen() {
                                         </View>
 
                                         <View style={[styles.badge, styles.badgePrimary]}>
-                                            <Text
-                                                style={[styles.badgeText, styles.badgeTextPrimary]}
-                                            >
+                                            <Text style={[styles.badgeText, styles.badgeTextPrimary]}>
                                                 SEMANA
                                             </Text>
                                         </View>
@@ -624,15 +722,30 @@ export default function AdminHomeScreen() {
                                         />
                                     </View>
 
-                                    <View style={[styles.badge, styles.badgePrimarySoft]}>
-                                        <Text
-                                            style={[
-                                                styles.badgeText,
-                                                styles.badgeTextPrimarySoft,
-                                            ]}
-                                        >
-                                            META LEADS
-                                        </Text>
+                                    <View style={styles.leadsBannerRight}>
+                                        <View style={styles.leadsToggleRow}>
+                                            <RangeTogglePill
+                                                label="Semana"
+                                                active={leadsRangeMode === "week"}
+                                                onPress={() => setLeadsRangeMode("week")}
+                                            />
+                                            <RangeTogglePill
+                                                label="Mes"
+                                                active={leadsRangeMode === "month"}
+                                                onPress={() => setLeadsRangeMode("month")}
+                                            />
+                                        </View>
+
+                                        <View style={[styles.badge, styles.badgePrimarySoft]}>
+                                            <Text
+                                                style={[
+                                                    styles.badgeText,
+                                                    styles.badgeTextPrimarySoft,
+                                                ]}
+                                            >
+                                                META LEADS
+                                            </Text>
+                                        </View>
                                     </View>
                                 </View>
 
@@ -640,32 +753,32 @@ export default function AdminHomeScreen() {
                                     <TinyStat
                                         icon="help-circle-outline"
                                         color={COLORS.info}
-                                        value={leadQueueStats.pendingReview}
+                                        value={visibleLeadStats.pendingReview}
                                         label="Revisión"
                                     />
                                     <TinyStat
                                         icon="document-text-outline"
                                         color={COLORS.warn}
-                                        value={leadQueueStats.incomplete}
+                                        value={visibleLeadStats.incomplete}
                                         label="Incompletos"
                                     />
                                     <TinyStat
                                         icon="ban-outline"
                                         color={COLORS.bad}
-                                        value={leadQueueStats.notSuitable}
+                                        value={visibleLeadStats.notSuitable}
                                         label="No aptos"
                                     />
                                     <TinyStat
                                         icon="checkmark-done-outline"
                                         color={COLORS.ok}
-                                        value={leadQueueStats.verified}
+                                        value={visibleLeadStats.verified}
                                         label="Verificados"
                                     />
                                 </View>
 
                                 <Text style={styles.quickSubMuted} numberOfLines={1}>
-                                    Cola activa: {leadQueueStats.activeQueue} · Total Meta:{" "}
-                                    {leadQueueStats.total}
+                                    {leadsRangeMode === "week" ? "Semana actual" : "Mes actual"} · Cola activa:{" "}
+                                    {visibleLeadStats.activeQueue} · Total: {visibleLeadStats.total}
                                 </Text>
                             </Pressable>
                         </ScrollView>
@@ -677,10 +790,9 @@ export default function AdminHomeScreen() {
                                     title={a.title}
                                     icon={a.icon}
                                     onPress={() => router.push({ pathname: a.route as any })}
+                                    active={a.route === "/admin/leads" ? false : false}
                                 />
                             ))}
-
-
                         </View>
                     </View>
                 </View>
@@ -895,9 +1007,15 @@ const styles = StyleSheet.create({
 
     leadsBannerTop: {
         flexDirection: "row",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "space-between",
         gap: 10,
+    },
+
+    leadsBannerRight: {
+        flex: 1,
+        alignItems: "flex-end",
+        gap: 8,
     },
 
     leadsBannerIconWrap: {
@@ -914,6 +1032,38 @@ const styles = StyleSheet.create({
         shadowRadius: 8,
         shadowOffset: { width: 0, height: 0 },
         elevation: 2,
+    },
+
+    leadsToggleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+
+    rangePill: {
+        minHeight: 30,
+        paddingHorizontal: 12,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        backgroundColor: "rgba(255,255,255,0.04)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    rangePillActive: {
+        backgroundColor: "rgba(90,200,250,0.14)",
+        borderColor: "rgba(90,200,250,0.24)",
+    },
+
+    rangePillText: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "900",
+    },
+
+    rangePillTextActive: {
+        color: COLORS.text,
     },
 
     leadsStatsRow: {
@@ -947,7 +1097,9 @@ const styles = StyleSheet.create({
         borderRadius: 16,
     },
 
-    bottomNavItemDanger: {},
+    bottomNavItemActive: {
+        backgroundColor: "rgba(255,255,255,0.03)",
+    },
 
     bottomNavIconWrap: {
         width: 34,
@@ -960,10 +1112,10 @@ const styles = StyleSheet.create({
         justifyContent: "center",
     },
 
-    bottomNavIconWrapDanger: {
-        backgroundColor: COLORS.logoutBg,
-        borderColor: COLORS.logoutBorder,
+    bottomNavIconWrapActive: {
+        backgroundColor: COLORS.navItemActive,
     },
+
     logoutBtn: {
         width: 40,
         height: 40,
@@ -979,9 +1131,5 @@ const styles = StyleSheet.create({
         color: COLORS.text,
         fontSize: 10,
         fontWeight: "800",
-    },
-
-    bottomNavTextDanger: {
-        color: "#FECACA",
     },
 });

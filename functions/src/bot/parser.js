@@ -157,6 +157,7 @@ function createLeadParser({
         const finalName = explicitName || fallbackName || "";
         const hasBusiness = !!(finalBusiness || businessRaw);
         const hasAddressCandidate = !!finalAddress;
+        const hasWrittenAddressWithoutMaps = hasAddressCandidate && !hasMapsCandidate;
 
         const profileFlags = detectUnsupportedProfileSignals(text);
         const {
@@ -166,12 +167,11 @@ function createLeadParser({
         } = classifyProfileFromFlags(profileFlags);
 
         const businessQuality = classifyBusinessQuality(text, finalBusiness, businessRaw);
-        const businessFlags = typeof getBusinessFlags === "function"
-            ? getBusinessFlags(text, finalBusiness, businessRaw)
-            : [];
+        const businessFlags =
+            typeof getBusinessFlags === "function"
+                ? getBusinessFlags(text, finalBusiness, businessRaw)
+                : [];
 
-        // PRIORIDAD NUEVA:
-        // Con Maps ya puede pasar a revisión, aunque todavía falte tipo de comercio.
         const messageParseStatus =
             hasMapsCandidate
                 ? "ready"
@@ -191,6 +191,10 @@ function createLeadParser({
             parsedAddress: finalAddress || "",
             parsedBusiness: finalBusiness || businessRaw || "",
             parsedBusinessRaw: businessRaw || finalBusiness || "",
+            extractedMapsUrl: extractedMapsUrl || "",
+            hasMapsCandidate,
+            hasAddressCandidate,
+            hasWrittenAddressWithoutMaps,
             businessQuality,
             businessFlags,
             profileFlags,

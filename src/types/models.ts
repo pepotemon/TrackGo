@@ -121,6 +121,21 @@ export type ClientChatMode = "bot" | "human" | "hybrid";
  */
 export type ClientLeadHistoryBucket = "incomplete" | "not_suitable";
 
+/**
+ * ✅ Nuevo: confianza del geo comercial / reverse geocoding
+ */
+export type ClientGeoConfidence = "high" | "medium" | "low";
+
+/**
+ * ✅ Nuevo:
+ * geo comercial / operativo (trackgo)
+ * - geoCityLabel: plaza/hub comercial detectado
+ * - geoOutOfCoverage: true si cayó fuera del radio operativo
+ *
+ * ✅ Nuevo:
+ * geo administrativo real (reverse geocoding)
+ * - ciudad / estado / país detectados por coordenadas reales
+ */
 export type ClientDoc = {
     id: string;
 
@@ -314,6 +329,40 @@ export type ClientDoc = {
      */
     adminQueueLastSeenMessageAt?: number | null;
     adminQueueSeenAt?: number | null;
+
+    /**
+     * ✅ Nuevo: geocoding comercial / hub operativo
+     */
+    geoCityLabel?: string | null;
+    geoCityNormalized?: string | null;
+    geoCluster?: string | null;
+    geoSource?: string | null;
+    geoResolvedAt?: number | null;
+    geoDistanceToHubKm?: number | null;
+    geoOutOfCoverage?: boolean | null;
+    geoConfidence?: ClientGeoConfidence | null;
+    geoNearestHubKey?: string | null;
+    geoNearestHubLabel?: string | null;
+
+    /**
+     * ✅ Nuevo: reverse geocoding administrativo real
+     */
+    geoAdminCityLabel?: string | null;
+    geoAdminCityNormalized?: string | null;
+    geoAdminStateLabel?: string | null;
+    geoAdminStateNormalized?: string | null;
+    geoAdminCountryLabel?: string | null;
+    geoAdminCountryNormalized?: string | null;
+    geoAdminSource?: string | null;
+    geoAdminResolvedAt?: number | null;
+
+    /**
+     * ✅ Nuevo:
+     * label final lista para UI
+     * prioridad típica:
+     * geoAdminCityLabel || geoNearestHubLabel || geoState...
+     */
+    geoAdminDisplayLabel?: string | null;
 };
 
 // ----------------------
@@ -445,6 +494,30 @@ export type IncomingLeadDoc = {
     locationAddress?: string;
     locationName?: string;
     locationCaptured?: boolean;
+
+    /**
+     * ✅ Nuevo: geo operativo / reverse geo
+     */
+    geoCityLabel?: string | null;
+    geoCityNormalized?: string | null;
+    geoCluster?: string | null;
+    geoSource?: string | null;
+    geoResolvedAt?: number | null;
+    geoDistanceToHubKm?: number | null;
+    geoOutOfCoverage?: boolean | null;
+    geoConfidence?: ClientGeoConfidence | null;
+    geoNearestHubKey?: string | null;
+    geoNearestHubLabel?: string | null;
+
+    geoAdminCityLabel?: string | null;
+    geoAdminCityNormalized?: string | null;
+    geoAdminStateLabel?: string | null;
+    geoAdminStateNormalized?: string | null;
+    geoAdminCountryLabel?: string | null;
+    geoAdminCountryNormalized?: string | null;
+    geoAdminSource?: string | null;
+    geoAdminResolvedAt?: number | null;
+    geoAdminDisplayLabel?: string | null;
 
     clientId?: string;
     result?: IncomingLeadResult;
