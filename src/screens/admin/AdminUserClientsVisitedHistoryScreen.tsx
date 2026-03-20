@@ -22,14 +22,12 @@ import {
     assignClient,
     deleteClient,
     subscribeAdminClients,
+    subscribeUserClients,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
-import {
-    dayKeyFromMs,
-    subscribeDailyEventsByRange,
-} from "../../data/repositories/dailyEventsRepo";
+import { dayKeyFromMs } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
+import type { ClientDoc, UserDoc } from "../../types/models";
 
 type VerificationStatus =
     | "verified"
@@ -38,6 +36,7 @@ type VerificationStatus =
     | "not_suitable";
 
 type RangeKey = "today" | "7d" | "30d" | "90d";
+type RealStatus = "pending" | "visited" | "rejected";
 
 function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
@@ -56,6 +55,12 @@ function roundCoord(v: any): number | null {
     const n = safeNumber(v);
     if (n == null) return null;
     return Math.round(n * 1000000) / 1000000;
+}
+
+function safeStatus(value?: string | null): RealStatus {
+    if (value === "visited") return "visited";
+    if (value === "rejected") return "rejected";
+    return "pending";
 }
 
 function extractLatLngFromMapsUrl(url: string): { lat: number | null; lng: number | null } {
@@ -111,13 +116,6 @@ function waLink(phoneDigits: string, text: string) {
     return `https://wa.me/${p}?text=${encodeURIComponent(text)}`;
 }
 
-function dayKeyFromDate(d: Date) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-}
-
 function toMs(v: any): number {
     if (!v) return 0;
     if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -161,49 +159,6 @@ function formatRangeLabel(key: RangeKey) {
     if (key === "7d") return "7 días";
     if (key === "30d") return "30 días";
     return "90 días";
-}
-
-function getRangeDates(key: RangeKey) {
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
-
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-
-    if (key === "today") {
-        return { start, end };
-    }
-
-    if (key === "7d") {
-        start.setDate(start.getDate() - 6);
-        return { start, end };
-    }
-
-    if (key === "30d") {
-        start.setDate(start.getDate() - 29);
-        return { start, end };
-    }
-
-    start.setDate(start.getDate() - 89);
-    return { start, end };
-}
-
-function latestVisitedEventByClient(events: DailyEventDoc[]) {
-    const map = new Map<string, DailyEventDoc>();
-
-    for (const e of events) {
-        const cid = (e as any)?.clientId as string | undefined;
-        const type = (e as any)?.type as string | undefined;
-        if (!cid || type !== "visited") continue;
-
-        const prev = map.get(cid);
-        const eMs = toMs((e as any)?.createdAt);
-        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
-
-        if (!prev || eMs >= pMs) map.set(cid, e);
-    }
-
-    return map;
 }
 
 function isUnassignedClient(c: ClientDoc) {
@@ -256,6 +211,16 @@ function getBusinessRaw(c: ClientDoc) {
     return String((c as any)?.businessRaw ?? "").trim();
 }
 
+function getVisitedLikeDateMs(c: ClientDoc) {
+    return (
+        toMs((c as any)?.statusAt) ||
+        toMs((c as any)?.visitedAt) ||
+        toMs((c as any)?.updatedAt) ||
+        toMs((c as any)?.assignedAt) ||
+        toMs((c as any)?.createdAt)
+    );
+}
+
 export default function AdminUserClientsVisitedHistoryScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -266,7 +231,6 @@ export default function AdminUserClientsVisitedHistoryScreen() {
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
-    const [events, setEvents] = useState<DailyEventDoc[]>([]);
 
     const [q, setQ] = useState("");
     const [rangeKey, setRangeKey] = useState<RangeKey>("30d");
@@ -293,22 +257,27 @@ export default function AdminUserClientsVisitedHistoryScreen() {
     const [menuClientId, setMenuClientId] = useState<string | null>(null);
 
     useEffect(() => {
-        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
+        if (!userId) {
+            setClients([]);
+            return;
+        }
+
+        if (isUnassignedView) {
+            const unsub = subscribeAdminClients((list) => {
+                const all = Array.isArray(list) ? list : [];
+                setClients(
+                    all.filter((c) => String((c.assignedTo ?? "") as any).trim().length === 0)
+                );
+            });
+            return () => unsub();
+        }
+
+        const unsub = subscribeUserClients(userId, (list) => {
+            setClients(Array.isArray(list) ? list : []);
+        });
+
         return () => unsub();
-    }, []);
-
-    useEffect(() => {
-        const { start, end } = getRangeDates(rangeKey);
-
-        const unsub = subscribeDailyEventsByRange(
-            dayKeyFromDate(start),
-            dayKeyFromDate(end),
-            (list) => setEvents(list ?? []),
-            (err) => console.log("[VisitedHistory] events err:", err?.code, err?.message)
-        );
-
-        return () => unsub();
-    }, [rangeKey]);
+    }, [userId, isUnassignedView]);
 
     const reloadUsers = async () => {
         if (usersLoading) return;
@@ -337,22 +306,9 @@ export default function AdminUserClientsVisitedHistoryScreen() {
         return users.find((u) => u.id === userId) ?? null;
     }, [users, userId, isUnassignedView]);
 
-    const belongsToThisView = (c: ClientDoc) => {
-        const assignedTo = String((c.assignedTo ?? "") as any).trim();
-
-        if (isUnassignedView) return assignedTo.length === 0;
-        return assignedTo === userId;
-    };
-
-    const assignedClients = useMemo(() => {
-        return clients.filter(belongsToThisView);
-    }, [clients, userId, isUnassignedView]);
-
-    const visitedEventByClient = useMemo(() => latestVisitedEventByClient(events), [events]);
-
     const visitedClients = useMemo(() => {
-        return assignedClients.filter((c) => visitedEventByClient.has(c.id));
-    }, [assignedClients, visitedEventByClient]);
+        return clients.filter((c) => safeStatus((c as any)?.status) === "visited");
+    }, [clients]);
 
     const filteredClients = useMemo(() => {
         const qtText = q.trim().toLowerCase();
@@ -385,12 +341,9 @@ export default function AdminUserClientsVisitedHistoryScreen() {
 
                 return true;
             })
-            .sort((a, b) => {
-                const aMs = toMs((visitedEventByClient.get(a.id) as any)?.createdAt);
-                const bMs = toMs((visitedEventByClient.get(b.id) as any)?.createdAt);
-                return bMs - aMs;
-            });
-    }, [visitedClients, q, visitedEventByClient]);
+            .slice()
+            .sort((a, b) => getVisitedLikeDateMs(b) - getVisitedLikeDateMs(a));
+    }, [visitedClients, q]);
 
     const pickerUsers = useMemo(() => {
         const qt = pickerQuery.trim().toLowerCase();
@@ -408,9 +361,7 @@ export default function AdminUserClientsVisitedHistoryScreen() {
     }, [clients, menuClientId]);
 
     const title = isUnassignedView ? "Visitados sin asignar" : user?.name?.trim() || "Visitados";
-    const subtitle = isUnassignedView
-        ? `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`
-        : `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`;
+    const subtitle = `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`;
 
     const modalBottomPad = Math.max(10, insets.bottom + 10);
 
@@ -714,8 +665,7 @@ export default function AdminUserClientsVisitedHistoryScreen() {
                         const bizRaw = getBusinessRaw(c);
                         const isBusy = busyId === c.id;
 
-                        const visitedEvent = visitedEventByClient.get(c.id);
-                        const visitedAt = toMs((visitedEvent as any)?.createdAt);
+                        const visitedAt = getVisitedLikeDateMs(c);
 
                         const assignedLabel = (() => {
                             const a = ((c.assignedTo ?? "") as any).toString().trim();
@@ -929,7 +879,7 @@ export default function AdminUserClientsVisitedHistoryScreen() {
                             <Text style={styles.emptyText}>
                                 {q.trim()
                                     ? "No hay resultados."
-                                    : "No hay visitados en este rango."}
+                                    : "No hay clientes con estado visitado para este usuario."}
                             </Text>
                         </View>
                     ) : null}

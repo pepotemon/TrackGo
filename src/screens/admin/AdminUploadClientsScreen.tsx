@@ -24,13 +24,13 @@ import {
     createClient,
     deleteClient,
     subscribeAdminClients,
+    subscribeUserClients,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
 import { dayKeyFromMs } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, UserDoc } from "../../types/models";
 
-// ✅ Ajusta esta ruta a donde tengas el hook
 import { useShareText } from "../../share/receiveShareText";
 
 function normalizePhone(raw: string) {
@@ -57,14 +57,37 @@ function roundCoord(v: any): number | null {
     return Math.round(n * 1000000) / 1000000;
 }
 
-/**
- * ✅ intenta sacar lat/lng desde links comunes de Google Maps
- * soporta casos como:
- * - https://www.google.com/maps?q=-1.39,-48.47
- * - https://maps.google.com/?q=-1.39,-48.47
- * - https://www.google.com/maps/search/?api=1&query=-1.39,-48.47
- * - .../@-1.39,-48.47,17z
- */
+function safeStatus(value?: string | null): "pending" | "visited" | "rejected" {
+    if (value === "visited") return "visited";
+    if (value === "rejected") return "rejected";
+    return "pending";
+}
+
+function getAssignedKey(c: ClientDoc) {
+    const raw = String((c as any)?.assignedTo ?? "").trim();
+    return raw || "UNASSIGNED";
+}
+
+function countStatuses(list: ClientDoc[]) {
+    let pending = 0;
+    let visited = 0;
+    let rejected = 0;
+
+    for (const c of list) {
+        const status = safeStatus((c as any)?.status);
+        if (status === "visited") visited += 1;
+        else if (status === "rejected") rejected += 1;
+        else pending += 1;
+    }
+
+    return {
+        total: list.length,
+        pending,
+        visited,
+        rejected,
+    };
+}
+
 function extractLatLngFromMapsUrl(url: string): { lat: number | null; lng: number | null } {
     const raw = (url ?? "").trim();
     if (!raw) return { lat: null, lng: null };
@@ -94,7 +117,6 @@ function extractLatLngFromMapsUrl(url: string): { lat: number | null; lng: numbe
     }
 }
 
-/** ✅ elimina keys con undefined (Firestore no las acepta) */
 function cleanUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
     const out: any = {};
     for (const k of Object.keys(obj)) {
@@ -107,7 +129,7 @@ function cleanUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
 type PickerMode = "create" | "assignExisting" | "edit";
 
 type Section = {
-    key: string; // userId o "UNASSIGNED"
+    key: string;
     title: string;
     subtitle?: string;
     totals: { total: number; pending: number; visited: number; rejected: number };
@@ -136,45 +158,30 @@ function getClientParseStatusLabel(c: ClientDoc) {
     return "Vacío";
 }
 
-function getClientIdentityLabel(c: ClientDoc) {
-    const name = ((c as any)?.name ?? "").toString().trim();
-    const business = ((c as any)?.business ?? "").toString().trim();
-    const phone = (c.phone ?? "").toString().trim();
-
-    if (business && name) return `${name} · ${business}`;
-    if (business) return business;
-    if (name) return name;
-    return phone || "Cliente";
-}
-
 export default function AdminUploadClientsScreen() {
     const insets = useSafeAreaInsets();
     const router = useRouter();
     const params = useLocalSearchParams<{ mapsUrl?: string; maps?: string }>();
 
-    const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
 
-    // UI
-    const [q, setQ] = useState("");
+    // fuente correcta por usuario (igual que userhistory)
+    const [clientsByUser, setClientsByUser] = useState<Record<string, ClientDoc[]>>({});
+    // fuente correcta para sin asignar
+    const [unassignedClients, setUnassignedClients] = useState<ClientDoc[]>([]);
 
-    // Busy
+    const [q, setQ] = useState("");
     const [busyId, setBusyId] = useState<string | null>(null);
 
-    // Modals
     const [createOpen, setCreateOpen] = useState(false);
     const [editOpen, setEditOpen] = useState(false);
 
-    // User picker modal
     const [userPickerOpen, setUserPickerOpen] = useState(false);
     const [pickerQuery, setPickerQuery] = useState("");
     const [pickerMode, setPickerMode] = useState<PickerMode>("create");
     const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(null);
 
-    // -------------------------
-    // Create form state
-    // -------------------------
     const [cName, setCName] = useState("");
     const [cBusiness, setCBusiness] = useState("");
     const [cPhone, setCPhone] = useState("");
@@ -184,9 +191,6 @@ export default function AdminUploadClientsScreen() {
     const [cSaving, setCSaving] = useState(false);
     const [cErr, setCErr] = useState<string | null>(null);
 
-    // -------------------------
-    // Edit form state
-    // -------------------------
     const [editingId, setEditingId] = useState<string | null>(null);
     const [eName, setEName] = useState("");
     const [eBusiness, setEBusiness] = useState("");
@@ -196,15 +200,12 @@ export default function AdminUploadClientsScreen() {
     const [eAssigneeId, setEAssigneeId] = useState<string | null>(null);
     const [eSaving, setESaving] = useState(false);
 
-    // ✅ Share receiver
     const { sharedMapsUrl, sharedText, clear } = useShareText();
     const lastShareRef = useRef<string>("");
 
-    // ✅ Cuando llega share
     useEffect(() => {
         const incoming = (sharedMapsUrl || sharedText || "").trim();
         if (!incoming) return;
-
         if (lastShareRef.current === incoming) return;
         lastShareRef.current = incoming;
 
@@ -238,25 +239,15 @@ export default function AdminUploadClientsScreen() {
         }
     }, [sharedMapsUrl, sharedText, clear, router]);
 
-    // -------------------------
-    // realtime clients
-    // -------------------------
-    useEffect(() => {
-        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
-        return () => unsub();
-    }, []);
-
-    // -------------------------
-    // users list
-    // -------------------------
     const reloadUsers = async () => {
         if (usersLoading) return;
         setUsersLoading(true);
         try {
             const u = await listUsers("user");
-            setUsers(u ?? []);
-            if (!cAssigneeId && u?.[0]) setCAssigneeId(u[0].id);
-            if (!eAssigneeId && u?.[0]) setEAssigneeId(u[0].id);
+            const list = u ?? [];
+            setUsers(list);
+            if (!cAssigneeId && list[0]) setCAssigneeId(list[0].id);
+            if (!eAssigneeId && list[0]) setEAssigneeId(list[0].id);
         } finally {
             setUsersLoading(false);
         }
@@ -272,6 +263,71 @@ export default function AdminUploadClientsScreen() {
         await reloadUsers();
     };
 
+    /**
+     * IMPORTANTE:
+     * esta es la corrección real.
+     * Para que coincida con UserHistory / RejectedHistory / VisitedHistory:
+     * - por cada usuario: subscribeUserClients(userId)
+     * - sin asignar: subscribeAdminClients filtrando assignedTo vacío
+     */
+    useEffect(() => {
+        const cleanUsers = users.filter((u) => String(u.id ?? "").trim().length > 0);
+
+        const unsubscribers: Array<() => void> = [];
+
+        // reset inicial al cambiar listado de usuarios
+        setClientsByUser({});
+
+        for (const u of cleanUsers) {
+            const uid = String(u.id).trim();
+            const unsub = subscribeUserClients(uid, (list) => {
+                setClientsByUser((prev) => ({
+                    ...prev,
+                    [uid]: Array.isArray(list) ? list : [],
+                }));
+            });
+            unsubscribers.push(unsub);
+        }
+
+        const unsubAdmin = subscribeAdminClients((list) => {
+            const all = Array.isArray(list) ? list : [];
+            setUnassignedClients(
+                all.filter((c) => String((c.assignedTo ?? "") as any).trim().length === 0)
+            );
+        });
+        unsubscribers.push(unsubAdmin);
+
+        return () => {
+            unsubscribers.forEach((fn) => {
+                try {
+                    fn();
+                } catch { }
+            });
+        };
+    }, [users]);
+
+    /**
+     * unión de todas las fuentes correctas.
+     * dedupe por id para evitar dobles conteos durante transiciones de asignación.
+     */
+    const clients = useMemo(() => {
+        const byId = new Map<string, ClientDoc>();
+
+        for (const list of Object.values(clientsByUser)) {
+            for (const c of list ?? []) {
+                if (!c?.id) continue;
+                byId.set(c.id, c);
+            }
+        }
+
+        for (const c of unassignedClients) {
+            if (!c?.id) continue;
+            byId.set(c.id, c);
+        }
+
+        return Array.from(byId.values());
+    }, [clientsByUser, unassignedClients]);
+
     const userById = useMemo(() => {
         const m = new Map<string, UserDoc>();
         for (const u of users) m.set(u.id, u);
@@ -283,21 +339,12 @@ export default function AdminUploadClientsScreen() {
         for (const u of users) {
             const name = (u.name ?? "").trim();
             const email = (u.email ?? "").trim();
-            const label = name && email
-                ? `${name} · ${email}`
-                : name
-                    ? name
-                    : email
-                        ? email
-                        : "Usuario";
+            const label = name && email ? `${name} · ${email}` : name ? name : email ? email : "Usuario";
             m.set(u.id, label);
         }
         return m;
     }, [users]);
 
-    // -------------------------
-    // Prefill desde params
-    // -------------------------
     const lastHandledMapsUrlRef = useRef<string>("");
 
     useEffect(() => {
@@ -317,31 +364,38 @@ export default function AdminUploadClientsScreen() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [params?.mapsUrl, params?.maps]);
 
-    // -------------------------
-    // counts
-    // -------------------------
     const pendingByUser = useMemo(() => {
         const m = new Map<string, number>();
-        for (const c of clients) {
-            if (c.status !== "pending") continue;
-            const k = c.assignedTo ? c.assignedTo : "UNASSIGNED";
-            m.set(k, (m.get(k) ?? 0) + 1);
+
+        // usuarios: contar desde subscribeUserClients
+        for (const u of users) {
+            const uid = String(u.id ?? "").trim();
+            if (!uid) continue;
+            const totals = countStatuses(clientsByUser[uid] ?? []);
+            m.set(uid, totals.pending);
         }
+
+        // unassigned: contar desde admin filtrado vacío
+        m.set("UNASSIGNED", countStatuses(unassignedClients).pending);
+
         return m;
+    }, [users, clientsByUser, unassignedClients]);
+
+    const countsWithSource = useMemo(() => {
+        const base = countStatuses(clients);
+
+        let auto = 0;
+        for (const c of clients) {
+            if (String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta") auto += 1;
+        }
+
+        return {
+            ...base,
+            auto,
+            manual: clients.length - auto,
+        };
     }, [clients]);
 
-    const counts = useMemo(() => {
-        const pending = clients.filter((c) => c.status === "pending").length;
-        const visited = clients.filter((c) => c.status === "visited").length;
-        const rejected = clients.filter((c) => c.status === "rejected").length;
-        const auto = clients.filter((c) => String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta").length;
-        const manual = clients.length - auto;
-        return { pending, visited, rejected, total: clients.length, auto, manual };
-    }, [clients]);
-
-    // -------------------------
-    // Search
-    // -------------------------
     const filteredClients = useMemo(() => {
         const qtText = q.trim().toLowerCase();
         const qtDigits = normalizePhone(q);
@@ -357,7 +411,8 @@ export default function AdminUploadClientsScreen() {
         }
 
         return clients.filter((c) => {
-            if (c.assignedTo && matchedUserIds.has(c.assignedTo)) return true;
+            const assignedKey = getAssignedKey(c);
+            if (assignedKey !== "UNASSIGNED" && matchedUserIds.has(assignedKey)) return true;
 
             if (qtDigits) {
                 const phoneDigits = normalizePhone(c.phone ?? "");
@@ -367,9 +422,10 @@ export default function AdminUploadClientsScreen() {
             if (qtText) {
                 const name = safeText((c as any).name);
                 const business = safeText((c as any).business);
-                const assigneeLabel = c.assignedTo
-                    ? safeText(userLabelById.get(c.assignedTo) ?? "")
-                    : "sin asignar";
+                const assigneeLabel =
+                    assignedKey !== "UNASSIGNED"
+                        ? safeText(userLabelById.get(assignedKey) ?? "")
+                        : "sin asignar";
                 const sourceLabel = safeText(getClientSourceLabel(c));
                 const parseLabel = safeText(getClientParseStatusLabel(c));
 
@@ -381,31 +437,13 @@ export default function AdminUploadClientsScreen() {
         });
     }, [clients, q, users, userLabelById]);
 
-    // -------------------------
-    // Group by user
-    // -------------------------
     const sections: Section[] = useMemo(() => {
-        const byKey: Record<string, ClientDoc[]> = {};
-
-        for (const c of filteredClients) {
-            const key = c.assignedTo ? c.assignedTo : "UNASSIGNED";
-            if (!byKey[key]) byKey[key] = [];
-            byKey[key].push(c);
-        }
-
-        const makeTotals = (arr: ClientDoc[]) => {
-            let pending = 0;
-            let visited = 0;
-            let rejected = 0;
-
-            for (const c of arr) {
-                if (c.status === "visited") visited++;
-                else if (c.status === "rejected") rejected++;
-                else pending++;
-            }
-
-            return { total: arr.length, pending, visited, rejected };
-        };
+        const keys = [
+            "UNASSIGNED",
+            ...users
+                .map((u) => String(u.id ?? "").trim())
+                .filter(Boolean),
+        ];
 
         const makeTitle = (key: string) => {
             if (key === "UNASSIGNED") return "Sin asignar";
@@ -421,41 +459,38 @@ export default function AdminUploadClientsScreen() {
             const u = userById.get(key);
             if (!u) return undefined;
             const email = (u.email ?? "").trim();
-            return email ? email : undefined;
+            return email || undefined;
         };
 
-        const keys = Object.keys(byKey);
+        const out: Section[] = [];
 
-        keys.sort((a, b) => {
-            if (a === "UNASSIGNED") return -1;
-            if (b === "UNASSIGNED") return 1;
-            const la = (userLabelById.get(a) ?? "").toLowerCase();
-            const lb = (userLabelById.get(b) ?? "").toLowerCase();
-            return la.localeCompare(lb);
-        });
+        for (const key of keys) {
+            const group = filteredClients.filter((c) => getAssignedKey(c) === key);
+            if (!group.length) continue;
 
-        return keys.map((key) => {
-            const group = byKey[key] ?? [];
-            const autoCount = group.filter(
-                (c) => String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
-            ).length;
-            const manualCount = group.length - autoCount;
+            const totals = countStatuses(group);
 
-            return {
+            let autoCount = 0;
+            for (const c of group) {
+                if (String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta") {
+                    autoCount += 1;
+                }
+            }
+
+            out.push({
                 key,
                 title: makeTitle(key),
                 subtitle: makeSubtitle(key),
-                totals: makeTotals(group),
+                totals,
                 autoCount,
-                manualCount,
+                manualCount: group.length - autoCount,
                 data: [],
-            };
-        });
-    }, [filteredClients, userById, userLabelById]);
+            });
+        }
 
-    // -------------------------
-    // Create flow
-    // -------------------------
+        return out;
+    }, [filteredClients, users, userById]);
+
     const resetCreate = () => {
         setCName("");
         setCBusiness("");
@@ -535,7 +570,6 @@ export default function AdminUploadClientsScreen() {
                 payload.assignedTo = cAssigneeId;
                 payload.assignedAt = now;
                 payload.assignedDayKey = dayKeyFromMs(now);
-
                 payload.status = "pending";
                 payload.statusBy = null;
                 payload.statusAt = null;
@@ -554,9 +588,6 @@ export default function AdminUploadClientsScreen() {
         }
     };
 
-    // -------------------------
-    // Edit flow
-    // -------------------------
     const startEdit = async (c: ClientDoc) => {
         await ensureUsers();
 
@@ -566,7 +597,7 @@ export default function AdminUploadClientsScreen() {
         setEPhone(c.phone ?? "");
         setEMapsUrl(c.mapsUrl ?? "");
         setEAddress(c.address ?? "");
-        setEAssigneeId(c.assignedTo ?? null);
+        setEAssigneeId(String((c as any)?.assignedTo ?? "").trim() || null);
 
         setEditOpen(true);
     };
@@ -666,9 +697,6 @@ export default function AdminUploadClientsScreen() {
         ]);
     };
 
-    // -------------------------
-    // User picker data
-    // -------------------------
     const pickerUsers = useMemo(() => {
         const qt = pickerQuery.trim().toLowerCase();
         if (!qt) return users;
@@ -768,15 +796,15 @@ export default function AdminUploadClientsScreen() {
                         <Text style={styles.hTitle}>Clientes</Text>
 
                         <Text style={styles.hSub} numberOfLines={1}>
-                            T <Text style={styles.hStrong}>{counts.total}</Text> · P{" "}
-                            <Text style={styles.hStrong}>{counts.pending}</Text> · V{" "}
-                            <Text style={styles.hStrong}>{counts.visited}</Text> · R{" "}
-                            <Text style={styles.hStrong}>{counts.rejected}</Text>
+                            T <Text style={styles.hStrong}>{countsWithSource.total}</Text> · P{" "}
+                            <Text style={styles.hStrong}>{countsWithSource.pending}</Text> · V{" "}
+                            <Text style={styles.hStrong}>{countsWithSource.visited}</Text> · R{" "}
+                            <Text style={styles.hStrong}>{countsWithSource.rejected}</Text>
                         </Text>
 
                         <Text style={styles.hSubAlt} numberOfLines={1}>
-                            Manual <Text style={styles.hStrong}>{counts.manual}</Text> · Auto{" "}
-                            <Text style={styles.hStrong}>{counts.auto}</Text>
+                            Manual <Text style={styles.hStrong}>{countsWithSource.manual}</Text> · Auto{" "}
+                            <Text style={styles.hStrong}>{countsWithSource.auto}</Text>
                         </Text>
                     </View>
 
@@ -1208,7 +1236,9 @@ export default function AdminUploadClientsScreen() {
                                             </View>
 
                                             <View style={styles.pendingBadgeMini}>
-                                                <Text style={styles.pendingBadgeMiniText}>{pendingByUser.get("UNASSIGNED") ?? 0}</Text>
+                                                <Text style={styles.pendingBadgeMiniText}>
+                                                    {pendingByUser.get("UNASSIGNED") ?? 0}
+                                                </Text>
                                             </View>
                                         </Pressable>
                                     ) : null}
@@ -1406,61 +1436,6 @@ const styles = StyleSheet.create({
     miniTextVisited: { color: "#86EFAC" },
     miniPillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.28)" },
     miniTextRejected: { color: "#FCA5A5" },
-
-    card: {
-        backgroundColor: COLORS.card,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        borderRadius: 18,
-        padding: 14,
-        gap: 10,
-        marginBottom: 12,
-    },
-    cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-    phone: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
-    meta: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-
-    pill: {
-        paddingHorizontal: 10,
-        height: 28,
-        borderRadius: 999,
-        alignItems: "center",
-        justifyContent: "center",
-        borderWidth: 1,
-        maxWidth: 150,
-    },
-    pillText: { fontSize: 12, fontWeight: "900", textTransform: "lowercase" },
-    pillPending: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.35)" },
-    pillTextPending: { color: "#FDE68A" },
-    pillVisited: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.35)" },
-    pillTextVisited: { color: "#86EFAC" },
-    pillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.35)" },
-    pillTextRejected: { color: "#FCA5A5" },
-
-    infoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-    infoText: { flex: 1, color: COLORS.text, opacity: 0.9, fontSize: 12, fontWeight: "700" },
-
-    assignedRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
-    assignedText: { flex: 1, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-
-    actionsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingTop: 4 },
-    actionsLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
-
-    iconBtn: {
-        width: 44,
-        height: 44,
-        borderRadius: 16,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    iconBtnDanger: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.30)" },
-    iconBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
-    iconBtnDisabled: { opacity: 0.5 },
-
-    busyText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
 
     empty: { marginTop: 40, alignItems: "center", gap: 10, paddingHorizontal: 16 },
     emptySmall: { paddingVertical: 10, alignItems: "center" },

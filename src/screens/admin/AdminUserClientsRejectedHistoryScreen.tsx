@@ -22,14 +22,12 @@ import {
     assignClient,
     deleteClient,
     subscribeAdminClients,
+    subscribeUserClients,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
-import {
-    dayKeyFromMs,
-    subscribeDailyEventsByRange,
-} from "../../data/repositories/dailyEventsRepo";
+import { dayKeyFromMs } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
+import type { ClientDoc, UserDoc } from "../../types/models";
 
 type VerificationStatus =
     | "verified"
@@ -38,6 +36,7 @@ type VerificationStatus =
     | "not_suitable";
 
 type RangeKey = "today" | "7d" | "30d" | "90d";
+type RealStatus = "pending" | "visited" | "rejected";
 
 type RejectReason =
     | "clavo"
@@ -68,6 +67,12 @@ function roundCoord(v: any): number | null {
     const n = safeNumber(v);
     if (n == null) return null;
     return Math.round(n * 1000000) / 1000000;
+}
+
+function safeStatus(value?: string | null): RealStatus {
+    if (value === "visited") return "visited";
+    if (value === "rejected") return "rejected";
+    return "pending";
 }
 
 function extractLatLngFromMapsUrl(url: string): { lat: number | null; lng: number | null } {
@@ -123,13 +128,6 @@ function waLink(phoneDigits: string, text: string) {
     return `https://wa.me/${p}?text=${encodeURIComponent(text)}`;
 }
 
-function dayKeyFromDate(d: Date) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-}
-
 function toMs(v: any): number {
     if (!v) return 0;
     if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -173,76 +171,6 @@ function formatRangeLabel(key: RangeKey) {
     if (key === "7d") return "7 días";
     if (key === "30d") return "30 días";
     return "90 días";
-}
-
-function getRangeDates(key: RangeKey) {
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
-
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-
-    if (key === "today") return { start, end };
-
-    if (key === "7d") {
-        start.setDate(start.getDate() - 6);
-        return { start, end };
-    }
-
-    if (key === "30d") {
-        start.setDate(start.getDate() - 29);
-        return { start, end };
-    }
-
-    start.setDate(start.getDate() - 89);
-    return { start, end };
-}
-
-function latestRejectedEventByClient(events: DailyEventDoc[]) {
-    const map = new Map<string, DailyEventDoc>();
-
-    for (const e of events) {
-        const cid = (e as any)?.clientId as string | undefined;
-        const type = (e as any)?.type as string | undefined;
-        if (!cid || type !== "rejected") continue;
-
-        const prev = map.get(cid);
-        const eMs = toMs((e as any)?.createdAt);
-        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
-
-        if (!prev || eMs >= pMs) map.set(cid, e);
-    }
-
-    return map;
-}
-
-function extractRejectReasonFromEvent(ev?: DailyEventDoc | null): RejectReason | undefined {
-    if (!ev) return undefined;
-    const anyEv: any = ev as any;
-
-    const raw =
-        (anyEv?.reason ??
-            anyEv?.rejectReason ??
-            anyEv?.rejectedReason ??
-            anyEv?.meta?.reason) as string | undefined;
-
-    if (!raw) return undefined;
-
-    const r = String(raw).toLowerCase().trim();
-
-    if (r === "clavo") return "clavo";
-    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
-        return "localizacion";
-    if (r === "zona_riesgosa") return "zona_riesgosa";
-    if (r === "ingresos_insuficientes") return "ingresos_insuficientes";
-    if (r === "muy_endeudado") return "muy_endeudado";
-    if (r === "informacion_dudosa") return "informacion_dudosa";
-    if (r === "no_le_interesa") return "no_le_interesa";
-    if (r === "no_estaba_cerrado") return "no_estaba_cerrado";
-    if (r === "fuera_de_ruta") return "fuera_de_ruta";
-    if (r === "otro" || r === "outro") return "otro";
-
-    return undefined;
 }
 
 function extractRejectReasonFromClient(c: ClientDoc): RejectReason | undefined {
@@ -352,6 +280,15 @@ function getBusinessRaw(c: ClientDoc) {
     return String((c as any)?.businessRaw ?? "").trim();
 }
 
+function getRejectedLikeDateMs(c: ClientDoc) {
+    return (
+        toMs((c as any)?.statusAt) ||
+        toMs((c as any)?.updatedAt) ||
+        toMs((c as any)?.assignedAt) ||
+        toMs((c as any)?.createdAt)
+    );
+}
+
 export default function AdminUserClientsRejectedHistoryScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -362,7 +299,6 @@ export default function AdminUserClientsRejectedHistoryScreen() {
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
-    const [events, setEvents] = useState<DailyEventDoc[]>([]);
 
     const [q, setQ] = useState("");
     const [rangeKey, setRangeKey] = useState<RangeKey>("30d");
@@ -389,22 +325,27 @@ export default function AdminUserClientsRejectedHistoryScreen() {
     const [menuClientId, setMenuClientId] = useState<string | null>(null);
 
     useEffect(() => {
-        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
+        if (!userId) {
+            setClients([]);
+            return;
+        }
+
+        if (isUnassignedView) {
+            const unsub = subscribeAdminClients((list) => {
+                const all = Array.isArray(list) ? list : [];
+                setClients(
+                    all.filter((c) => String((c.assignedTo ?? "") as any).trim().length === 0)
+                );
+            });
+            return () => unsub();
+        }
+
+        const unsub = subscribeUserClients(userId, (list) => {
+            setClients(Array.isArray(list) ? list : []);
+        });
+
         return () => unsub();
-    }, []);
-
-    useEffect(() => {
-        const { start, end } = getRangeDates(rangeKey);
-
-        const unsub = subscribeDailyEventsByRange(
-            dayKeyFromDate(start),
-            dayKeyFromDate(end),
-            (list) => setEvents(list ?? []),
-            (err) => console.log("[RejectedHistory] events err:", err?.code, err?.message)
-        );
-
-        return () => unsub();
-    }, [rangeKey]);
+    }, [userId, isUnassignedView]);
 
     const reloadUsers = async () => {
         if (usersLoading) return;
@@ -433,22 +374,9 @@ export default function AdminUserClientsRejectedHistoryScreen() {
         return users.find((u) => u.id === userId) ?? null;
     }, [users, userId, isUnassignedView]);
 
-    const belongsToThisView = (c: ClientDoc) => {
-        const assignedTo = String((c.assignedTo ?? "") as any).trim();
-
-        if (isUnassignedView) return assignedTo.length === 0;
-        return assignedTo === userId;
-    };
-
-    const assignedClients = useMemo(() => {
-        return clients.filter(belongsToThisView);
-    }, [clients, userId, isUnassignedView]);
-
-    const rejectedEventByClient = useMemo(() => latestRejectedEventByClient(events), [events]);
-
     const rejectedClients = useMemo(() => {
-        return assignedClients.filter((c) => rejectedEventByClient.has(c.id));
-    }, [assignedClients, rejectedEventByClient]);
+        return clients.filter((c) => safeStatus((c as any)?.status) === "rejected");
+    }, [clients]);
 
     const filteredClients = useMemo(() => {
         const qtText = q.trim().toLowerCase();
@@ -475,18 +403,17 @@ export default function AdminUserClientsRejectedHistoryScreen() {
                         ${safeText(getClientParseStatusLabel(c))}
                         ${safeText(getVerificationStatusLabel(c))}
                         ${safeText(getNotSuitableReason(c))}
+                        ${safeText((c as any)?.rejectReason)}
+                        ${safeText((c as any)?.rejectedReason)}
                     `;
                     return hay.includes(qtText);
                 }
 
                 return true;
             })
-            .sort((a, b) => {
-                const aMs = toMs((rejectedEventByClient.get(a.id) as any)?.createdAt);
-                const bMs = toMs((rejectedEventByClient.get(b.id) as any)?.createdAt);
-                return bMs - aMs;
-            });
-    }, [rejectedClients, q, rejectedEventByClient]);
+            .slice()
+            .sort((a, b) => getRejectedLikeDateMs(b) - getRejectedLikeDateMs(a));
+    }, [rejectedClients, q]);
 
     const pickerUsers = useMemo(() => {
         const qt = pickerQuery.trim().toLowerCase();
@@ -504,9 +431,7 @@ export default function AdminUserClientsRejectedHistoryScreen() {
     }, [clients, menuClientId]);
 
     const title = isUnassignedView ? "Rechazados sin asignar" : user?.name?.trim() || "Rechazados";
-    const subtitle = isUnassignedView
-        ? `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`
-        : `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`;
+    const subtitle = `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`;
 
     const modalBottomPad = Math.max(10, insets.bottom + 10);
 
@@ -810,12 +735,8 @@ export default function AdminUserClientsRejectedHistoryScreen() {
                         const bizRaw = getBusinessRaw(c);
                         const isBusy = busyId === c.id;
 
-                        const rejectedEvent = rejectedEventByClient.get(c.id);
-                        const rejectedAt = toMs((rejectedEvent as any)?.createdAt);
-
-                        const fromClient = extractRejectReasonFromClient(c);
-                        const fromEvent = extractRejectReasonFromEvent(rejectedEvent);
-                        const rejectReason = fromClient ?? fromEvent;
+                        const rejectedAt = getRejectedLikeDateMs(c);
+                        const rejectReason = extractRejectReasonFromClient(c);
 
                         const assignedLabel = (() => {
                             const a = ((c.assignedTo ?? "") as any).toString().trim();
@@ -1036,7 +957,7 @@ export default function AdminUserClientsRejectedHistoryScreen() {
                             <Text style={styles.emptyText}>
                                 {q.trim()
                                     ? "No hay resultados."
-                                    : "No hay rechazados en este rango."}
+                                    : "No hay clientes con estado rechazado para este usuario."}
                             </Text>
                         </View>
                     ) : null}
