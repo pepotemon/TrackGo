@@ -1,3 +1,4 @@
+
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
 import React, { useEffect } from "react";
@@ -128,6 +129,11 @@ export default function AdminLayout() {
             <Stack.Screen name="clients" options={{ title: "TrackGo" }} />
             <Stack.Screen name="leads" options={{ title: "TrackGo" }} />
             <Stack.Screen name="lead-history" options={{ title: "TrackGo" }} />
+
+            {/* NUEVAS PANTALLAS DE HISTORIAL */}
+            <Stack.Screen name="user-clients-visited-history" options={{ title: "TrackGo" }} />
+            <Stack.Screen name="user-clients-rejected-history" options={{ title: "TrackGo" }} />
+
             <Stack.Screen name="accounting" options={{ title: "TrackGo" }} />
             <Stack.Screen name="history" options={{ title: "TrackGo" }} />
             <Stack.Screen name="report" options={{ title: "TrackGo" }} />
@@ -198,12 +204,6 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         gap: 2,
-    },
-
-    headerLogo: {
-        width: 120,
-        height: 120,
-        marginRight: -40,
     },
 
     headerTitleWrap: {

@@ -23,6 +23,7 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AdminBackground from "../../components/admin/AdminBackground";
+import AssignCoverageModal from "../../components/admin/AssignCoverageModal";
 import {
     assignClient,
     deleteClient,
@@ -35,7 +36,6 @@ import {
 } from "../../data/repositories/clientsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, UserDoc } from "../../types/models";
-
 type MetaFilterKey =
     | "pending_review"
     | "incomplete"
@@ -102,6 +102,8 @@ const COLORS = {
 
     rejected: "#F87171",
 };
+
+
 
 function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
@@ -684,7 +686,7 @@ export default function AdminLeadQueueScreen() {
     const [historyBaseClients, setHistoryBaseClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
-
+    const [coverageModalOpen, setCoverageModalOpen] = useState(false);
     const [q, setQ] = useState("");
     const debouncedQ = useDebouncedValue(q, 280);
 
@@ -1309,6 +1311,17 @@ export default function AdminLeadQueueScreen() {
                             </Text>
                         </View>
 
+
+
+                        <Pressable
+                            onPress={() => setCoverageModalOpen(true)}
+                            style={({ pressed }) => [
+                                styles.headerBadge,
+                                pressed && styles.pressed,
+                            ]}
+                        >
+                            <Ionicons name="git-merge-outline" size={18} color={COLORS.text} />
+                        </Pressable>
                         <Pressable
                             onPress={goToHistory}
                             style={({ pressed }) => [
@@ -1346,7 +1359,7 @@ export default function AdminLeadQueueScreen() {
                         <TextInput
                             value={q}
                             onChangeText={setQ}
-                            placeholder="Buscar lead, teléfono, negocio, dirección, ciudad..."
+                            placeholder=""
                             placeholderTextColor={COLORS.muted}
                             style={styles.searchInput}
                         />
@@ -2012,8 +2025,31 @@ export default function AdminLeadQueueScreen() {
                             </View>
                         </View>
                     </Modal>
+
+                    <AssignCoverageModal
+                        open={coverageModalOpen}
+                        onClose={() => setCoverageModalOpen(false)}
+                        leads={activeQueueClients}
+                        users={users}
+                        onAssign={async (leadId: string, userId: string) => {
+                            await updateClientFields(leadId, {
+                                verificationStatus: "verified",
+                                leadQuality: "valid",
+                                notSuitableReason: "",
+                                verifiedAt: Date.now(),
+                                updatedAt: Date.now(),
+                            } as any);
+
+                            await assignClient(leadId, userId);
+                        }}
+                    />
+
                 </View>
+
+
             </AdminBackground>
+
+
         </SafeAreaView>
     );
 }

@@ -24,15 +24,32 @@ import {
     subscribeAdminClients,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
-import { dayKeyFromMs } from "../../data/repositories/dailyEventsRepo";
+import {
+    dayKeyFromMs,
+    subscribeDailyEventsByRange,
+} from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, UserDoc } from "../../types/models";
+import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
 
 type VerificationStatus =
     | "verified"
     | "pending_review"
     | "incomplete"
     | "not_suitable";
+
+type RangeKey = "today" | "7d" | "30d" | "90d";
+
+type RejectReason =
+    | "clavo"
+    | "localizacion"
+    | "zona_riesgosa"
+    | "ingresos_insuficientes"
+    | "muy_endeudado"
+    | "informacion_dudosa"
+    | "no_le_interesa"
+    | "no_estaba_cerrado"
+    | "fuera_de_ruta"
+    | "otro";
 
 function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
@@ -106,6 +123,13 @@ function waLink(phoneDigits: string, text: string) {
     return `https://wa.me/${p}?text=${encodeURIComponent(text)}`;
 }
 
+function dayKeyFromDate(d: Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
 function toMs(v: any): number {
     if (!v) return 0;
     if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -142,6 +166,140 @@ function formatStatusDateLabel(ms?: number) {
     const year = d.getFullYear();
 
     return `${day} ${month} ${year}`;
+}
+
+function formatRangeLabel(key: RangeKey) {
+    if (key === "today") return "Hoy";
+    if (key === "7d") return "7 días";
+    if (key === "30d") return "30 días";
+    return "90 días";
+}
+
+function getRangeDates(key: RangeKey) {
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+
+    if (key === "today") return { start, end };
+
+    if (key === "7d") {
+        start.setDate(start.getDate() - 6);
+        return { start, end };
+    }
+
+    if (key === "30d") {
+        start.setDate(start.getDate() - 29);
+        return { start, end };
+    }
+
+    start.setDate(start.getDate() - 89);
+    return { start, end };
+}
+
+function latestRejectedEventByClient(events: DailyEventDoc[]) {
+    const map = new Map<string, DailyEventDoc>();
+
+    for (const e of events) {
+        const cid = (e as any)?.clientId as string | undefined;
+        const type = (e as any)?.type as string | undefined;
+        if (!cid || type !== "rejected") continue;
+
+        const prev = map.get(cid);
+        const eMs = toMs((e as any)?.createdAt);
+        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
+
+        if (!prev || eMs >= pMs) map.set(cid, e);
+    }
+
+    return map;
+}
+
+function extractRejectReasonFromEvent(ev?: DailyEventDoc | null): RejectReason | undefined {
+    if (!ev) return undefined;
+    const anyEv: any = ev as any;
+
+    const raw =
+        (anyEv?.reason ??
+            anyEv?.rejectReason ??
+            anyEv?.rejectedReason ??
+            anyEv?.meta?.reason) as string | undefined;
+
+    if (!raw) return undefined;
+
+    const r = String(raw).toLowerCase().trim();
+
+    if (r === "clavo") return "clavo";
+    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
+        return "localizacion";
+    if (r === "zona_riesgosa") return "zona_riesgosa";
+    if (r === "ingresos_insuficientes") return "ingresos_insuficientes";
+    if (r === "muy_endeudado") return "muy_endeudado";
+    if (r === "informacion_dudosa") return "informacion_dudosa";
+    if (r === "no_le_interesa") return "no_le_interesa";
+    if (r === "no_estaba_cerrado") return "no_estaba_cerrado";
+    if (r === "fuera_de_ruta") return "fuera_de_ruta";
+    if (r === "otro" || r === "outro") return "otro";
+
+    return undefined;
+}
+
+function extractRejectReasonFromClient(c: ClientDoc): RejectReason | undefined {
+    const anyC: any = c as any;
+
+    const raw =
+        (anyC?.rejectReason ??
+            anyC?.rejectedReason ??
+            anyC?.statusReason ??
+            anyC?.rejectedMeta?.reason ??
+            anyC?.statusMeta?.reason) as string | undefined;
+
+    if (!raw) return undefined;
+
+    const r = String(raw).toLowerCase().trim();
+
+    if (r === "clavo") return "clavo";
+    if (r === "localizacion" || r === "localización" || r === "localizacao" || r === "localização")
+        return "localizacion";
+    if (r === "zona_riesgosa") return "zona_riesgosa";
+    if (r === "ingresos_insuficientes") return "ingresos_insuficientes";
+    if (r === "muy_endeudado") return "muy_endeudado";
+    if (r === "informacion_dudosa") return "informacion_dudosa";
+    if (r === "no_le_interesa") return "no_le_interesa";
+    if (r === "no_estaba_cerrado") return "no_estaba_cerrado";
+    if (r === "fuera_de_ruta") return "fuera_de_ruta";
+    if (r === "otro" || r === "outro") return "otro";
+
+    return undefined;
+}
+
+function reasonLabel(r?: RejectReason) {
+    if (r === "clavo") return "Clavo";
+    if (r === "localizacion") return "Localización";
+    if (r === "zona_riesgosa") return "Zona riesgosa";
+    if (r === "ingresos_insuficientes") return "Ingresos insuficientes";
+    if (r === "muy_endeudado") return "Muy endeudado";
+    if (r === "informacion_dudosa") return "Información dudosa";
+    if (r === "no_le_interesa") return "No le interesa";
+    if (r === "no_estaba_cerrado") return "No estaba / cerrado";
+    if (r === "fuera_de_ruta") return "Fuera de ruta";
+    if (r === "otro") return "Otro";
+    return "Sin motivo";
+}
+
+function reasonIcon(r?: RejectReason) {
+    if (r === "clavo") return "alert-circle-outline";
+    if (r === "localizacion") return "navigate-outline";
+    if (r === "zona_riesgosa") return "warning-outline";
+    if (r === "ingresos_insuficientes") return "cash-outline";
+    if (r === "muy_endeudado") return "trending-down-outline";
+    if (r === "informacion_dudosa") return "help-circle-outline";
+    if (r === "no_le_interesa") return "close-circle-outline";
+    if (r === "no_estaba_cerrado") return "storefront-outline";
+    if (r === "fuera_de_ruta") return "map-outline";
+    if (r === "otro") return "help-circle-outline";
+    return "information-circle-outline";
 }
 
 function isUnassignedClient(c: ClientDoc) {
@@ -194,7 +352,7 @@ function getBusinessRaw(c: ClientDoc) {
     return String((c as any)?.businessRaw ?? "").trim();
 }
 
-export default function AdminUserClientsScreen() {
+export default function AdminUserClientsRejectedHistoryScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
     const params = useLocalSearchParams<{ userId?: string }>();
@@ -204,8 +362,10 @@ export default function AdminUserClientsScreen() {
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
+    const [events, setEvents] = useState<DailyEventDoc[]>([]);
 
     const [q, setQ] = useState("");
+    const [rangeKey, setRangeKey] = useState<RangeKey>("30d");
     const [busyId, setBusyId] = useState<string | null>(null);
 
     const [editOpen, setEditOpen] = useState(false);
@@ -232,6 +392,19 @@ export default function AdminUserClientsScreen() {
         const unsub = subscribeAdminClients((list) => setClients(list ?? []));
         return () => unsub();
     }, []);
+
+    useEffect(() => {
+        const { start, end } = getRangeDates(rangeKey);
+
+        const unsub = subscribeDailyEventsByRange(
+            dayKeyFromDate(start),
+            dayKeyFromDate(end),
+            (list) => setEvents(list ?? []),
+            (err) => console.log("[RejectedHistory] events err:", err?.code, err?.message)
+        );
+
+        return () => unsub();
+    }, [rangeKey]);
 
     const reloadUsers = async () => {
         if (usersLoading) return;
@@ -271,19 +444,17 @@ export default function AdminUserClientsScreen() {
         return clients.filter(belongsToThisView);
     }, [clients, userId, isUnassignedView]);
 
-    const pendingClients = useMemo(() => {
-        return assignedClients.filter((c) => c.status === "pending");
-    }, [assignedClients]);
+    const rejectedEventByClient = useMemo(() => latestRejectedEventByClient(events), [events]);
 
-    const pendingNowCount = useMemo(() => {
-        return pendingClients.length;
-    }, [pendingClients]);
+    const rejectedClients = useMemo(() => {
+        return assignedClients.filter((c) => rejectedEventByClient.has(c.id));
+    }, [assignedClients, rejectedEventByClient]);
 
-    const userClients = useMemo(() => {
+    const filteredClients = useMemo(() => {
         const qtText = q.trim().toLowerCase();
         const qtDigits = normalizePhone(q);
 
-        return pendingClients
+        return rejectedClients
             .filter((c) => {
                 if (!qtText && !qtDigits) return true;
 
@@ -311,19 +482,11 @@ export default function AdminUserClientsScreen() {
                 return true;
             })
             .sort((a, b) => {
-                const aMs =
-                    toMs((a as any)?.updatedAt) ||
-                    toMs((a as any)?.assignedAt) ||
-                    toMs((a as any)?.createdAt);
-
-                const bMs =
-                    toMs((b as any)?.updatedAt) ||
-                    toMs((b as any)?.assignedAt) ||
-                    toMs((b as any)?.createdAt);
-
+                const aMs = toMs((rejectedEventByClient.get(a.id) as any)?.createdAt);
+                const bMs = toMs((rejectedEventByClient.get(b.id) as any)?.createdAt);
                 return bMs - aMs;
             });
-    }, [pendingClients, q]);
+    }, [rejectedClients, q, rejectedEventByClient]);
 
     const pickerUsers = useMemo(() => {
         const qt = pickerQuery.trim().toLowerCase();
@@ -340,10 +503,10 @@ export default function AdminUserClientsScreen() {
         return clients.find((c) => c.id === menuClientId) ?? null;
     }, [clients, menuClientId]);
 
-    const title = isUnassignedView ? "Pendientes sin asignar" : user?.name?.trim() || "Usuario";
+    const title = isUnassignedView ? "Rechazados sin asignar" : user?.name?.trim() || "Rechazados";
     const subtitle = isUnassignedView
-        ? `Clientes pendientes · ${pendingNowCount}`
-        : `${user?.email?.trim() || "—"} · Pendientes ${pendingNowCount}`;
+        ? `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`
+        : `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`;
 
     const modalBottomPad = Math.max(10, insets.bottom + 10);
 
@@ -364,7 +527,7 @@ export default function AdminUserClientsScreen() {
             return;
         }
 
-        const msg = "Olá! Estou entrando em contato sobre a visita 🙌";
+        const msg = "Olá! Estou entrando em contato 🙌";
         const url = waLink(p, msg);
 
         try {
@@ -573,6 +736,10 @@ export default function AdminUserClientsScreen() {
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
             <AdminBackground>
                 <View style={styles.header}>
+                    <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}>
+                        <Ionicons name="chevron-back" size={18} color={COLORS.text} />
+                    </Pressable>
+
                     <View style={{ flex: 1, gap: 2 }}>
                         <Text style={styles.hTitle} numberOfLines={1}>
                             {title}
@@ -581,32 +748,6 @@ export default function AdminUserClientsScreen() {
                             {subtitle}
                         </Text>
                     </View>
-
-                    <Pressable
-                        onPress={() =>
-                            router.push({
-                                pathname: "/admin/user-clients-visited-history" as any,
-                                params: { userId },
-                            })
-                        }
-                        style={({ pressed }) => [styles.headerBadge, pressed && styles.pressed]}
-                        accessibilityLabel="Historial visitados"
-                    >
-                        <Ionicons name="checkmark-done-outline" size={18} color={COLORS.text} />
-                    </Pressable>
-
-                    <Pressable
-                        onPress={() =>
-                            router.push({
-                                pathname: "/admin/user-clients-rejected-history" as any,
-                                params: { userId },
-                            })
-                        }
-                        style={({ pressed }) => [styles.headerBadge, pressed && styles.pressed]}
-                        accessibilityLabel="Historial rechazados"
-                    >
-                        <Ionicons name="close-circle-outline" size={18} color={COLORS.text} />
-                    </Pressable>
 
                     <Pressable
                         onPress={reloadUsers}
@@ -623,7 +764,7 @@ export default function AdminUserClientsScreen() {
                     <TextInput
                         value={q}
                         onChangeText={setQ}
-                        placeholder="Buscar pendiente"
+                        placeholder="Buscar por nombre o número"
                         placeholderTextColor={COLORS.muted}
                         style={styles.searchInput}
                     />
@@ -634,19 +775,47 @@ export default function AdminUserClientsScreen() {
                     ) : null}
                 </View>
 
-                <View style={styles.pendingBanner}>
-                    <View style={styles.pendingDot} />
-                    <Text style={styles.pendingBannerText}>
-                        Mostrando solo pendientes · {pendingNowCount}
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rangeRow}>
+                    {(["today", "7d", "30d", "90d"] as RangeKey[]).map((k) => {
+                        const active = rangeKey === k;
+                        return (
+                            <Pressable
+                                key={k}
+                                onPress={() => setRangeKey(k)}
+                                style={({ pressed }) => [
+                                    styles.rangePill,
+                                    active && styles.rangePillActive,
+                                    pressed && styles.pressed,
+                                ]}
+                            >
+                                <Text style={[styles.rangePillText, active && styles.rangePillTextActive]}>
+                                    {formatRangeLabel(k)}
+                                </Text>
+                            </Pressable>
+                        );
+                    })}
+                </ScrollView>
+
+                <View style={styles.banner}>
+                    <View style={styles.bannerDot} />
+                    <Text style={styles.bannerText}>
+                        Historial rechazados · {filteredClients.length}
                     </Text>
                 </View>
 
                 <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-                    {userClients.map((c) => {
+                    {filteredClients.map((c) => {
                         const name = ((c as any).name ?? "").trim();
                         const biz = ((c as any).business ?? "").trim();
                         const bizRaw = getBusinessRaw(c);
                         const isBusy = busyId === c.id;
+
+                        const rejectedEvent = rejectedEventByClient.get(c.id);
+                        const rejectedAt = toMs((rejectedEvent as any)?.createdAt);
+
+                        const fromClient = extractRejectReasonFromClient(c);
+                        const fromEvent = extractRejectReasonFromEvent(rejectedEvent);
+                        const rejectReason = fromClient ?? fromEvent;
 
                         const assignedLabel = (() => {
                             const a = ((c.assignedTo ?? "") as any).toString().trim();
@@ -655,12 +824,6 @@ export default function AdminUserClientsScreen() {
                             if (!u) return "Asignado";
                             return (u.name ?? "").trim() || (u.email ?? "").trim() || "Usuario";
                         })();
-
-                        const statusDateLabel = formatStatusDateLabel(
-                            toMs((c as any)?.updatedAt) ||
-                            toMs((c as any)?.assignedAt) ||
-                            toMs((c as any)?.createdAt)
-                        );
 
                         const sourceLabel = getClientSourceLabel(c);
                         const parseLabel = getClientParseStatusLabel(c);
@@ -676,7 +839,7 @@ export default function AdminUserClientsScreen() {
                         return (
                             <View key={c.id} style={styles.card}>
                                 <View style={styles.cardTop}>
-                                    <View style={{ flex: 1, gap: 6 }}>
+                                    <View style={styles.cardHeadLeft}>
                                         <Text style={styles.phone} numberOfLines={1}>
                                             {name || c.phone}
                                         </Text>
@@ -688,7 +851,7 @@ export default function AdminUserClientsScreen() {
                                         ) : null}
 
                                         {!!biz ? (
-                                            <Text style={styles.meta} numberOfLines={1}>
+                                            <Text style={styles.metaStrong} numberOfLines={1}>
                                                 {biz}
                                             </Text>
                                         ) : null}
@@ -697,95 +860,6 @@ export default function AdminUserClientsScreen() {
                                             <Text style={styles.metaSoft} numberOfLines={1}>
                                                 Original: {bizRaw}
                                             </Text>
-                                        ) : null}
-
-                                        <View style={styles.topBadgesRow}>
-                                            <View style={[styles.pill, styles.pillPending]}>
-                                                <Text style={[styles.pillText, styles.pillTextPending]} numberOfLines={1}>
-                                                    pendiente
-                                                </Text>
-                                            </View>
-
-                                            {statusDateLabel ? (
-                                                <View style={[styles.datePill, styles.datePillPending]}>
-                                                    <Text style={[styles.datePillText, styles.datePillTextPending]} numberOfLines={1}>
-                                                        {statusDateLabel}
-                                                    </Text>
-                                                </View>
-                                            ) : null}
-                                        </View>
-
-                                        <View style={styles.infoBadgeRow}>
-                                            <View
-                                                style={[
-                                                    styles.infoBadge,
-                                                    String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
-                                                        ? styles.infoBadgeBlue
-                                                        : styles.infoBadgeNeutral,
-                                                ]}
-                                            >
-                                                <Ionicons
-                                                    name={
-                                                        String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
-                                                            ? "logo-whatsapp"
-                                                            : "create-outline"
-                                                    }
-                                                    size={12}
-                                                    color={COLORS.text}
-                                                />
-                                                <Text style={styles.infoBadgeText}>{sourceLabel}</Text>
-                                            </View>
-
-                                            <View
-                                                style={[
-                                                    styles.infoBadge,
-                                                    parseStatus === "ready"
-                                                        ? styles.infoBadgeGreen
-                                                        : parseStatus === "partial"
-                                                            ? styles.infoBadgeYellow
-                                                            : styles.infoBadgeNeutral,
-                                                ]}
-                                            >
-                                                <Ionicons name="document-text-outline" size={12} color={COLORS.text} />
-                                                <Text style={styles.infoBadgeText}>{parseLabel}</Text>
-                                            </View>
-
-                                            <View
-                                                style={[
-                                                    styles.infoBadge,
-                                                    verificationStatus === "verified"
-                                                        ? styles.infoBadgeGreen
-                                                        : verificationStatus === "pending_review"
-                                                            ? styles.infoBadgeBlue
-                                                            : verificationStatus === "not_suitable"
-                                                                ? styles.infoBadgeRed
-                                                                : styles.infoBadgeYellow,
-                                                ]}
-                                            >
-                                                <Ionicons
-                                                    name={
-                                                        verificationStatus === "verified"
-                                                            ? "checkmark-done-outline"
-                                                            : verificationStatus === "not_suitable"
-                                                                ? "close-circle-outline"
-                                                                : verificationStatus === "pending_review"
-                                                                    ? "shield-checkmark-outline"
-                                                                    : "alert-circle-outline"
-                                                    }
-                                                    size={12}
-                                                    color={COLORS.text}
-                                                />
-                                                <Text style={styles.infoBadgeText}>{verificationLabel}</Text>
-                                            </View>
-                                        </View>
-
-                                        {verificationStatus === "not_suitable" ? (
-                                            <View style={styles.notSuitableTag}>
-                                                <Ionicons name="ban-outline" size={14} color={COLORS.rejected} />
-                                                <Text style={styles.notSuitableTagText}>
-                                                    {notSuitableReason || "Perfil no apto"}
-                                                </Text>
-                                            </View>
                                         ) : null}
                                     </View>
 
@@ -798,9 +872,96 @@ export default function AdminUserClientsScreen() {
                                     </Pressable>
                                 </View>
 
+                                <View style={styles.topBadgesRow}>
+                                    <View style={[styles.pill, styles.pillRejected]}>
+                                        <Text style={[styles.pillText, styles.pillTextRejected]} numberOfLines={1}>
+                                            rechazado
+                                        </Text>
+                                    </View>
+
+                                    {rejectedAt > 0 ? (
+                                        <View style={[styles.datePill, styles.datePillRejected]}>
+                                            <Text style={[styles.datePillText, styles.datePillTextRejected]} numberOfLines={1}>
+                                                {formatStatusDateLabel(rejectedAt)}
+                                            </Text>
+                                        </View>
+                                    ) : null}
+                                </View>
+
+                                <View style={styles.infoBadgeRow}>
+                                    <View
+                                        style={[
+                                            styles.infoBadge,
+                                            String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
+                                                ? styles.infoBadgeBlue
+                                                : styles.infoBadgeNeutral,
+                                        ]}
+                                    >
+                                        <Ionicons
+                                            name={
+                                                String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
+                                                    ? "logo-whatsapp"
+                                                    : "create-outline"
+                                            }
+                                            size={12}
+                                            color={COLORS.text}
+                                        />
+                                        <Text style={styles.infoBadgeText}>{sourceLabel}</Text>
+                                    </View>
+
+                                    <View
+                                        style={[
+                                            styles.infoBadge,
+                                            parseStatus === "ready"
+                                                ? styles.infoBadgeGreen
+                                                : parseStatus === "partial"
+                                                    ? styles.infoBadgeYellow
+                                                    : styles.infoBadgeNeutral,
+                                        ]}
+                                    >
+                                        <Ionicons name="document-text-outline" size={12} color={COLORS.text} />
+                                        <Text style={styles.infoBadgeText}>{parseLabel}</Text>
+                                    </View>
+
+                                    <View
+                                        style={[
+                                            styles.infoBadge,
+                                            verificationStatus === "verified"
+                                                ? styles.infoBadgeGreen
+                                                : verificationStatus === "pending_review"
+                                                    ? styles.infoBadgeBlue
+                                                    : verificationStatus === "not_suitable"
+                                                        ? styles.infoBadgeRed
+                                                        : styles.infoBadgeYellow,
+                                        ]}
+                                    >
+                                        <Ionicons
+                                            name={
+                                                verificationStatus === "verified"
+                                                    ? "checkmark-done-outline"
+                                                    : verificationStatus === "not_suitable"
+                                                        ? "close-circle-outline"
+                                                        : verificationStatus === "pending_review"
+                                                            ? "shield-checkmark-outline"
+                                                            : "alert-circle-outline"
+                                            }
+                                            size={12}
+                                            color={COLORS.text}
+                                        />
+                                        <Text style={styles.infoBadgeText}>{verificationLabel}</Text>
+                                    </View>
+                                </View>
+
+                                <View style={styles.rejectTag}>
+                                    <Ionicons name={reasonIcon(rejectReason) as any} size={14} color={COLORS.rejected} />
+                                    <Text style={styles.rejectTagText}>
+                                        {reasonLabel(rejectReason)}
+                                    </Text>
+                                </View>
+
                                 {!!c.address ? (
                                     <View style={styles.infoRow}>
-                                        <Ionicons name="location-outline" size={16} color={COLORS.muted} />
+                                        <Ionicons name="location-outline" size={15} color={COLORS.muted} />
                                         <Text style={styles.infoText} numberOfLines={2}>
                                             {c.address}
                                         </Text>
@@ -810,7 +971,7 @@ export default function AdminUserClientsScreen() {
                                 <View style={styles.assignedRow}>
                                     <Ionicons
                                         name={isUnassignedClient(c) ? "person-remove-outline" : "person-outline"}
-                                        size={16}
+                                        size={15}
                                         color={COLORS.muted}
                                     />
                                     <Text style={styles.assignedText} numberOfLines={1}>
@@ -818,12 +979,21 @@ export default function AdminUserClientsScreen() {
                                     </Text>
                                 </View>
 
+                                {verificationStatus === "not_suitable" ? (
+                                    <View style={styles.notSuitableTag}>
+                                        <Ionicons name="ban-outline" size={14} color={COLORS.rejected} />
+                                        <Text style={styles.notSuitableTagText}>
+                                            {notSuitableReason || "Perfil no apto"}
+                                        </Text>
+                                    </View>
+                                ) : null}
+
                                 {lastInboundAt > 0 ? (
                                     <View style={styles.inboundBox}>
                                         <View style={styles.inboundHeader}>
                                             <Ionicons name="chatbubble-ellipses-outline" size={14} color={COLORS.muted} />
                                             <Text style={styles.inboundTitle}>
-                                                Última entrada automática · {formatStatusDateLabel(lastInboundAt) ?? "—"}
+                                                Último mensaje · {formatStatusDateLabel(lastInboundAt) ?? "—"}
                                             </Text>
                                         </View>
 
@@ -860,15 +1030,13 @@ export default function AdminUserClientsScreen() {
                         );
                     })}
 
-                    {!userClients.length ? (
+                    {!filteredClients.length ? (
                         <View style={styles.empty}>
-                            <Ionicons name="time-outline" size={24} color={COLORS.muted} />
+                            <Ionicons name="close-circle-outline" size={24} color={COLORS.muted} />
                             <Text style={styles.emptyText}>
                                 {q.trim()
                                     ? "No hay resultados."
-                                    : isUnassignedView
-                                        ? "No hay clientes pendientes sin asignar."
-                                        : "Este usuario no tiene clientes pendientes."}
+                                    : "No hay rechazados en este rango."}
                             </Text>
                         </View>
                     ) : null}
@@ -897,10 +1065,7 @@ export default function AdminUserClientsScreen() {
                                     if (!cid) return;
                                     await openAssignPicker(cid);
                                 }}
-                                style={({ pressed }) => [
-                                    styles.sheetItem,
-                                    pressed && styles.pressed,
-                                ]}
+                                style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
                             >
                                 <Ionicons name="person-add-outline" size={17} color={COLORS.text} />
                                 <Text style={styles.sheetItemText}>Reasignar</Text>
@@ -913,10 +1078,7 @@ export default function AdminUserClientsScreen() {
                                     if (!c) return;
                                     await startEdit(c);
                                 }}
-                                style={({ pressed }) => [
-                                    styles.sheetItem,
-                                    pressed && styles.pressed,
-                                ]}
+                                style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
                             >
                                 <Ionicons name="create-outline" size={17} color={COLORS.text} />
                                 <Text style={styles.sheetItemText}>Editar cliente</Text>
@@ -929,10 +1091,7 @@ export default function AdminUserClientsScreen() {
                                     if (!cid) return;
                                     await clearAssign(cid);
                                 }}
-                                style={({ pressed }) => [
-                                    styles.sheetItem,
-                                    pressed && styles.pressed,
-                                ]}
+                                style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
                             >
                                 <Ionicons name="remove-circle-outline" size={17} color={COLORS.text} />
                                 <Text style={styles.sheetItemText}>Quitar asignación</Text>
@@ -945,10 +1104,7 @@ export default function AdminUserClientsScreen() {
                                     if (!cid) return;
                                     confirmDelete(cid);
                                 }}
-                                style={({ pressed }) => [
-                                    styles.sheetItem,
-                                    pressed && styles.pressed,
-                                ]}
+                                style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
                             >
                                 <Ionicons name="trash-outline" size={17} color={COLORS.rejected} />
                                 <Text style={[styles.sheetItemText, { color: "#FCA5A5" }]}>
@@ -1207,9 +1363,11 @@ export default function AdminUserClientsScreen() {
 const COLORS = {
     bg: "#0B1220",
     card: "#111827",
+    cardAlt: "#0F172A",
     border: "#1F2937",
     text: "#F9FAFB",
     muted: "#9CA3AF",
+    soft: "#CBD5E1",
 
     visited: "#22C55E",
     rejected: "#F87171",
@@ -1225,18 +1383,27 @@ const styles = StyleSheet.create({
     header: {
         paddingHorizontal: 16,
         paddingTop: 10,
-        paddingBottom: 10,
+        paddingBottom: 8,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
+        gap: 12,
+    },
+    backBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 13,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        alignItems: "center",
+        justifyContent: "center",
     },
     hTitle: { color: COLORS.text, fontSize: 18, fontWeight: "900" },
     hSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
-
     headerBadge: {
-        width: 42,
-        height: 42,
-        borderRadius: 14,
+        width: 40,
+        height: 40,
+        borderRadius: 13,
         backgroundColor: "#0F172A",
         borderWidth: 1,
         borderColor: COLORS.border,
@@ -1254,9 +1421,9 @@ const styles = StyleSheet.create({
         backgroundColor: "#0F172A",
         borderWidth: 1,
         borderColor: COLORS.border,
-        borderRadius: 16,
+        borderRadius: 15,
         paddingHorizontal: 12,
-        height: 48,
+        height: 46,
     },
     searchWrapModal: {
         marginBottom: 10,
@@ -1272,35 +1439,59 @@ const styles = StyleSheet.create({
     },
     searchInput: { flex: 1, color: COLORS.text, fontSize: 14, fontWeight: "700" },
     clearBtn: {
-        width: 34,
-        height: 34,
-        borderRadius: 12,
+        width: 32,
+        height: 32,
+        borderRadius: 10,
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: "rgba(255,255,255,0.06)",
     },
 
-    pendingBanner: {
+    rangeRow: { paddingHorizontal: 16, gap: 8, paddingBottom: 10 },
+    rangePill: {
+        height: 34,
+        paddingHorizontal: 13,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    rangePillActive: {
+        backgroundColor: "rgba(248,113,113,0.12)",
+        borderColor: "rgba(248,113,113,0.28)",
+    },
+    rangePillText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    rangePillTextActive: {
+        color: "#FCA5A5",
+    },
+
+    banner: {
         marginHorizontal: 16,
         marginBottom: 10,
-        minHeight: 42,
+        minHeight: 40,
         borderRadius: 14,
         paddingHorizontal: 12,
         flexDirection: "row",
         alignItems: "center",
         gap: 10,
-        backgroundColor: "rgba(251,191,36,0.10)",
+        backgroundColor: "rgba(248,113,113,0.10)",
         borderWidth: 1,
-        borderColor: "rgba(251,191,36,0.22)",
+        borderColor: "rgba(248,113,113,0.20)",
     },
-    pendingDot: {
-        width: 10,
-        height: 10,
+    bannerDot: {
+        width: 8,
+        height: 8,
         borderRadius: 999,
-        backgroundColor: COLORS.pending,
+        backgroundColor: COLORS.rejected,
     },
-    pendingBannerText: {
-        color: "#FDE68A",
+    bannerText: {
+        color: "#FCA5A5",
         fontSize: 12,
         fontWeight: "900",
     },
@@ -1312,7 +1503,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: COLORS.border,
         borderRadius: 18,
-        padding: 14,
+        padding: 13,
         gap: 10,
     },
     cardTop: {
@@ -1321,6 +1512,12 @@ const styles = StyleSheet.create({
         justifyContent: "space-between",
         gap: 10,
     },
+    cardHeadLeft: {
+        flex: 1,
+        gap: 4,
+        paddingRight: 6,
+    },
+
     menuBtn: {
         width: 34,
         height: 34,
@@ -1334,6 +1531,7 @@ const styles = StyleSheet.create({
 
     phone: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
     meta: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    metaStrong: { color: COLORS.soft, fontSize: 12, fontWeight: "900" },
     metaSoft: { color: "#7D8AA6", fontSize: 11, fontWeight: "800" },
 
     topBadgesRow: {
@@ -1341,7 +1539,6 @@ const styles = StyleSheet.create({
         alignItems: "center",
         flexWrap: "wrap",
         gap: 8,
-        marginTop: 2,
     },
 
     infoBadgeRow: {
@@ -1349,13 +1546,12 @@ const styles = StyleSheet.create({
         flexWrap: "wrap",
         alignItems: "center",
         gap: 8,
-        marginTop: 2,
     },
     infoBadge: {
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
-        height: 26,
+        height: 25,
         paddingHorizontal: 9,
         borderRadius: 999,
         borderWidth: 1,
@@ -1396,8 +1592,8 @@ const styles = StyleSheet.create({
         maxWidth: 140,
     },
     pillText: { fontSize: 12, fontWeight: "900", textTransform: "lowercase" },
-    pillPending: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.35)" },
-    pillTextPending: { color: "#FDE68A" },
+    pillRejected: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.35)" },
+    pillTextRejected: { color: "#FCA5A5" },
 
     datePill: {
         paddingHorizontal: 10,
@@ -1411,13 +1607,28 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "900",
     },
-    datePillPending: {
-        backgroundColor: "rgba(251,191,36,0.08)",
-        borderColor: "rgba(251,191,36,0.22)",
+    datePillRejected: {
+        backgroundColor: "rgba(248,113,113,0.08)",
+        borderColor: "rgba(248,113,113,0.22)",
     },
-    datePillTextPending: {
-        color: "#FDE68A",
+    datePillTextRejected: {
+        color: "#FCA5A5",
     },
+
+    rejectTag: {
+        alignSelf: "flex-start",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 10,
+        minHeight: 30,
+        paddingVertical: 6,
+        borderRadius: 999,
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(248,113,113,0.30)",
+    },
+    rejectTagText: { color: "#FCA5A5", fontSize: 12, fontWeight: "900" },
 
     notSuitableTag: {
         alignSelf: "flex-start",
@@ -1438,11 +1649,31 @@ const styles = StyleSheet.create({
         fontWeight: "900",
     },
 
-    infoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-    infoText: { flex: 1, color: COLORS.text, opacity: 0.9, fontSize: 12, fontWeight: "700" },
+    infoRow: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 8,
+    },
+    infoText: {
+        flex: 1,
+        color: COLORS.text,
+        opacity: 0.9,
+        fontSize: 12,
+        fontWeight: "700",
+        lineHeight: 18,
+    },
 
-    assignedRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
-    assignedText: { flex: 1, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    assignedRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    assignedText: {
+        flex: 1,
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
+    },
 
     inboundBox: {
         padding: 10,
@@ -1482,9 +1713,9 @@ const styles = StyleSheet.create({
         justifyContent: "flex-end",
     },
     iconBtn: {
-        width: 44,
-        height: 44,
-        borderRadius: 16,
+        width: 42,
+        height: 42,
+        borderRadius: 14,
         backgroundColor: "#0F172A",
         borderWidth: 1,
         borderColor: COLORS.border,
@@ -1594,10 +1825,6 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: COLORS.border,
     },
-    userRowDanger: {
-        backgroundColor: "rgba(248,113,113,0.08)",
-        borderColor: "rgba(248,113,113,0.22)",
-    },
     userRowPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     userAvatar: {
         width: 40,
@@ -1609,12 +1836,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.10)",
     },
-    userAvatarDanger: {
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderColor: "rgba(248,113,113,0.20)",
-    },
     userName: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    userNameDanger: { color: "#FCA5A5", fontSize: 13, fontWeight: "900" },
     userEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800", marginTop: 2 },
 
     field: { gap: 6 },

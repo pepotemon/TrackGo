@@ -18,17 +18,31 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AdminBackground from "../../components/admin/AdminBackground";
+import AdminCreateUserModal from "../../components/admin/AdminCreateUserModal";
 
 import { db } from "../../config/firebase";
-import { listUsers, updateUserRatePerVisit, upsertUserDoc } from "../../data/repositories/usersRepo";
-import type { UserDoc } from "../../types/models";
+import {
+    listUsers,
+    updateUserRatePerVisit,
+} from "../../data/repositories/usersRepo";
+import type { UserDoc, UserGeoCoverage } from "../../types/models";
 
 function safeText(x?: string) {
     return (x ?? "").toLowerCase();
 }
 
+function safeString(x?: string | null) {
+    return (x ?? "").trim();
+}
+
+function normalizeLooseText(value?: string | null) {
+    return safeString(value)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+}
+
 function onlyNumberLike(text: string) {
-    // permite "" y números tipo "50" "50.5"
     const t = text.replace(",", ".").trim();
     if (!t) return "";
     const cleaned = t.replace(/[^\d.]/g, "");
@@ -47,7 +61,6 @@ function safeNumber(n: any, fallback = 0) {
 
 function getRatePerVisit(u: UserDoc) {
     const anyU: any = u as any;
-    // compat: ratePerVisit (nuevo) o visitFee (viejo)
     return safeNumber(anyU.ratePerVisit ?? anyU.visitFee, 0);
 }
 
@@ -59,9 +72,88 @@ function getWhatsappPhone(u: UserDoc) {
 function buildWhatsAppUrl(phoneDigits: string) {
     const p = normalizePhone(phoneDigits);
     if (!p) return null;
-    // wa.me solo acepta dígitos (con código país)
     return `https://wa.me/${p}`;
 }
+
+function getGeoCoverageList(u: UserDoc): UserGeoCoverage[] {
+    return Array.isArray((u as any)?.geoCoverage) ? ((u as any).geoCoverage as UserGeoCoverage[]) : [];
+}
+
+function makeCoverageId(stateLabel: string, cityLabel: string) {
+    return `city__${normalizeLooseText(stateLabel)}__${normalizeLooseText(cityLabel)}`;
+}
+
+function makeCoverageItem(stateLabel: string, cityLabel: string): UserGeoCoverage | null {
+    const cleanState = safeString(stateLabel);
+    const cleanCity = safeString(cityLabel);
+
+    if (!cleanState || !cleanCity) return null;
+
+    const stateNormalized = normalizeLooseText(cleanState);
+    const cityNormalized = normalizeLooseText(cleanCity);
+
+    const now = Date.now();
+
+    return {
+        id: makeCoverageId(cleanState, cleanCity),
+        type: "city",
+        countryLabel: "Brasil",
+        countryNormalized: "brasil",
+        stateLabel: cleanState,
+        stateNormalized,
+        cityLabel: cleanCity,
+        cityNormalized,
+        displayLabel: `${cleanState} · ${cleanCity}`,
+        source: "manual",
+        active: true,
+        createdAt: now,
+        updatedAt: now,
+    };
+}
+
+function normalizeCoverageList(items: UserGeoCoverage[]) {
+    const seen = new Set<string>();
+    const out: UserGeoCoverage[] = [];
+
+    for (const item of items) {
+        if (!item?.stateLabel || !item?.cityLabel) continue;
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        out.push(item);
+    }
+
+    return out;
+}
+
+const BRAZIL_STATES = [
+    "Acre",
+    "Alagoas",
+    "Amapá",
+    "Amazonas",
+    "Bahia",
+    "Ceará",
+    "Distrito Federal",
+    "Espírito Santo",
+    "Goiás",
+    "Maranhão",
+    "Mato Grosso",
+    "Mato Grosso do Sul",
+    "Minas Gerais",
+    "Pará",
+    "Paraíba",
+    "Paraná",
+    "Pernambuco",
+    "Piauí",
+    "Rio de Janeiro",
+    "Rio Grande do Norte",
+    "Rio Grande do Sul",
+    "Rondônia",
+    "Roraima",
+    "Santa Catarina",
+    "São Paulo",
+    "Sergipe",
+    "Tocantins",
+];
 
 export default function AdminUsersScreen() {
     const insets = useSafeAreaInsets();
@@ -69,34 +161,23 @@ export default function AdminUsersScreen() {
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [loading, setLoading] = useState(false);
 
-    // search
     const [q, setQ] = useState("");
 
-    // modal register
     const [openCreate, setOpenCreate] = useState(false);
 
-    const [uid, setUid] = useState("");
-    const [name, setName] = useState("");
-    const [email, setEmail] = useState("");
-    const [whatsappPhoneNew, setWhatsappPhoneNew] = useState("");
-    const [ratePerVisitNew, setRatePerVisitNew] = useState("50"); // default
-
-    const [err, setErr] = useState<string | null>(null);
-    const [saving, setSaving] = useState(false);
-
-    // ✅ edición de tarifa por usuario (estado local por uid)
     const [feeDraftById, setFeeDraftById] = useState<Record<string, string>>({});
     const [feeSavingById, setFeeSavingById] = useState<Record<string, boolean>>({});
 
-    // ✅ modal edit user
     const [openEdit, setOpenEdit] = useState(false);
     const [editId, setEditId] = useState<string | null>(null);
     const [editName, setEditName] = useState("");
     const [editWhatsapp, setEditWhatsapp] = useState("");
     const [editRate, setEditRate] = useState("0");
+    const [editCoverageState, setEditCoverageState] = useState("");
+    const [editCoverageCity, setEditCoverageCity] = useState("");
+    const [editCoverageList, setEditCoverageList] = useState<UserGeoCoverage[]>([]);
     const [editSaving, setEditSaving] = useState(false);
 
-    // ✅ bloqueo por usuario
     const [blockSavingById, setBlockSavingById] = useState<Record<string, boolean>>({});
 
     const fabBottom = Math.max(18, insets.bottom + 18) + 10;
@@ -107,7 +188,6 @@ export default function AdminUsersScreen() {
             const u = await listUsers();
             setUsers(u);
 
-            // inicializa drafts si no existen
             setFeeDraftById((prev) => {
                 const next = { ...prev };
                 for (const user of u) {
@@ -137,59 +217,32 @@ export default function AdminUsersScreen() {
         if (!qt) return users;
 
         return users.filter((u) => {
-            const anyU: any = u as any;
-            const wa = safeText((anyU.whatsappPhone ?? "").toString());
-            const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.role)} ${wa} ${safeText(u.id)}`;
+            const wa = safeText(getWhatsappPhone(u));
+            const geoBlob = getGeoCoverageList(u)
+                .map((x) => `${safeText(x.stateLabel)} ${safeText(x.cityLabel)} ${safeText(x.displayLabel)}`)
+                .join(" ");
+
+            const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.role)} ${wa} ${safeText(
+                u.id
+            )} ${geoBlob}`;
+
             return hay.includes(qt);
         });
     }, [users, q]);
 
-    const resetCreateForm = () => {
-        setUid("");
-        setName("");
-        setEmail("");
-        setWhatsappPhoneNew("");
-        setRatePerVisitNew("50");
-        setErr(null);
-    };
-
-    const registerProfile = async () => {
-        setErr(null);
-
-        const cleanUid = uid.trim();
-        const cleanName = name.trim();
-        const cleanEmail = email.trim();
-        const cleanWhatsapp = normalizePhone(whatsappPhoneNew);
-        const rate = Number(onlyNumberLike(ratePerVisitNew)) || 0;
-
-        if (!cleanUid) {
-            setErr("UID es obligatorio. Copia el UID desde Firebase Auth.");
+    const addCoverageToEdit = () => {
+        const item = makeCoverageItem(editCoverageState, editCoverageCity);
+        if (!item) {
+            Alert.alert("Datos faltantes", "Debes indicar estado y ciudad.");
             return;
         }
 
-        setSaving(true);
-        try {
-            const docData: UserDoc = {
-                id: cleanUid,
-                name: cleanName || "Usuario",
-                email: cleanEmail,
-                role: "user",
-                active: true,
-                createdAt: Date.now(),
-                ratePerVisit: rate,
-            };
+        setEditCoverageList((prev) => normalizeCoverageList([...prev, item]));
+        setEditCoverageCity("");
+    };
 
-            // ✅ guardamos también whatsappPhone (campo nuevo)
-            await upsertUserDoc({ ...(docData as any), whatsappPhone: cleanWhatsapp });
-
-            resetCreateForm();
-            setOpenCreate(false);
-            await reload();
-        } catch (e: any) {
-            setErr(e?.message ?? "Error registrando perfil");
-        } finally {
-            setSaving(false);
-        }
+    const removeCoverageFromEdit = (id: string) => {
+        setEditCoverageList((prev) => prev.filter((x) => x.id !== id));
     };
 
     const IconBtn = ({
@@ -219,7 +272,11 @@ export default function AdminUsersScreen() {
                 ]}
                 accessibilityLabel={label}
             >
-                <Ionicons name={icon} size={18} color={tint ?? (danger ? COLORS.rejected : COLORS.text)} />
+                <Ionicons
+                    name={icon}
+                    size={18}
+                    color={tint ?? (danger ? COLORS.rejected : COLORS.text)}
+                />
             </Pressable>
         );
     };
@@ -232,7 +289,7 @@ export default function AdminUsersScreen() {
         const stTxt = active ? styles.pillTextActive : styles.pillTextBlocked;
 
         return (
-            <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+            <View style={{ flexDirection: "row", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <View style={[styles.pill, roleStyle]}>
                     <Text style={[styles.pillText, txtStyle]}>{role}</Text>
                 </View>
@@ -279,6 +336,9 @@ export default function AdminUsersScreen() {
         setEditName((u.name ?? "").toString());
         setEditWhatsapp(getWhatsappPhone(u));
         setEditRate(String(getRatePerVisit(u)));
+        setEditCoverageState("");
+        setEditCoverageCity("");
+        setEditCoverageList(getGeoCoverageList(u));
         setOpenEdit(true);
     };
 
@@ -288,6 +348,9 @@ export default function AdminUsersScreen() {
         setEditName("");
         setEditWhatsapp("");
         setEditRate("0");
+        setEditCoverageState("");
+        setEditCoverageCity("");
+        setEditCoverageList([]);
         setEditSaving(false);
     };
 
@@ -297,18 +360,19 @@ export default function AdminUsersScreen() {
         const cleanName = editName.trim() || "Usuario";
         const cleanWhatsapp = normalizePhone(editWhatsapp);
         const rate = Number(onlyNumberLike(editRate)) || 0;
+        const normalizedCoverage = normalizeCoverageList(editCoverageList);
 
         setEditSaving(true);
         try {
-            // ✅ guardamos TODO junto para evitar inconsistencias
             await updateDoc(doc(db, "users", editId), {
                 name: cleanName,
                 whatsappPhone: cleanWhatsapp,
                 ratePerVisit: rate,
+                geoCoverage: normalizedCoverage,
+                primaryGeoCoverageLabel: normalizedCoverage[0]?.displayLabel ?? null,
                 updatedAt: Date.now(),
             } as any);
 
-            // refresca drafts de fee
             setFeeDraftById((p) => ({ ...p, [editId]: String(rate) }));
 
             cancelEditUser();
@@ -359,7 +423,6 @@ export default function AdminUsersScreen() {
         <SafeAreaView style={styles.safe}>
             <StatusBar barStyle="light-content" translucent={false} backgroundColor={COLORS.bg} />
             <AdminBackground>
-                {/* Header */}
                 <View style={[styles.header, { paddingTop: 10 }]}>
                     <View style={{ flex: 1 }}>
                         <Text style={styles.hTitle}>Usuarios</Text>
@@ -379,13 +442,12 @@ export default function AdminUsersScreen() {
                     />
                 </View>
 
-                {/* Search */}
                 <View style={styles.searchWrap}>
                     <Ionicons name="search-outline" size={18} color={COLORS.muted} />
                     <TextInput
                         value={q}
                         onChangeText={setQ}
-                        placeholder="Buscar por nombre, email, rol o WhatsApp…"
+                        placeholder="Buscar por nombre, email, rol, WhatsApp o cobertura…"
                         placeholderTextColor={COLORS.muted}
                         style={styles.searchInput}
                     />
@@ -396,7 +458,6 @@ export default function AdminUsersScreen() {
                     ) : null}
                 </View>
 
-                {/* List */}
                 <FlatList
                     data={filteredUsers}
                     keyExtractor={(u) => u.id}
@@ -405,9 +466,8 @@ export default function AdminUsersScreen() {
                         const displayEmail = (item.email ?? "").trim();
                         const displayName = (item.name ?? "").trim() || "Usuario";
                         const wa = normalizePhone(getWhatsappPhone(item));
+                        const geoCoverage = getGeoCoverageList(item);
 
-                        const isUser = item.role === "user";
-                        const feeDraft = feeDraftById[item.id] ?? String(getRatePerVisit(item));
                         const feeSaving = !!feeSavingById[item.id];
                         const blockSaving = !!blockSavingById[item.id];
 
@@ -427,7 +487,6 @@ export default function AdminUsersScreen() {
                                             <Text style={styles.userEmailMuted}>Sin email</Text>
                                         )}
 
-                                        {/* ✅ WhatsApp phone */}
                                         {wa ? (
                                             <View style={styles.phoneRow}>
                                                 <Ionicons name="logo-whatsapp" size={14} color={COLORS.pending} />
@@ -443,9 +502,33 @@ export default function AdminUsersScreen() {
                                     <Pill role={item.role} active={!!item.active} />
                                 </View>
 
+                                <View style={styles.coverageSection}>
+                                    <Text style={styles.coverageTitle}>Cobertura</Text>
+
+                                    {geoCoverage.length ? (
+                                        <View style={styles.coverageWrap}>
+                                            {geoCoverage.map((coverage) => (
+                                                <View key={coverage.id} style={styles.coveragePill}>
+                                                    <Ionicons
+                                                        name="location-outline"
+                                                        size={13}
+                                                        color="#93C5FD"
+                                                    />
+                                                    <Text style={styles.coveragePillText} numberOfLines={1}>
+                                                        {coverage.displayLabel}
+                                                    </Text>
+                                                </View>
+                                            ))}
+                                        </View>
+                                    ) : (
+                                        <Text style={styles.coverageEmpty}>
+                                            Sin coberturas configuradas
+                                        </Text>
+                                    )}
+                                </View>
+
                                 <View style={styles.actionsRow}>
                                     <View style={{ flexDirection: "row", gap: 10 }}>
-                                        {/* ✅ WhatsApp */}
                                         <IconBtn
                                             icon="logo-whatsapp"
                                             label="WhatsApp"
@@ -454,14 +537,12 @@ export default function AdminUsersScreen() {
                                             tint={wa ? COLORS.pending : COLORS.muted}
                                         />
 
-                                        {/* ✅ Edit user */}
                                         <IconBtn
                                             icon="create-outline"
                                             label="Editar usuario"
                                             onPress={() => startEditUser(item)}
                                         />
 
-                                        {/* ✅ Block/unblock */}
                                         <IconBtn
                                             icon={item.active ? "lock-closed-outline" : "lock-open-outline"}
                                             label={item.active ? "Bloquear" : "Desbloquear"}
@@ -491,144 +572,26 @@ export default function AdminUsersScreen() {
                     }
                 />
 
-                {/* FAB */}
                 <Pressable
-                    onPress={() => {
-                        setOpenCreate(true);
-                        setErr(null);
-                    }}
+                    onPress={() => setOpenCreate(true)}
                     style={({ pressed }) => [styles.fab, { bottom: fabBottom }, pressed && styles.fabPressed]}
                     accessibilityLabel="Registrar perfil"
                 >
                     <Ionicons name="person-add" size={20} color="#fff" />
                 </Pressable>
 
-                {/* Modal Create */}
-                <Modal visible={openCreate} transparent animationType="fade" onRequestClose={() => setOpenCreate(false)}>
-                    <View style={styles.modalOverlay}>
-                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                            <View style={styles.modalCard}>
-                                <View style={styles.modalHeader}>
-                                    <Text style={styles.modalTitle}>Registrar perfil</Text>
-                                    <Pressable
-                                        onPress={() => {
-                                            resetCreateForm();
-                                            setOpenCreate(false);
-                                        }}
-                                        style={styles.modalClose}
-                                    >
-                                        <Ionicons name="close" size={18} color={COLORS.text} />
-                                    </Pressable>
-                                </View>
+                <AdminCreateUserModal
+                    open={openCreate}
+                    onClose={() => setOpenCreate(false)}
+                    onCreated={reload}
+                />
 
-                                <Text style={styles.modalHint}>
-                                    Crea el usuario en Firebase Auth (email/password) → copia su UID → regístralo aquí.
-                                </Text>
-
-                                <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                    <View style={styles.field}>
-                                        <Text style={styles.label}>UID *</Text>
-                                        <TextInput
-                                            placeholder="UID de Firebase Auth"
-                                            placeholderTextColor={COLORS.muted}
-                                            value={uid}
-                                            onChangeText={setUid}
-                                            autoCapitalize="none"
-                                            style={styles.input}
-                                        />
-                                    </View>
-
-                                    <View style={styles.grid2}>
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Nombre</Text>
-                                            <TextInput
-                                                placeholder="Opcional"
-                                                placeholderTextColor={COLORS.muted}
-                                                value={name}
-                                                onChangeText={setName}
-                                                style={styles.input}
-                                            />
-                                        </View>
-
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Email</Text>
-                                            <TextInput
-                                                placeholder="Opcional"
-                                                placeholderTextColor={COLORS.muted}
-                                                value={email}
-                                                onChangeText={setEmail}
-                                                autoCapitalize="none"
-                                                style={styles.input}
-                                            />
-                                        </View>
-                                    </View>
-
-                                    {/* ✅ WhatsApp */}
-                                    <View style={styles.field}>
-                                        <Text style={styles.label}>Teléfono WhatsApp</Text>
-                                        <TextInput
-                                            placeholder="Ej: +55 91 99999-9999"
-                                            placeholderTextColor={COLORS.muted}
-                                            value={whatsappPhoneNew}
-                                            onChangeText={setWhatsappPhoneNew}
-                                            keyboardType="phone-pad"
-                                            style={styles.input}
-                                        />
-                                        <Text style={styles.hintSmall}>Se guarda como solo dígitos (con código país).</Text>
-                                    </View>
-
-                                    {/* ✅ tarifa inicial */}
-                                    <View style={styles.field}>
-                                        <Text style={styles.label}>Tarifa por visita (R$)</Text>
-                                        <TextInput
-                                            placeholder="Ej: 50"
-                                            placeholderTextColor={COLORS.muted}
-                                            value={ratePerVisitNew}
-                                            onChangeText={(t) => setRatePerVisitNew(onlyNumberLike(t))}
-                                            keyboardType="numeric"
-                                            style={styles.input}
-                                        />
-                                    </View>
-
-                                    {err ? (
-                                        <View style={styles.errorBox}>
-                                            <Ionicons name="alert-circle-outline" size={16} color={COLORS.rejected} />
-                                            <Text style={styles.errorText}>{err}</Text>
-                                        </View>
-                                    ) : null}
-
-                                    <View style={{ flexDirection: "row", gap: 10 }}>
-                                        <Pressable
-                                            onPress={() => {
-                                                resetCreateForm();
-                                                setOpenCreate(false);
-                                            }}
-                                            style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
-                                            disabled={saving}
-                                        >
-                                            <Ionicons name="close-outline" size={18} color={COLORS.text} />
-                                            <Text style={styles.ghostBtnText}>Cancelar</Text>
-                                        </Pressable>
-
-                                        <Pressable
-                                            onPress={registerProfile}
-                                            style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, saving && styles.btnDisabled]}
-                                            disabled={saving}
-                                        >
-                                            <Ionicons name="save-outline" size={18} color="#fff" />
-                                            <Text style={styles.primaryBtnText}>{saving ? "Guardando..." : "Registrar"}</Text>
-                                        </Pressable>
-                                    </View>
-                                </ScrollView>
-                            </View>
-                        </KeyboardAvoidingView>
-                    </View>
-                </Modal>
-
-                {/* Modal Edit */}
                 <Modal visible={openEdit} transparent animationType="fade" onRequestClose={cancelEditUser}>
                     <View style={styles.modalOverlay}>
-                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
+                        <KeyboardAvoidingView
+                            behavior={Platform.OS === "ios" ? "padding" : undefined}
+                            style={styles.modalWrap}
+                        >
                             <View style={styles.modalCard}>
                                 <View style={styles.modalHeader}>
                                     <Text style={styles.modalTitle}>Editar usuario</Text>
@@ -659,7 +622,9 @@ export default function AdminUsersScreen() {
                                             keyboardType="phone-pad"
                                             style={styles.input}
                                         />
-                                        <Text style={styles.hintSmall}>Se guarda como solo dígitos (con código país).</Text>
+                                        <Text style={styles.hintSmall}>
+                                            Se guarda como solo dígitos (con código país).
+                                        </Text>
                                     </View>
 
                                     <View style={styles.field}>
@@ -674,19 +639,110 @@ export default function AdminUsersScreen() {
                                         />
                                     </View>
 
+                                    <View style={styles.coverageEditor}>
+                                        <Text style={styles.coverageEditorTitle}>Cobertura geográfica</Text>
+
+                                        <View style={styles.field}>
+                                            <Text style={styles.label}>Estado</Text>
+                                            <ScrollView
+                                                horizontal
+                                                showsHorizontalScrollIndicator={false}
+                                                contentContainerStyle={styles.stateRow}
+                                            >
+                                                {BRAZIL_STATES.map((state) => {
+                                                    const active = editCoverageState === state;
+                                                    return (
+                                                        <Pressable
+                                                            key={state}
+                                                            onPress={() => setEditCoverageState(state)}
+                                                            style={({ pressed }) => [
+                                                                styles.statePill,
+                                                                active && styles.statePillActive,
+                                                                pressed && styles.btnPressed,
+                                                            ]}
+                                                        >
+                                                            <Text
+                                                                style={[
+                                                                    styles.statePillText,
+                                                                    active && styles.statePillTextActive,
+                                                                ]}
+                                                            >
+                                                                {state}
+                                                            </Text>
+                                                        </Pressable>
+                                                    );
+                                                })}
+                                            </ScrollView>
+                                        </View>
+
+                                        <View style={styles.field}>
+                                            <Text style={styles.label}>Ciudad / municipio</Text>
+                                            <View style={styles.addCoverageRow}>
+                                                <TextInput
+                                                    placeholder="Ej: Abadiânia"
+                                                    placeholderTextColor={COLORS.muted}
+                                                    value={editCoverageCity}
+                                                    onChangeText={setEditCoverageCity}
+                                                    style={[styles.input, { flex: 1 }]}
+                                                />
+                                                <Pressable
+                                                    onPress={addCoverageToEdit}
+                                                    style={({ pressed }) => [
+                                                        styles.addCoverageBtn,
+                                                        pressed && styles.btnPressed,
+                                                    ]}
+                                                >
+                                                    <Ionicons name="add" size={18} color="#fff" />
+                                                </Pressable>
+                                            </View>
+                                        </View>
+
+                                        {editCoverageList.length ? (
+                                            <View style={styles.coverageWrap}>
+                                                {editCoverageList.map((coverage) => (
+                                                    <View key={coverage.id} style={styles.coveragePillEditable}>
+                                                        <Text style={styles.coveragePillText} numberOfLines={1}>
+                                                            {coverage.displayLabel}
+                                                        </Text>
+                                                        <Pressable
+                                                            onPress={() => removeCoverageFromEdit(coverage.id)}
+                                                            style={styles.coverageRemoveBtn}
+                                                        >
+                                                            <Ionicons name="close" size={12} color={COLORS.text} />
+                                                        </Pressable>
+                                                    </View>
+                                                ))}
+                                            </View>
+                                        ) : (
+                                            <Text style={styles.coverageEmpty}>
+                                                Sin coberturas aún
+                                            </Text>
+                                        )}
+                                    </View>
+
                                     <View style={{ flexDirection: "row", gap: 10 }}>
-                                        <Pressable onPress={cancelEditUser} style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]} disabled={editSaving}>
+                                        <Pressable
+                                            onPress={cancelEditUser}
+                                            style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
+                                            disabled={editSaving}
+                                        >
                                             <Ionicons name="close-outline" size={18} color={COLORS.text} />
                                             <Text style={styles.ghostBtnText}>Cancelar</Text>
                                         </Pressable>
 
                                         <Pressable
                                             onPress={submitEditUser}
-                                            style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, editSaving && styles.btnDisabled]}
+                                            style={({ pressed }) => [
+                                                styles.primaryBtn,
+                                                pressed && styles.btnPressed,
+                                                editSaving && styles.btnDisabled,
+                                            ]}
                                             disabled={editSaving}
                                         >
                                             <Ionicons name="save-outline" size={18} color="#fff" />
-                                            <Text style={styles.primaryBtnText}>{editSaving ? "Guardando..." : "Guardar"}</Text>
+                                            <Text style={styles.primaryBtnText}>
+                                                {editSaving ? "Guardando..." : "Guardar"}
+                                            </Text>
                                         </Pressable>
                                     </View>
                                 </ScrollView>
@@ -759,7 +815,12 @@ const styles = StyleSheet.create({
         padding: 14,
         gap: 10,
     },
-    cardTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
+    cardTop: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 10,
+    },
 
     userName: { color: COLORS.text, fontSize: 15, fontWeight: "900" },
     userEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
@@ -768,32 +829,72 @@ const styles = StyleSheet.create({
     phoneRow: { flexDirection: "row", alignItems: "center", gap: 6 },
     userPhone: { color: COLORS.text, opacity: 0.9, fontSize: 12, fontWeight: "900" },
 
-    // Fee editor
-    feeRow: { flexDirection: "row", gap: 10, alignItems: "flex-end", marginTop: 2 },
-    inputCompact: {
-        height: 44,
-        borderRadius: 14,
-        paddingHorizontal: 14,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        color: COLORS.text,
-        fontSize: 14,
-        fontWeight: "800",
+    coverageSection: {
+        gap: 8,
+        paddingTop: 2,
     },
-    saveFeeBtn: {
-        height: 44,
-        borderRadius: 14,
-        paddingHorizontal: 14,
-        backgroundColor: COLORS.primary,
-        alignItems: "center",
-        justifyContent: "center",
+    coverageTitle: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    coverageWrap: {
         flexDirection: "row",
+        flexWrap: "wrap",
         gap: 8,
     },
-    saveFeeText: { color: "#fff", fontWeight: "900", fontSize: 13 },
+    coveragePill: {
+        minHeight: 30,
+        maxWidth: "100%",
+        borderRadius: 999,
+        paddingHorizontal: 10,
+        backgroundColor: "rgba(37,99,235,0.12)",
+        borderWidth: 1,
+        borderColor: "rgba(37,99,235,0.30)",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    coveragePillEditable: {
+        minHeight: 32,
+        maxWidth: "100%",
+        borderRadius: 999,
+        paddingLeft: 10,
+        paddingRight: 6,
+        backgroundColor: "rgba(37,99,235,0.12)",
+        borderWidth: 1,
+        borderColor: "rgba(37,99,235,0.30)",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    coveragePillText: {
+        color: "#93C5FD",
+        fontSize: 11,
+        fontWeight: "900",
+        flexShrink: 1,
+    },
+    coverageRemoveBtn: {
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.08)",
+    },
+    coverageEmpty: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
+        opacity: 0.8,
+    },
 
-    actionsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingTop: 2 },
+    actionsRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingTop: 2,
+    },
 
     iconBtn: {
         width: 44,
@@ -805,7 +906,10 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
-    iconBtnDanger: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.30)" },
+    iconBtnDanger: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.30)",
+    },
     iconBtnPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
     iconBtnDisabled: { opacity: 0.5 },
 
@@ -831,14 +935,26 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     pillText: { fontSize: 12, fontWeight: "900", textTransform: "lowercase" },
-    pillAdmin: { backgroundColor: "rgba(124,58,237,0.16)", borderColor: "rgba(124,58,237,0.35)" },
+    pillAdmin: {
+        backgroundColor: "rgba(124,58,237,0.16)",
+        borderColor: "rgba(124,58,237,0.35)",
+    },
     pillTextAdmin: { color: "#C4B5FD" },
-    pillUser: { backgroundColor: "rgba(37,99,235,0.14)", borderColor: "rgba(37,99,235,0.35)" },
+    pillUser: {
+        backgroundColor: "rgba(37,99,235,0.14)",
+        borderColor: "rgba(37,99,235,0.35)",
+    },
     pillTextUser: { color: "#93C5FD" },
 
-    pillActive: { backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.35)" },
+    pillActive: {
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderColor: "rgba(34,197,94,0.35)",
+    },
     pillTextActive: { color: "#86EFAC" },
-    pillBlocked: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.35)" },
+    pillBlocked: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.35)",
+    },
     pillTextBlocked: { color: "#FCA5A5" },
 
     empty: { marginTop: 40, alignItems: "center", gap: 10, paddingHorizontal: 16 },
@@ -861,8 +977,12 @@ const styles = StyleSheet.create({
     },
     fabPressed: { transform: [{ scale: 0.98 }], opacity: 0.96 },
 
-    // Modal
-    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 16, justifyContent: "center" },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(0,0,0,0.55)",
+        padding: 16,
+        justifyContent: "center",
+    },
     modalWrap: { width: "100%" },
     modalCard: {
         backgroundColor: COLORS.card,
@@ -870,9 +990,15 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: COLORS.border,
         padding: 14,
-        maxHeight: "85%",
+        maxHeight: "88%",
     },
-    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 10 },
+    modalHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 8,
+        gap: 10,
+    },
     modalTitle: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
     modalClose: {
         width: 40,
@@ -884,8 +1010,13 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
-    modalHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", marginBottom: 10, lineHeight: 16 },
-    hintSmall: { color: COLORS.muted, fontSize: 11, fontWeight: "800", opacity: 0.85, marginTop: 6 },
+    hintSmall: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "800",
+        opacity: 0.85,
+        marginTop: 6,
+    },
 
     field: { gap: 6 },
     label: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
@@ -902,17 +1033,58 @@ const styles = StyleSheet.create({
     },
     grid2: { flexDirection: "row", gap: 10 },
 
-    errorBox: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        padding: 10,
-        borderRadius: 12,
+    coverageEditor: {
+        gap: 10,
+        padding: 12,
+        borderRadius: 16,
         borderWidth: 1,
-        borderColor: "rgba(248,113,113,0.4)",
-        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: COLORS.border,
+        backgroundColor: "rgba(255,255,255,0.03)",
     },
-    errorText: { color: COLORS.rejected, fontSize: 12, fontWeight: "900", flex: 1 },
+    coverageEditorTitle: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    stateRow: {
+        gap: 8,
+        paddingRight: 8,
+    },
+    statePill: {
+        minHeight: 34,
+        paddingHorizontal: 12,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "#0F172A",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    statePillActive: {
+        backgroundColor: "rgba(124,58,237,0.16)",
+        borderColor: "rgba(124,58,237,0.35)",
+    },
+    statePillText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    statePillTextActive: {
+        color: "#C4B5FD",
+    },
+    addCoverageRow: {
+        flexDirection: "row",
+        gap: 10,
+        alignItems: "center",
+    },
+    addCoverageBtn: {
+        width: 48,
+        height: 48,
+        borderRadius: 14,
+        backgroundColor: COLORS.primary,
+        alignItems: "center",
+        justifyContent: "center",
+    },
 
     ghostBtn: {
         flex: 1,

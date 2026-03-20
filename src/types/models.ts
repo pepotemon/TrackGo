@@ -3,6 +3,60 @@
 // ----------------------
 export type UserRole = "admin" | "user";
 
+/**
+ * ✅ Tipo de cobertura geográfica manual del usuario
+ * - city: ciudad/municipio principal
+ * - district: barrio / distrito / zona puntual
+ * - state: estado completo (uso excepcional)
+ */
+export type UserGeoCoverageType = "city" | "district" | "state";
+
+/**
+ * ✅ Cobertura territorial asignada al usuario
+ * Se usa para matching futuro contra el geo detectado del lead.
+ */
+export type UserGeoCoverage = {
+    id: string;
+
+    /**
+     * Tipo de cobertura
+     */
+    type: UserGeoCoverageType;
+
+    /**
+     * País
+     */
+    countryLabel: string;
+    countryNormalized: string;
+
+    /**
+     * Estado
+     */
+    stateLabel: string;
+    stateNormalized: string;
+
+    /**
+     * Ciudad / municipio / localidad principal
+     */
+    cityLabel: string;
+    cityNormalized: string;
+
+    /**
+     * Label final lista para UI
+     * Ej: "Goiás · Goiânia"
+     */
+    displayLabel: string;
+
+    /**
+     * Metadata opcional
+     */
+    source?: "manual";
+    active?: boolean;
+
+    createdAt?: number;
+    updatedAt?: number;
+};
+
 export type UserDoc = {
     id: string;
 
@@ -27,6 +81,23 @@ export type UserDoc = {
      */
     expoPushToken?: string | null;
     expoPushTokenUpdatedAt?: number | null; // ms
+
+    /**
+     * ✅ WhatsApp / teléfono operativo
+     */
+    whatsappPhone?: string | null;
+
+    /**
+     * ✅ Coberturas geográficas manuales del usuario
+     * Base para asignación semi-auto / auto.
+     */
+    geoCoverage?: UserGeoCoverage[];
+
+    /**
+     * ✅ Campo rápido opcional para UI / filtros
+     * primera ciudad principal visible
+     */
+    primaryGeoCoverageLabel?: string | null;
 };
 
 // ----------------------

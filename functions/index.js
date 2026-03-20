@@ -446,6 +446,7 @@ exports.reminderMissingInfo = onSchedule(
     createReminderMissingInfoJob({
         hoursBeforeDeadline: 5,
         maxClientsPerRun: 300,
+        maxRemindersPerClient: 2,
     })
 );
 

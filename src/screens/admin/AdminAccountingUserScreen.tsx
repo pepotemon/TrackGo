@@ -26,18 +26,26 @@ import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
 
 const COLORS = {
-    bg: "#0B1220",
-    card: "#111827",
-    border: "#1F2937",
-    text: "#F9FAFB",
-    muted: "#9CA3AF",
+    bg: "#07111F",
+    card: "rgba(10, 20, 37, 0.74)",
+    cardStrong: "rgba(8, 17, 31, 0.92)",
+    border: "rgba(255,255,255,0.08)",
+    borderSoft: "rgba(125, 211, 252, 0.16)",
+
+    text: "#F8FAFC",
+    muted: "#9FB0C4",
+    softText: "#CBD5E1",
+
+    primary: "#5AC8FA",
+    primaryBright: "#7BE0FF",
+    primarySoft: "#BFDBFE",
+
     ok: "#22C55E",
     bad: "#F87171",
     warn: "#FBBF24",
     info: "#60A5FA",
+    purple: "#C4B5FD",
 };
-
-type MetricMode = "gross" | "assigned" | "real";
 
 type RowItem = {
     id: string;
@@ -105,6 +113,7 @@ function toMs(v: any): number {
 
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
+
     for (const e of events) {
         const cid = (e as any)?.clientId;
         if (!cid) continue;
@@ -115,6 +124,7 @@ function latestEventByClient(events: DailyEventDoc[]) {
 
         if (!prev || eMs >= pMs) map.set(cid, e);
     }
+
     return map;
 }
 
@@ -122,6 +132,18 @@ function getRatePerVisit(u?: UserDoc | null) {
     const anyU: any = u as any;
     const n = anyU?.ratePerVisit ?? anyU?.visitFee ?? 0;
     return typeof n === "number" && Number.isFinite(n) ? n : 0;
+}
+
+function getRealTone(real: number): "pos" | "neg" | "neu" {
+    if (real > 0) return "pos";
+    if (real < 0) return "neg";
+    return "neu";
+}
+
+function getRoiBarWidth(roi: number | null) {
+    if (roi == null || !Number.isFinite(roi)) return 6;
+    const abs = Math.min(Math.abs(roi), 200);
+    return Math.max(6, (abs / 200) * 100);
 }
 
 export default function AdminAccountingUserScreen() {
@@ -151,7 +173,6 @@ export default function AdminAccountingUserScreen() {
     const [groups, setGroups] = useState<WeeklyInvestmentGroup[]>([]);
 
     const [detailOpen, setDetailOpen] = useState(false);
-    const [detailMode, setDetailMode] = useState<MetricMode>("real");
     const [detailTargetId, setDetailTargetId] = useState<string | null>(null);
 
     useEffect(() => {
@@ -284,7 +305,11 @@ export default function AdminAccountingUserScreen() {
             const uid = String((e as any)?.userId ?? "").trim();
             if (!uid) continue;
 
-            const prev = map.get(uid) ?? { visits: 0, gross: 0, rate: getRatePerVisit(userById.get(uid)) };
+            const prev = map.get(uid) ?? {
+                visits: 0,
+                gross: 0,
+                rate: getRatePerVisit(userById.get(uid)),
+            };
             const rate = getRatePerVisit(userById.get(uid));
 
             map.set(uid, {
@@ -473,8 +498,7 @@ export default function AdminAccountingUserScreen() {
         }));
     }, [detailTargetId, rowsById, rows, buildMemberBreakdown]);
 
-    const openMetricModal = (mode: MetricMode, rowId?: string | null) => {
-        setDetailMode(mode);
+    const openRealModal = (rowId?: string | null) => {
         setDetailTargetId(rowId ?? null);
         setDetailOpen(true);
     };
@@ -486,37 +510,18 @@ export default function AdminAccountingUserScreen() {
 
     const detailTitle = useMemo(() => {
         const target = detailTargetId ? rowsById.get(detailTargetId) : null;
-
-        if (detailMode === "real") {
-            return target ? `Ganancia real · ${target.title}` : "Ganancia real total";
-        }
-        if (detailMode === "gross") {
-            return target ? `Ganancia bruta · ${target.title}` : "Ganancia bruta total";
-        }
-        return target ? `Asignado · ${target.title}` : "Asignado total";
-    }, [detailMode, detailTargetId, rowsById]);
+        return target ? `Ganancia real · ${target.title}` : "Ganancia real total";
+    }, [detailTargetId, rowsById]);
 
     const detailSub = useMemo(() => {
         const target = detailTargetId ? rowsById.get(detailTargetId) : null;
 
         if (target) {
-            if (detailMode === "real") {
-                return `${target.visits} visitados · R$ ${money(target.real)}`;
-            }
-            if (detailMode === "gross") {
-                return `${target.visits} visitados · R$ ${money(target.gross)}`;
-            }
-            return `${target.memberIds.length} usuario${target.memberIds.length === 1 ? "" : "s"} · R$ ${money(target.assigned)}`;
+            return `${target.visits} visitados · R$ ${money(target.real)}`;
         }
 
-        if (detailMode === "real") {
-            return `${totals.visits} visitados · R$ ${money(totals.real)}`;
-        }
-        if (detailMode === "gross") {
-            return `${totals.visits} visitados · R$ ${money(totals.gross)}`;
-        }
-        return `${rows.length} ${usingGroups ? "grupo" : "usuario"}${rows.length === 1 ? "" : "s"} · R$ ${money(totals.assigned)}`;
-    }, [detailMode, detailTargetId, rowsById, totals, rows.length, usingGroups]);
+        return `${totals.visits} visitados · R$ ${money(totals.real)}`;
+    }, [detailTargetId, rowsById, totals]);
 
     const MetricMini = ({
         label,
@@ -560,6 +565,10 @@ export default function AdminAccountingUserScreen() {
     const renderMemberCard = (m: MemberBreakdown) => {
         return (
             <View key={m.userId} style={styles.memberCard}>
+                <View style={styles.memberAvatar}>
+                    <Ionicons name="person-outline" size={16} color={COLORS.primaryBright} />
+                </View>
+
                 <View style={{ flex: 1, gap: 2 }}>
                     <Text style={styles.memberName} numberOfLines={1}>
                         {m.name}
@@ -575,27 +584,13 @@ export default function AdminAccountingUserScreen() {
                 </View>
 
                 <View style={styles.memberRight}>
-                    {detailMode === "real" ? (
-                        <>
-                            <MetricMini label="Bruta" value={`R$ ${money(m.gross)}`} />
-                            <MetricMini label="Asign." value={`R$ ${money(m.assigned)}`} />
-                            <MetricMini
-                                label="Real"
-                                value={`R$ ${money(m.real)}`}
-                                tone={m.real > 0 ? "pos" : m.real < 0 ? "neg" : "neu"}
-                            />
-                        </>
-                    ) : detailMode === "gross" ? (
-                        <>
-                            <MetricMini label="Visitas" value={`${m.visits}`} tone="info" />
-                            <MetricMini label="Bruta" value={`R$ ${money(m.gross)}`} />
-                        </>
-                    ) : (
-                        <>
-                            <MetricMini label="Asign." value={`R$ ${money(m.assigned)}`} tone="info" />
-                            <MetricMini label="Visitas" value={`${m.visits}`} />
-                        </>
-                    )}
+                    <MetricMini label="Bruta" value={`R$ ${money(m.gross)}`} />
+                    <MetricMini label="Asign." value={`R$ ${money(m.assigned)}`} />
+                    <MetricMini
+                        label="Real"
+                        value={`R$ ${money(m.real)}`}
+                        tone={m.real > 0 ? "pos" : m.real < 0 ? "neg" : "neu"}
+                    />
                 </View>
             </View>
         );
@@ -615,7 +610,28 @@ export default function AdminAccountingUserScreen() {
                         paddingBottom: Math.max(20, insets.bottom + 12),
                     }}
                 >
-                    <View style={styles.card}>
+                    <View style={styles.heroCard}>
+                        <View style={styles.heroTop}>
+                            <View style={styles.heroIconWrap}>
+                                <Ionicons
+                                    name={usingGroups ? "people-outline" : "person-outline"}
+                                    size={20}
+                                    color={COLORS.primaryBright}
+                                />
+                            </View>
+
+                            <View style={styles.modePill}>
+                                <Ionicons
+                                    name={usingGroups ? "layers-outline" : "person-outline"}
+                                    size={13}
+                                    color={COLORS.primarySoft}
+                                />
+                                <Text style={styles.modePillText}>
+                                    {usingGroups ? "Modo compartido por grupo" : "Modo individual por usuario"}
+                                </Text>
+                            </View>
+                        </View>
+
                         <Text style={styles.title}>
                             {usingGroups ? "Contabilidad por grupo" : "Contabilidad por usuario"}
                         </Text>
@@ -633,68 +649,86 @@ export default function AdminAccountingUserScreen() {
 
                         {weekErr ? <Text style={styles.errText}>Eventos: {weekErr}</Text> : null}
 
-                        <View style={styles.modePill}>
-                            <Ionicons
-                                name={usingGroups ? "people-outline" : "person-outline"}
-                                size={14}
-                                color={COLORS.muted}
-                            />
-                            <Text style={styles.modePillText}>
-                                {usingGroups ? "Modo compartido por grupo" : "Modo individual por usuario"}
-                            </Text>
-                        </View>
+                        <Pressable
+                            onPress={() => openRealModal()}
+                            style={({ pressed }) => [styles.heroRealCard, pressed && styles.pressed]}
+                        >
+                            <View style={styles.heroRealLeft}>
+                                <Text style={styles.heroRealLabel}>Ganancia real total</Text>
+                                <Text
+                                    style={[
+                                        styles.heroRealValue,
+                                        totals.real > 0 ? styles.pos : totals.real < 0 ? styles.neg : null,
+                                    ]}
+                                >
+                                    R$ {money(totals.real)}
+                                </Text>
+                                <Text style={styles.heroRealSub}>
+                                    ROI: {totals.roi == null ? "—" : `${totals.roi.toFixed(0)}%`} · {totals.visits} visitados
+                                </Text>
+                            </View>
+
+                            <View
+                                style={[
+                                    styles.heroRealIconWrap,
+                                    totals.real > 0
+                                        ? styles.heroRealIconWrapPos
+                                        : totals.real < 0
+                                            ? styles.heroRealIconWrapNeg
+                                            : styles.heroRealIconWrapNeu,
+                                ]}
+                            >
+                                <Ionicons
+                                    name={
+                                        totals.real > 0
+                                            ? "trending-up-outline"
+                                            : totals.real < 0
+                                                ? "trending-down-outline"
+                                                : "remove-outline"
+                                    }
+                                    size={18}
+                                    color={COLORS.text}
+                                />
+                            </View>
+                        </Pressable>
                     </View>
 
                     <View style={styles.kpiRow}>
-                        <Pressable
-                            onPress={() => openMetricModal("gross")}
-                            style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
-                        >
+                        <View style={[styles.kpiCard, styles.kpiCardBlue]}>
+                            <View style={styles.kpiIconWrapBlue}>
+                                <Ionicons name="cash-outline" size={16} color={COLORS.primaryBright} />
+                            </View>
                             <Text style={styles.kpiLabel}>Bruta</Text>
                             <Text style={styles.kpiValue}>R$ {money(totals.gross)}</Text>
                             <Text style={styles.kpiHint}>{totals.visits} visitados</Text>
-                        </Pressable>
+                        </View>
 
-                        <Pressable
-                            onPress={() => openMetricModal("assigned")}
-                            style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
-                        >
+                        <View style={[styles.kpiCard, styles.kpiCardPurple]}>
+                            <View style={styles.kpiIconWrapPurple}>
+                                <Ionicons name="albums-outline" size={16} color={COLORS.purple} />
+                            </View>
                             <Text style={styles.kpiLabel}>Asignado</Text>
                             <Text style={styles.kpiValue}>R$ {money(totals.assigned)}</Text>
                             <Text style={styles.kpiHint}>Total doc: R$ {money(weekAmount)}</Text>
-                        </Pressable>
+                        </View>
 
-                        <Pressable
-                            onPress={() => openMetricModal("real")}
-                            style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
-                        >
-                            <Text
-                                style={[
-                                    styles.kpiLabel,
-                                    totals.real > 0 ? styles.pos : totals.real < 0 ? styles.neg : null,
-                                ]}
-                            >
-                                Real
-                            </Text>
-                            <Text
-                                style={[
-                                    styles.kpiValue,
-                                    totals.real > 0 ? styles.pos : totals.real < 0 ? styles.neg : null,
-                                ]}
-                            >
-                                R$ {money(totals.real)}
-                            </Text>
-                            <Text style={styles.kpiHint}>
-                                ROI: {totals.roi == null ? "—" : `${totals.roi.toFixed(0)}%`}
-                            </Text>
-                        </Pressable>
+
                     </View>
 
                     <View style={styles.card}>
                         <View style={styles.listHeader}>
-                            <Text style={styles.cardTitle}>
-                                {usingGroups ? "Grupos / ciudades / campañas" : "Usuarios"}
-                            </Text>
+                            <View style={styles.listTitleWrap}>
+                                <View style={styles.listTitleIcon}>
+                                    <Ionicons
+                                        name={usingGroups ? "grid-outline" : "people-outline"}
+                                        size={15}
+                                        color={COLORS.primaryBright}
+                                    />
+                                </View>
+                                <Text style={styles.cardTitle}>
+                                    {usingGroups ? "Grupos / ciudades / campañas" : "Usuarios"}
+                                </Text>
+                            </View>
                         </View>
 
                         {rows.length === 0 ? (
@@ -702,8 +736,9 @@ export default function AdminAccountingUserScreen() {
                         ) : (
                             <View style={{ gap: 10 }}>
                                 {rows.map((r, idx) => {
-                                    const tone = r.real > 0 ? "pos" : r.real < 0 ? "neg" : "neu";
+                                    const tone = getRealTone(r.real);
                                     const isTop = idx === 0;
+                                    const barWidth = getRoiBarWidth(r.roi);
 
                                     return (
                                         <View
@@ -749,45 +784,49 @@ export default function AdminAccountingUserScreen() {
                                                         Miembros: {r.memberNames.join(", ")}
                                                     </Text>
                                                 ) : null}
+
+                                                <View style={styles.performanceWrap}>
+                                                    <View style={styles.performanceTrack}>
+                                                        <View
+                                                            style={[
+                                                                styles.performanceFill,
+                                                                tone === "pos"
+                                                                    ? styles.performanceFillPos
+                                                                    : tone === "neg"
+                                                                        ? styles.performanceFillNeg
+                                                                        : styles.performanceFillNeu,
+                                                                { width: `${barWidth}%` },
+                                                            ]}
+                                                        />
+                                                    </View>
+                                                    <Text
+                                                        style={[
+                                                            styles.performanceText,
+                                                            tone === "pos"
+                                                                ? styles.pos
+                                                                : tone === "neg"
+                                                                    ? styles.neg
+                                                                    : null,
+                                                        ]}
+                                                    >
+                                                        {r.roi == null ? "Sin ROI" : `ROI ${r.roi.toFixed(0)}%`}
+                                                    </Text>
+                                                </View>
                                             </View>
 
                                             <View style={styles.userPills}>
-                                                <Pressable
-                                                    onPress={() => openMetricModal("gross", r.id)}
-                                                    style={({ pressed }) => [
-                                                        styles.pill,
-                                                        pressed && styles.pressed,
-                                                    ]}
-                                                >
+                                                <View style={[styles.pill, styles.pillBlue]}>
                                                     <Text style={styles.pillLabel}>Bruta</Text>
                                                     <Text style={styles.pillValue}>R$ {money(r.gross)}</Text>
-                                                </Pressable>
+                                                </View>
 
-                                                <Pressable
-                                                    onPress={() => openMetricModal("assigned", r.id)}
-                                                    style={({ pressed }) => [
-                                                        styles.pill,
-                                                        pressed && styles.pressed,
-                                                    ]}
-                                                >
-                                                    <Text style={styles.pillLabel}>Asign</Text>
+                                                <View style={[styles.pill, styles.pillPurple]}>
+                                                    <Text style={styles.pillLabel}>Asign.</Text>
                                                     <Text style={styles.pillValue}>R$ {money(r.assigned)}</Text>
-                                                </Pressable>
-
-                                                <View style={styles.roiPill}>
-                                                    <Text style={styles.roiLabel}>ROI</Text>
-                                                    <Text
-                                                        style={[
-                                                            styles.roiValue,
-                                                            (r.roi ?? 0) > 0 ? styles.pos : (r.roi ?? 0) < 0 ? styles.neg : null,
-                                                        ]}
-                                                    >
-                                                        {r.roi == null ? "—" : `${r.roi.toFixed(0)}%`}
-                                                    </Text>
                                                 </View>
 
                                                 <Pressable
-                                                    onPress={() => openMetricModal("real", r.id)}
+                                                    onPress={() => openRealModal(r.id)}
                                                     style={({ pressed }) => [
                                                         styles.realPill,
                                                         tone === "pos"
@@ -825,9 +864,19 @@ export default function AdminAccountingUserScreen() {
                         ]}
                     >
                         <View style={styles.modalHeader}>
-                            <View style={{ flex: 1, gap: 2 }}>
-                                <Text style={styles.modalTitle}>{detailTitle}</Text>
-                                <Text style={styles.modalSub}>{detailSub}</Text>
+                            <View style={styles.modalTitleRow}>
+                                <View style={styles.modalTitleIcon}>
+                                    <Ionicons
+                                        name="sparkles-outline"
+                                        size={16}
+                                        color={COLORS.primaryBright}
+                                    />
+                                </View>
+
+                                <View style={{ flex: 1, gap: 2 }}>
+                                    <Text style={styles.modalTitle}>{detailTitle}</Text>
+                                    <Text style={styles.modalSub}>{detailSub}</Text>
+                                </View>
                             </View>
 
                             <Pressable
@@ -909,6 +958,85 @@ const styles = StyleSheet.create({
         opacity: 0.96,
     },
 
+    heroCard: {
+        backgroundColor: COLORS.card,
+        borderWidth: 1,
+        borderColor: COLORS.borderSoft,
+        borderRadius: 22,
+        padding: 14,
+        gap: 10,
+        marginBottom: 12,
+    },
+    heroTop: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
+    heroIconWrap: {
+        width: 40,
+        height: 40,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(90,200,250,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(90,200,250,0.20)",
+    },
+    heroRealCard: {
+        marginTop: 2,
+        minHeight: 86,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+        backgroundColor: COLORS.cardStrong,
+        padding: 14,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+    },
+    heroRealLeft: {
+        flex: 1,
+        gap: 4,
+    },
+    heroRealLabel: {
+        color: COLORS.primarySoft,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    heroRealValue: {
+        color: COLORS.text,
+        fontSize: 26,
+        fontWeight: "900",
+    },
+    heroRealSub: {
+        color: COLORS.softText,
+        fontSize: 11,
+        fontWeight: "800",
+        opacity: 0.9,
+    },
+    heroRealIconWrap: {
+        width: 44,
+        height: 44,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+    },
+    heroRealIconWrapPos: {
+        backgroundColor: "rgba(34,197,94,0.14)",
+        borderColor: "rgba(34,197,94,0.28)",
+    },
+    heroRealIconWrapNeg: {
+        backgroundColor: "rgba(248,113,113,0.14)",
+        borderColor: "rgba(248,113,113,0.28)",
+    },
+    heroRealIconWrapNeu: {
+        backgroundColor: "rgba(255,255,255,0.06)",
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+
     card: {
         backgroundColor: COLORS.card,
         borderWidth: 1,
@@ -926,30 +1054,74 @@ const styles = StyleSheet.create({
     errText: { marginTop: 6, color: "#FCA5A5", fontSize: 12, fontWeight: "900" },
 
     modePill: {
-        marginTop: 4,
         alignSelf: "flex-start",
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
-        height: 30,
+        minHeight: 30,
         paddingHorizontal: 10,
         borderRadius: 999,
         backgroundColor: "rgba(255,255,255,0.04)",
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.08)",
     },
-    modePillText: { color: COLORS.muted, fontWeight: "900", fontSize: 11 },
+    modePillText: { color: COLORS.primarySoft, fontWeight: "900", fontSize: 11 },
 
     kpiRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
     kpiCard: {
         flex: 1,
-        backgroundColor: COLORS.card,
-        borderWidth: 1,
-        borderColor: COLORS.border,
         borderRadius: 18,
         padding: 12,
         gap: 4,
+        borderWidth: 1,
     },
+    kpiCardBlue: {
+        backgroundColor: "rgba(90,200,250,0.08)",
+        borderColor: "rgba(90,200,250,0.18)",
+    },
+    kpiCardPurple: {
+        backgroundColor: "rgba(196,181,253,0.08)",
+        borderColor: "rgba(196,181,253,0.18)",
+    },
+    kpiCardReal: {
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+
+    kpiIconWrapBlue: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(90,200,250,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(90,200,250,0.18)",
+        marginBottom: 2,
+    },
+    kpiIconWrapPurple: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(196,181,253,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(196,181,253,0.18)",
+        marginBottom: 2,
+    },
+    kpiIconWrapReal: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.06)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+        marginBottom: 2,
+    },
+
     kpiLabel: { color: COLORS.muted, fontWeight: "900", fontSize: 11 },
     kpiValue: { color: COLORS.text, fontWeight: "900", fontSize: 16 },
     kpiHint: { color: "rgba(255,255,255,0.55)", fontWeight: "800", fontSize: 11 },
@@ -963,6 +1135,21 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "space-between",
         gap: 10,
+    },
+    listTitleWrap: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    listTitleIcon: {
+        width: 28,
+        height: 28,
+        borderRadius: 10,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(90,200,250,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(90,200,250,0.18)",
     },
     cardTitle: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
 
@@ -1027,37 +1214,58 @@ const styles = StyleSheet.create({
     },
     bestBadgeText: { color: COLORS.text, fontWeight: "900", fontSize: 10 },
 
+    performanceWrap: {
+        marginTop: 8,
+        gap: 4,
+    },
+    performanceTrack: {
+        height: 6,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.06)",
+        overflow: "hidden",
+    },
+    performanceFill: {
+        height: 6,
+        borderRadius: 999,
+    },
+    performanceFillPos: {
+        backgroundColor: "rgba(34,197,94,0.90)",
+    },
+    performanceFillNeg: {
+        backgroundColor: "rgba(248,113,113,0.90)",
+    },
+    performanceFillNeu: {
+        backgroundColor: "rgba(90,200,250,0.75)",
+    },
+    performanceText: {
+        fontSize: 10,
+        fontWeight: "900",
+        color: COLORS.muted,
+    },
+
     userPills: { alignItems: "flex-end", gap: 8 },
     pill: {
-        width: 90,
+        width: 92,
         borderRadius: 14,
         paddingVertical: 8,
         paddingHorizontal: 10,
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
-        backgroundColor: "rgba(255,255,255,0.04)",
         gap: 2,
         alignItems: "flex-end",
+    },
+    pillBlue: {
+        borderColor: "rgba(90,200,250,0.16)",
+        backgroundColor: "rgba(90,200,250,0.06)",
+    },
+    pillPurple: {
+        borderColor: "rgba(196,181,253,0.16)",
+        backgroundColor: "rgba(196,181,253,0.06)",
     },
     pillLabel: { color: "rgba(255,255,255,0.55)", fontWeight: "900", fontSize: 10 },
     pillValue: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
 
-    roiPill: {
-        width: 90,
-        borderRadius: 14,
-        paddingVertical: 8,
-        paddingHorizontal: 10,
-        borderWidth: 1,
-        borderColor: "rgba(96,165,250,0.24)",
-        backgroundColor: "rgba(96,165,250,0.08)",
-        gap: 2,
-        alignItems: "flex-end",
-    },
-    roiLabel: { color: "#93C5FD", fontWeight: "900", fontSize: 10 },
-    roiValue: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
-
     realPill: {
-        width: 90,
+        width: 92,
         borderRadius: 14,
         paddingVertical: 8,
         paddingHorizontal: 10,
@@ -1080,7 +1288,7 @@ const styles = StyleSheet.create({
 
     modalBackdrop: {
         ...StyleSheet.absoluteFillObject,
-        backgroundColor: "rgba(0,0,0,0.56)",
+        backgroundColor: "rgba(0,0,0,0.86)",
     },
     modalCard: {
         position: "absolute",
@@ -1088,18 +1296,34 @@ const styles = StyleSheet.create({
         right: 14,
         bottom: 14,
         backgroundColor: COLORS.card,
-        borderRadius: 16,
+        borderRadius: 18,
         borderWidth: 1,
-        borderColor: COLORS.border,
+        borderColor: COLORS.borderSoft,
         padding: 12,
         gap: 10,
         maxHeight: "84%",
     },
     modalHeader: {
         flexDirection: "row",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "space-between",
         gap: 8,
+    },
+    modalTitleRow: {
+        flex: 1,
+        flexDirection: "row",
+        gap: 10,
+        alignItems: "center",
+    },
+    modalTitleIcon: {
+        width: 34,
+        height: 34,
+        borderRadius: 12,
+        backgroundColor: "rgba(90,200,250,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(90,200,250,0.18)",
+        alignItems: "center",
+        justifyContent: "center",
     },
     modalTitle: {
         color: COLORS.text,
@@ -1214,6 +1438,16 @@ const styles = StyleSheet.create({
         borderColor: "rgba(255,255,255,0.07)",
         backgroundColor: "rgba(255,255,255,0.025)",
         alignItems: "center",
+    },
+    memberAvatar: {
+        width: 34,
+        height: 34,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(90,200,250,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(90,200,250,0.18)",
     },
     memberName: {
         color: COLORS.text,

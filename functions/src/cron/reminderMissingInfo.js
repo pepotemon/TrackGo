@@ -7,6 +7,7 @@ const { safeString, safeNumber, stripUndefined } = require("../utils/text");
 const WINDOW_HOURS = 24;
 const DEFAULT_HOURS_BEFORE_DEADLINE = 5;
 const DEFAULT_MAX_CLIENTS_PER_RUN = 300;
+const DEFAULT_MAX_REMINDERS_PER_CLIENT = 2;
 
 function nowMs() {
     return Date.now();
@@ -69,13 +70,19 @@ function buildShortMissingInfoReminderPtBr(missingType) {
     ].join("\n");
 }
 
-function shouldSkipReminder(client, now, reminderCutoffMs) {
+function shouldSkipReminder(
+    client,
+    now,
+    reminderCutoffMs,
+    maxRemindersPerClient = DEFAULT_MAX_REMINDERS_PER_CLIENT
+) {
     const source = safeString(client?.source || "");
     const leadQuality = safeString(client?.leadQuality || "");
     const verificationStatus = safeString(client?.verificationStatus || "");
     const introSentAt = safeNumber(client?.initialIntroSentAt, 0);
     const lastInboundMessageAt = safeNumber(client?.lastInboundMessageAt, 0);
     const lastMissingInfoReminderAt = safeNumber(client?.lastMissingInfoReminderAt, 0);
+    const lastMissingInfoReminderCount = safeNumber(client?.lastMissingInfoReminderCount, 0);
     const lastManualReplyAt = safeNumber(client?.lastManualReplyAt, 0);
     const assignedTo = safeString(client?.assignedTo || "");
     const lastBotStage = safeString(client?.lastBotStage || "");
@@ -114,6 +121,10 @@ function shouldSkipReminder(client, now, reminderCutoffMs) {
 
     if (lastBotStage === "final:not_suitable") {
         return { skip: true, reason: "already_closed_not_suitable" };
+    }
+
+    if (lastMissingInfoReminderCount >= maxRemindersPerClient) {
+        return { skip: true, reason: "max_reminders_reached" };
     }
 
     const missingType = getMissingInfoType(client);
@@ -206,6 +217,7 @@ async function processClientReminder({
 function createReminderMissingInfoJob({
     hoursBeforeDeadline = DEFAULT_HOURS_BEFORE_DEADLINE,
     maxClientsPerRun = DEFAULT_MAX_CLIENTS_PER_RUN,
+    maxRemindersPerClient = DEFAULT_MAX_REMINDERS_PER_CLIENT,
 } = {}) {
     const reminderCutoffMs = hoursToMs(hoursBeforeDeadline);
 
@@ -215,6 +227,7 @@ function createReminderMissingInfoJob({
         logger.info("[REMINDER] job started", {
             hoursBeforeDeadline,
             maxClientsPerRun,
+            maxRemindersPerClient,
         });
 
         const snap = await db
@@ -237,7 +250,12 @@ function createReminderMissingInfoJob({
             const now = nowMs();
 
             try {
-                const decision = shouldSkipReminder(client, now, reminderCutoffMs);
+                const decision = shouldSkipReminder(
+                    client,
+                    now,
+                    reminderCutoffMs,
+                    maxRemindersPerClient
+                );
 
                 if (decision.skip) {
                     skipped += 1;
@@ -259,6 +277,8 @@ function createReminderMissingInfoJob({
                         clientId,
                         missingType: decision.missingType,
                         whatsappMessageId: result.whatsappMessageId || "",
+                        reminderCountAfterSend:
+                            safeNumber(client?.lastMissingInfoReminderCount, 0) + 1,
                     });
                 } else {
                     failed += 1;
@@ -291,6 +311,7 @@ module.exports = {
     WINDOW_HOURS,
     DEFAULT_HOURS_BEFORE_DEADLINE,
     DEFAULT_MAX_CLIENTS_PER_RUN,
+    DEFAULT_MAX_REMINDERS_PER_CLIENT,
     hasUsefulBusiness,
     hasRequiredMapsForFlow,
     getMissingInfoType,
