@@ -1174,7 +1174,16 @@ export default function UserHome() {
                                         {eventsErr ? <Text style={styles.hErr}>{eventsErr}</Text> : null}
                                     </View>
 
+
                                     <View style={styles.headerRight}>
+                                        <Pressable
+                                            onPress={() => router.push("/user-map" as any)}
+                                            style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}
+                                            accessibilityLabel="Mapa"
+                                        >
+                                            <Ionicons name="map-outline" size={18} color={COLORS.text} />
+                                        </Pressable>
+
                                         <Pressable
                                             onPress={goHistory}
                                             style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}
@@ -1191,6 +1200,8 @@ export default function UserHome() {
                                             <Ionicons name="log-out-outline" size={18} color={COLORS.text} />
                                         </Pressable>
                                     </View>
+
+
                                 </View>
 
                                 <View style={styles.topCardsRow}>

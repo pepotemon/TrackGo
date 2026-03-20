@@ -165,6 +165,8 @@ export default function RootLayout() {
             }}
           >
             <Stack.Screen name="index" options={{ headerShown: false }} />
+
+            <Stack.Screen name="user-map" options={{ title: "TrackGo" }} />
             <Stack.Screen name="user-history" options={{ title: "TrackGo" }} />
 
             <Stack.Screen name="login" options={{ headerShown: false }} />
@@ -234,13 +236,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
-  },
-
-  headerTitleText: {
-    color: "#F8FAFC",
-    fontSize: 24,
-    fontWeight: "900",
-    letterSpacing: 0.2,
   },
 
   headerBottomLine: {
