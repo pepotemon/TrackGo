@@ -362,15 +362,10 @@ export default function UserHistoryScreen() {
                         <View style={styles.header}>
                             <View style={{ flex: 1, gap: 2 }}>
                                 <Text style={styles.title}>Historial real</Text>
-                                <Text style={styles.subtitle} numberOfLines={2}>
-                                    Conteo directo por estado actual del cliente
-                                </Text>
+
                             </View>
 
-                            <View style={styles.headerPill}>
-                                <Ionicons name="shield-checkmark-outline" size={14} color={COLORS.info} />
-                                <Text style={styles.headerPillText}>Fuente admin</Text>
-                            </View>
+
                         </View>
 
                         <View style={styles.kpiRow}>
@@ -380,7 +375,7 @@ export default function UserHistoryScreen() {
                                     <Text style={styles.kpiLabel}>Visitados</Text>
                                 </View>
                                 <Text style={styles.kpiValue}>{summary.visited}</Text>
-                                <Text style={styles.kpiHint}>Estado actual = visited</Text>
+
                             </View>
 
                             <View style={[styles.kpiCard, styles.kpiCardBad]}>
@@ -389,7 +384,7 @@ export default function UserHistoryScreen() {
                                     <Text style={styles.kpiLabel}>Rechazados</Text>
                                 </View>
                                 <Text style={styles.kpiValue}>{summary.rejected}</Text>
-                                <Text style={styles.kpiHint}>Estado actual = rejected</Text>
+
                             </View>
                         </View>
 
@@ -400,7 +395,7 @@ export default function UserHistoryScreen() {
                                     <Text style={styles.kpiLabel}>Gestionados reales</Text>
                                 </View>
                                 <Text style={styles.kpiValue}>{summary.totalManaged}</Text>
-                                <Text style={styles.kpiHint}>Visitados + rechazados</Text>
+
                             </View>
 
                             <View style={styles.kpiCard}>
@@ -413,7 +408,7 @@ export default function UserHistoryScreen() {
                                         ? "—"
                                         : `${summary.effectiveness.toFixed(0)}%`}
                                 </Text>
-                                <Text style={styles.kpiHint}>visitados / gestionados</Text>
+
                             </View>
                         </View>
 
@@ -457,17 +452,7 @@ export default function UserHistoryScreen() {
                             />
                         </View>
 
-                        <View style={styles.banner}>
-                            <View style={styles.bannerDot} />
-                            <Text style={styles.bannerText}>
-                                Mostrando {filterCount} cliente{filterCount === 1 ? "" : "s"}{" "}
-                                {filter === "all"
-                                    ? "del usuario"
-                                    : filter === "visited"
-                                        ? "visitado(s)"
-                                        : "rechazado(s)"}
-                            </Text>
-                        </View>
+
 
                         {filter !== "rejected" && visitedList.length > 0 ? (
                             <View style={styles.section}>
