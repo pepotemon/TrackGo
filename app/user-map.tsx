@@ -47,6 +47,15 @@ const pendingPin = require("../assets/pending-pin.png");
 const visitedPin = require("../assets/visited-pin.png");
 const rejectedPin = require("../assets/rejected-pin.png");
 
+/**
+ * ✅ Ajuste real para Android build
+ * En Expo Go suele verse bien aunque el PNG sea 36x36,
+ * pero en APK Android lo escala por densidad y queda grande.
+ * Por eso lo forzamos aquí.
+ */
+const MARKER_WIDTH = 20;
+const MARKER_HEIGHT = 20;
+
 function normalizeHttpUrl(raw?: string | null) {
     const u = (raw ?? "").trim();
     if (!u) return "";
@@ -751,12 +760,12 @@ export default function UserMapScreen() {
                             <Marker
                                 key={`${filter}-${client.id}-${safeStatus(client.status)}`}
                                 coordinate={coords}
-                                anchor={{ x: 0.5, y: 0.5 }}
+                                anchor={{ x: 0.5, y: 1 }}
                                 image={markerImage(client.status)}
                                 onPress={() => setSelectedClientId(client.id)}
                                 tracksViewChanges={false}
                                 zIndex={selectedClientId === client.id ? 20 : 10}
-
+                                style={styles.markerSized}
                             />
                         );
                     })}
@@ -1271,6 +1280,11 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: COLORS.bg,
+    },
+
+    markerSized: {
+        width: MARKER_WIDTH,
+        height: MARKER_HEIGHT,
     },
 
     pressed: {
