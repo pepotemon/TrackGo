@@ -53,8 +53,8 @@ const rejectedPin = require("../assets/rejected-pin.png");
  * pero en APK Android lo escala por densidad y queda grande.
  * Por eso lo forzamos aquí.
  */
-const MARKER_WIDTH = 20;
-const MARKER_HEIGHT = 20;
+const MARKER_WIDTH = 10;
+const MARKER_HEIGHT = 10;
 
 function normalizeHttpUrl(raw?: string | null) {
     const u = (raw ?? "").trim();
