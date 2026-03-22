@@ -47,6 +47,15 @@ const pendingPin = require("../assets/pending-pin.png");
 const visitedPin = require("../assets/visited-pin.png");
 const rejectedPin = require("../assets/rejected-pin.png");
 
+/**
+ * ✅ Ajuste real para Android build
+ * En Expo Go suele verse bien aunque el PNG sea 36x36,
+ * pero en APK Android lo escala por densidad y queda grande.
+ * Por eso lo forzamos aquí.
+ */
+const MARKER_WIDTH = 20;
+const MARKER_HEIGHT = 20;
+
 function normalizeHttpUrl(raw?: string | null) {
     const u = (raw ?? "").trim();
     if (!u) return "";
@@ -282,20 +291,22 @@ function reasonIcon(reason?: RejectReason | null) {
     }
 }
 
-function SideMapButton({
+function FilterChip({
+    label,
     icon,
     count,
     active,
     onPress,
-    tone = "neutral",
-    disabled = false,
+    tone,
+    compact = false,
 }: {
-    icon: keyof typeof Ionicons.glyphMap;
-    count?: number;
-    active?: boolean;
+    label?: string;
+    icon?: keyof typeof Ionicons.glyphMap;
+    count: number;
+    active: boolean;
     onPress: () => void;
-    tone?: "warn" | "ok" | "bad" | "neutral";
-    disabled?: boolean;
+    tone: "warn" | "ok" | "bad" | "neutral";
+    compact?: boolean;
 }) {
     const tint =
         tone === "ok"
@@ -304,25 +315,46 @@ function SideMapButton({
                 ? COLORS.bad
                 : tone === "warn"
                     ? COLORS.warn
-                    : "#DCE6F3";
+                    : COLORS.text;
+
+    const borderColor =
+        tone === "ok"
+            ? "rgba(34,197,94,0.36)"
+            : tone === "bad"
+                ? "rgba(248,113,113,0.36)"
+                : tone === "warn"
+                    ? "rgba(251,191,36,0.36)"
+                    : "rgba(255,255,255,0.14)";
+
+    const bgColor =
+        tone === "ok"
+            ? "rgba(34,197,94,0.14)"
+            : tone === "bad"
+                ? "rgba(248,113,113,0.14)"
+                : tone === "warn"
+                    ? "rgba(251,191,36,0.16)"
+                    : "rgba(15,23,42,0.88)";
 
     return (
         <Pressable
-            disabled={disabled}
             onPress={onPress}
             style={({ pressed }) => [
-                styles.sideActionBtn,
-                active && styles.sideActionBtnActive,
+                styles.filterChip,
+                compact && styles.filterChipCompact,
+                { borderColor, backgroundColor: bgColor },
+                active && styles.filterChipActive,
                 pressed && styles.pressed,
-                disabled && styles.disabledBtn,
             ]}
         >
-            <Ionicons name={icon} size={18} color={active ? COLORS.text : tint} />
-            {typeof count === "number" ? (
-                <View style={styles.sideCountBadge}>
-                    <Text style={styles.sideCountBadgeText}>{count}</Text>
-                </View>
+            {icon ? <Ionicons name={icon} size={14} color={active ? COLORS.text : tint} /> : null}
+            {label ? (
+                <Text style={[styles.filterChipText, { color: active ? COLORS.text : tint }]}>
+                    {label}
+                </Text>
             ) : null}
+            <View style={[styles.filterBadge, active && styles.filterBadgeActive]}>
+                <Text style={styles.filterBadgeText}>{count}</Text>
+            </View>
         </Pressable>
     );
 }
@@ -334,7 +366,6 @@ export default function UserMapScreen() {
 
     const mapRef = useRef<MapView | null>(null);
     const initialFitDoneRef = useRef(false);
-    const initialLocateAttemptedRef = useRef(false);
 
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -464,54 +495,43 @@ export default function UserMapScreen() {
 
             mapRef.current.fitToCoordinates(points, {
                 edgePadding: {
-                    top: 120,
-                    right: 95,
+                    top: 160,
+                    right: 70,
                     bottom: 260,
-                    left: 56,
+                    left: 70,
                 },
                 animated: true,
             });
         } catch { }
     };
 
-    const animateToUserLocation = (coords: LatLng, duration = 420) => {
-        mapRef.current?.animateToRegion(
-            {
-                latitude: coords.latitude,
-                longitude: coords.longitude,
-                latitudeDelta: 0.02,
-                longitudeDelta: 0.02,
-            },
-            duration
-        );
-    };
+    useEffect(() => {
+        if (!mapReady) return;
+        if (initialFitDoneRef.current) return;
 
-    const goToMyLocation = async (silent = false) => {
+        const pts = filteredPoints.length ? filteredPoints : allPoints;
+        if (!pts.length) return;
+
+        const timeout = setTimeout(() => {
+            fitPoints(pts);
+            initialFitDoneRef.current = true;
+        }, 180);
+
+        return () => clearTimeout(timeout);
+    }, [mapReady, filteredPoints, allPoints]);
+
+    const goToMyLocation = async () => {
         try {
             setLocatingMe(true);
 
             const { status } = await Location.requestForegroundPermissionsAsync();
 
             if (status !== "granted") {
-                if (!silent) {
-                    Alert.alert(
-                        "Ubicación",
-                        "Debes permitir la ubicación para centrar el mapa en tu posición actual."
-                    );
-                }
-                return false;
-            }
-
-            const lastKnown = await Location.getLastKnownPositionAsync();
-
-            if (lastKnown?.coords) {
-                const quickLocation = {
-                    latitude: lastKnown.coords.latitude,
-                    longitude: lastKnown.coords.longitude,
-                };
-
-                setCurrentLocation(quickLocation);
-                animateToUserLocation(quickLocation, 280);
+                Alert.alert(
+                    "Ubicación",
+                    "Debes permitir la ubicación para centrar el mapa en tu posición actual."
+                );
+                return;
             }
 
             const pos = await Location.getCurrentPositionAsync({
@@ -524,44 +544,22 @@ export default function UserMapScreen() {
             };
 
             setCurrentLocation(next);
-            animateToUserLocation(next, 420);
-            initialFitDoneRef.current = true;
 
-            return true;
+            mapRef.current?.animateToRegion(
+                {
+                    latitude: next.latitude,
+                    longitude: next.longitude,
+                    latitudeDelta: 0.02,
+                    longitudeDelta: 0.02,
+                },
+                420
+            );
         } catch {
-            if (!silent) {
-                Alert.alert("Ubicación", "No se pudo obtener tu ubicación actual.");
-            }
-            return false;
+            Alert.alert("Ubicación", "No se pudo obtener tu ubicación actual.");
         } finally {
             setLocatingMe(false);
         }
     };
-
-    useEffect(() => {
-        if (!mapReady) return;
-        if (initialLocateAttemptedRef.current) return;
-
-        initialLocateAttemptedRef.current = true;
-
-        const start = async () => {
-            const ok = await goToMyLocation(true);
-
-            if (!ok) {
-                const pts = filteredPoints.length ? filteredPoints : allPoints;
-                if (!pts.length) return;
-
-                const timeout = setTimeout(() => {
-                    fitPoints(pts);
-                    initialFitDoneRef.current = true;
-                }, 180);
-
-                return () => clearTimeout(timeout);
-            }
-        };
-
-        start();
-    }, [mapReady, filteredPoints, allPoints]);
 
     const openMaps = async (client: ClientDoc) => {
         const directMaps = normalizeHttpUrl(client.mapsUrl);
@@ -623,8 +621,8 @@ export default function UserMapScreen() {
 
         const snapshot = {
             phone: client.phone,
-            name: ((client as any)?.name ?? "").trim() || undefined,
-            business: ((client as any)?.business ?? "").trim() || undefined,
+            name: ((client as any).name ?? "").trim() || undefined,
+            business: ((client as any).business ?? "").trim() || undefined,
         };
 
         try {
@@ -762,11 +760,12 @@ export default function UserMapScreen() {
                             <Marker
                                 key={`${filter}-${client.id}-${safeStatus(client.status)}`}
                                 coordinate={coords}
-                                anchor={{ x: 0.5, y: 0.5 }}
+                                anchor={{ x: 0.5, y: 1 }}
                                 image={markerImage(client.status)}
                                 onPress={() => setSelectedClientId(client.id)}
                                 tracksViewChanges={false}
                                 zIndex={selectedClientId === client.id ? 20 : 10}
+                                style={styles.markerSized}
                             />
                         );
                     })}
@@ -787,74 +786,76 @@ export default function UserMapScreen() {
 
                 <View
                     pointerEvents="box-none"
-                    style={[styles.mapHeaderWrap, { top: Math.max(12, insets.top + 4) }]}
+                    style={[styles.topOverlay, { paddingTop: Math.max(10, insets.top + 4) }]}
                 >
-                    <View style={styles.mapHeaderChip}>
-                        <Ionicons name="map-outline" size={14} color="#0F172A" />
-                        <Text style={styles.mapHeaderTitle}>Mapa</Text>
-                        <Text style={styles.mapHeaderSubtitle} numberOfLines={1}>
-                            {coverageLabel}
-                        </Text>
-                    </View>
-                </View>
+                    <View style={styles.topBar}>
+                        <View style={styles.titleBlock}>
+                            <Text style={styles.title}>Mapa de clientes</Text>
+                            <Text style={styles.subtitle} numberOfLines={2}>
+                                {coverageLabel}
+                            </Text>
+                        </View>
 
-                <View
-                    pointerEvents="box-none"
-                    style={[
-                        styles.rightDockWrap,
-                        {
-                            top: Math.max(112, insets.top + 86),
-                            right: 14,
-                        },
-                    ]}
-                >
-                    <View style={styles.rightDock}>
-                        <SideMapButton
-                            icon="time-outline"
+                        <Pressable
+                            onPress={() => fitPoints(filteredPoints.length ? filteredPoints : allPoints)}
+                            style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
+                            accessibilityLabel="Ver filtro actual"
+                            disabled={!(filteredPoints.length || allPoints.length)}
+                        >
+                            <Ionicons name="scan-outline" size={18} color={COLORS.text} />
+                        </Pressable>
+
+                        <Pressable
+                            onPress={goToMyLocation}
+                            style={({ pressed }) => [
+                                styles.circleBtn,
+                                locatingMe && styles.circleBtnActive,
+                                pressed && styles.pressed,
+                            ]}
+                            accessibilityLabel="Ir a mi ubicación"
+                        >
+                            <Ionicons
+                                name={locatingMe ? "radio-outline" : "locate-outline"}
+                                size={18}
+                                color={COLORS.text}
+                            />
+                        </Pressable>
+                    </View>
+
+                    <View style={styles.filtersRow}>
+                        <FilterChip
+                            label="Pendientes"
                             count={counts.pending}
                             active={filter === "pending"}
                             onPress={() => setFilter("pending")}
                             tone="warn"
                         />
 
-                        <SideMapButton
-                            icon="checkmark-outline"
+                        <FilterChip
+                            icon="checkmark"
                             count={counts.visited}
                             active={filter === "visited"}
                             onPress={() => setFilter("visited")}
                             tone="ok"
+                            compact
                         />
 
-                        <SideMapButton
-                            icon="close-outline"
+                        <FilterChip
+                            icon="close"
                             count={counts.rejected}
                             active={filter === "rejected"}
                             onPress={() => setFilter("rejected")}
                             tone="bad"
+                            compact
                         />
 
-                        <SideMapButton
+                        <FilterChip
                             icon="apps-outline"
                             count={counts.total}
                             active={filter === "all"}
                             onPress={() => setFilter("all")}
                             tone="neutral"
-                        />
-
-                        <View style={styles.rightDockDivider} />
-
-                        <SideMapButton
-                            icon="scan-outline"
-                            onPress={() => fitPoints(filteredPoints.length ? filteredPoints : allPoints)}
-                            tone="neutral"
-                            disabled={!(filteredPoints.length || allPoints.length)}
-                        />
-
-                        <SideMapButton
-                            icon={locatingMe ? "radio-outline" : "locate-outline"}
-                            onPress={() => goToMyLocation(false)}
-                            tone="neutral"
-                            active={locatingMe}
+                            compact
                         />
                     </View>
                 </View>
@@ -1273,12 +1274,17 @@ const COLORS = {
 const styles = StyleSheet.create({
     safe: {
         flex: 1,
-        backgroundColor: "#FFFFFF",
+        backgroundColor: COLORS.bg,
     },
 
     container: {
         flex: 1,
-        backgroundColor: "#FFFFFF",
+        backgroundColor: COLORS.bg,
+    },
+
+    markerSized: {
+        width: MARKER_WIDTH,
+        height: MARKER_HEIGHT,
     },
 
     pressed: {
@@ -1286,92 +1292,113 @@ const styles = StyleSheet.create({
         opacity: 0.96,
     },
 
-    mapHeaderWrap: {
+    topOverlay: {
         position: "absolute",
-        left: 14,
-        right: 92,
+        top: 0,
+        left: 16,
+        right: 16,
         zIndex: 20,
+        gap: 12,
     },
 
-    mapHeaderChip: {
-        minHeight: 42,
-        borderRadius: 999,
-        paddingHorizontal: 12,
+    topBar: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+
+    circleBtn: {
+        width: 44,
+        height: 44,
+        borderRadius: 15,
+        backgroundColor: "rgba(15, 23, 42, 0.96)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    circleBtnActive: {
+        borderColor: "rgba(56,189,248,0.45)",
+        backgroundColor: "rgba(56,189,248,0.16)",
+    },
+
+    titleBlock: {
+        flex: 1,
+        minHeight: 56,
+        borderRadius: 16,
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+        justifyContent: "center",
+        backgroundColor: "rgba(15, 23, 42, 0.96)",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+    },
+
+    title: {
+        color: COLORS.text,
+        fontSize: 15,
+        fontWeight: "900",
+    },
+
+    subtitle: {
+        color: "#D8E4F2",
+        fontSize: 11,
+        fontWeight: "700",
+        marginTop: 2,
+        lineHeight: 15,
+    },
+
+    filtersRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+        alignItems: "center",
+    },
+
+    filterChip: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
-        backgroundColor: "rgba(255,255,255,0.94)",
+        minHeight: 38,
+        paddingHorizontal: 12,
+        borderRadius: 999,
         borderWidth: 1,
-        borderColor: "rgba(15,23,42,0.08)",
     },
 
-    mapHeaderTitle: {
-        color: "#0F172A",
+    filterChipCompact: {
+        minWidth: 58,
+        justifyContent: "center",
+        paddingHorizontal: 10,
+    },
+
+    filterChipActive: {
+        borderColor: "rgba(255,255,255,0.24)",
+        backgroundColor: "rgba(15,23,42,0.96)",
+    },
+
+    filterChipText: {
         fontSize: 12,
         fontWeight: "900",
     },
 
-    mapHeaderSubtitle: {
-        flex: 1,
-        color: "#475569",
-        fontSize: 11,
-        fontWeight: "700",
-    },
-
-    rightDockWrap: {
-        position: "absolute",
-        zIndex: 24,
-    },
-
-    rightDock: {
-        borderRadius: 20,
-        padding: 8,
-        gap: 8,
-        backgroundColor: "rgba(15, 23, 42, 0.80)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.12)",
-    },
-
-    rightDockDivider: {
-        height: 1,
-        marginVertical: 2,
-        backgroundColor: "rgba(255,255,255,0.10)",
-    },
-
-    sideActionBtn: {
-        width: 46,
-        height: 46,
-        borderRadius: 15,
-        backgroundColor: "rgba(255,255,255,0.08)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.12)",
-        alignItems: "center",
-        justifyContent: "center",
-    },
-
-    sideActionBtnActive: {
-        backgroundColor: "rgba(255,255,255,0.16)",
-        borderColor: "rgba(255,255,255,0.22)",
-    },
-
-    sideCountBadge: {
-        position: "absolute",
-        top: -4,
-        right: -4,
-        minWidth: 20,
+    filterBadge: {
+        minWidth: 24,
         height: 20,
-        paddingHorizontal: 5,
+        paddingHorizontal: 6,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "#FFFFFF",
-        borderWidth: 1,
-        borderColor: "rgba(15,23,42,0.10)",
+        backgroundColor: "rgba(255,255,255,0.12)",
     },
 
-    sideCountBadgeText: {
-        color: "#0F172A",
-        fontSize: 10,
+    filterBadgeActive: {
+        backgroundColor: "rgba(255,255,255,0.18)",
+    },
+
+    filterBadgeText: {
+        color: COLORS.text,
+        fontSize: 11,
         fontWeight: "900",
     },
 
@@ -1398,7 +1425,7 @@ const styles = StyleSheet.create({
     emptyState: {
         position: "absolute",
         left: 24,
-        right: 88,
+        right: 24,
         top: "36%",
         borderRadius: 22,
         padding: 18,
