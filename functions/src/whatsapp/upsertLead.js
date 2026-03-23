@@ -189,6 +189,65 @@ function buildHistoryClearPatchForVerificationStatus(verificationStatus) {
     };
 }
 
+function extractCoordsFromMapsUrl(url) {
+    const raw = safeString(url);
+    if (!raw) {
+        return { lat: null, lng: null };
+    }
+
+    try {
+        const decoded = decodeURIComponent(raw);
+
+        const patterns = [
+            /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+            /[?&]query=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+            /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+            /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/i,
+        ];
+
+        for (const pattern of patterns) {
+            const match = decoded.match(pattern);
+            if (match?.[1] && match?.[2]) {
+                const lat = roundCoord(match[1]);
+                const lng = roundCoord(match[2]);
+
+                if (hasValidCoords(lat, lng)) {
+                    return { lat, lng };
+                }
+            }
+        }
+
+        return { lat: null, lng: null };
+    } catch {
+        return { lat: null, lng: null };
+    }
+}
+
+function resolveEffectiveCoords(locationLat, locationLng, mapsUrl) {
+    if (hasValidCoords(locationLat, locationLng)) {
+        return {
+            lat: locationLat,
+            lng: locationLng,
+            source: "location",
+        };
+    }
+
+    const fromMaps = extractCoordsFromMapsUrl(mapsUrl);
+    if (hasValidCoords(fromMaps.lat, fromMaps.lng)) {
+        return {
+            lat: fromMaps.lat,
+            lng: fromMaps.lng,
+            source: "maps_url",
+        };
+    }
+
+    return {
+        lat: null,
+        lng: null,
+        source: "",
+    };
+}
+
 function createUpsertLeadAsClient({
     parseLeadText,
     resolveNextClientName,
@@ -206,17 +265,31 @@ function createUpsertLeadAsClient({
         const now = Date.now();
         const parsed = parseLeadText(rawText, profileName);
 
-        const lat = roundCoord(locationData?.lat);
-        const lng = roundCoord(locationData?.lng);
+        const rawLocationLat = roundCoord(locationData?.lat);
+        const rawLocationLng = roundCoord(locationData?.lng);
         const locationAddress = cleanupExtractedText(locationData?.address || "");
 
         const generatedMapsUrlFromCoords =
-            hasValidCoords(lat, lng) ? buildGoogleMapsUrlFromCoords(lat, lng) : "";
+            hasValidCoords(rawLocationLat, rawLocationLng)
+                ? buildGoogleMapsUrlFromCoords(rawLocationLat, rawLocationLng)
+                : "";
+
         const generatedMapsUrlFromText = extractGoogleMapsUrlFromText(rawText);
+
         const generatedMapsUrl =
             generatedMapsUrlFromText || generatedMapsUrlFromCoords || "";
 
-        const hasMapsInThisMessage = !!generatedMapsUrl || hasValidCoords(lat, lng);
+        const effectiveCoords = resolveEffectiveCoords(
+            rawLocationLat,
+            rawLocationLng,
+            generatedMapsUrl
+        );
+
+        const lat = effectiveCoords.lat;
+        const lng = effectiveCoords.lng;
+
+        const hasMapsInThisMessage =
+            !!generatedMapsUrl || hasValidCoords(lat, lng);
 
         const resolvedTrackGoGeo = hasValidCoords(lat, lng)
             ? resolveTrackGoGeoFromCoords(lat, lng, now)

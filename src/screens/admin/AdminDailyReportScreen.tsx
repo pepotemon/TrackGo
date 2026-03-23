@@ -12,6 +12,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminAssignModal from "../../components/admin/AdminAssignModal";
 import AdminBackground from "../../components/admin/AdminBackground";
 
 import { assignClient, subscribeAdminClients } from "../../data/repositories/clientsRepo";
@@ -221,10 +222,10 @@ export default function AdminDailyReportScreen() {
     const [listOpen, setListOpen] = useState(false);
     const [listMode, setListMode] = useState<ListMode>("visited");
     const [listQ, setListQ] = useState("");
+    const [expandedUserIds, setExpandedUserIds] = useState<Record<string, boolean>>({});
 
     const [assignOpen, setAssignOpen] = useState(false);
     const [assignClientId, setAssignClientId] = useState<string | null>(null);
-    const [assignSearch, setAssignSearch] = useState("");
     const [busyClientId, setBusyClientId] = useState<string | null>(null);
 
     const [moneyOpen, setMoneyOpen] = useState(false);
@@ -657,63 +658,33 @@ export default function AdminDailyReportScreen() {
     const openList = (mode: ListMode) => {
         setListMode(mode);
         setListQ("");
+        setExpandedUserIds({});
         setListOpen(true);
     };
 
     const closeList = () => {
         setListOpen(false);
         setListQ("");
+        setExpandedUserIds({});
+    };
+
+    const toggleUserSection = (userId: string) => {
+        setExpandedUserIds((prev) => {
+            const isOpen = !!prev[userId];
+            if (isOpen) return {};
+            return { [userId]: true };
+        });
     };
 
     const openAssignForClient = (clientId: string) => {
         setAssignClientId(clientId);
-        setAssignSearch("");
         setAssignOpen(true);
     };
 
     const closeAssign = () => {
         setAssignOpen(false);
         setAssignClientId(null);
-        setAssignSearch("");
     };
-
-    const doAssign = async (toUserId: string) => {
-        const cid = assignClientId;
-        if (!cid) return;
-
-        try {
-            setBusyClientId(cid);
-
-            setClients((prev) =>
-                prev.map((c) => {
-                    if (c.id !== cid) return c;
-                    return {
-                        ...(c as any),
-                        assignedTo: toUserId,
-                        status: "pending",
-                    } as ClientDoc;
-                })
-            );
-
-            await assignClient(cid, toUserId as any);
-
-            closeAssign();
-        } catch (e: any) {
-            console.log("[assignClient] error:", e?.message ?? e);
-        } finally {
-            setBusyClientId(null);
-        }
-    };
-
-    const filteredUsersForAssign = useMemo(() => {
-        const qt2 = assignSearch.trim().toLowerCase();
-        const base = users.slice().sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
-        if (!qt2) return base;
-        return base.filter((u) => {
-            const hay = `${safeText(u.name)} ${safeText(u.email)}`;
-            return hay.includes(qt2);
-        });
-    }, [users, assignSearch]);
 
     const findAssignedName = (uid?: string) => {
         if (!uid) return "—";
@@ -1063,35 +1034,64 @@ export default function AdminDailyReportScreen() {
                             keyExtractor={(s) => s.userId}
                             contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
                             showsVerticalScrollIndicator={false}
-                            renderItem={({ item: section }) => (
-                                <View style={styles.modalSectionCard}>
-                                    <View style={styles.modalSectionHeader}>
-                                        <View style={{ flex: 1, gap: 1 }}>
-                                            <Text style={styles.modalSectionTitle} numberOfLines={1}>
-                                                {section.title}
-                                            </Text>
-                                            {section.subtitle ? (
-                                                <Text style={styles.modalSectionSub} numberOfLines={1}>
-                                                    {section.subtitle}
-                                                </Text>
-                                            ) : null}
-                                        </View>
-                                        <View style={styles.modalCountPill}>
-                                            <Text style={styles.modalCountText}>{section.data.length}</Text>
-                                        </View>
-                                    </View>
+                            renderItem={({ item: section }) => {
+                                const expanded = !!expandedUserIds[section.userId];
 
-                                    <View style={{ gap: 8, marginTop: 8 }}>
-                                        {section.data.map((c) => (
-                                            <ClientRowModal
-                                                key={c.id}
-                                                c={c}
-                                                allowReassign={listMode === "pending" || listMode === "rejected"}
-                                            />
-                                        ))}
+                                return (
+                                    <View style={styles.modalSectionCard}>
+                                        <Pressable
+                                            onPress={() => toggleUserSection(section.userId)}
+                                            style={({ pressed }) => [
+                                                styles.modalSectionHeaderPressable,
+                                                pressed && styles.modalSectionHeaderPressablePressed,
+                                            ]}
+                                        >
+                                            <View style={styles.modalSectionHeaderLeft}>
+                                                <View style={styles.modalSectionAvatar}>
+                                                    <Ionicons name="person-outline" size={14} color={COLORS.text} />
+                                                </View>
+
+                                                <View style={{ flex: 1, gap: 1 }}>
+                                                    <Text style={styles.modalSectionTitle} numberOfLines={1}>
+                                                        {section.title}
+                                                    </Text>
+                                                    {section.subtitle ? (
+                                                        <Text style={styles.modalSectionSub} numberOfLines={1}>
+                                                            {section.subtitle}
+                                                        </Text>
+                                                    ) : null}
+                                                </View>
+                                            </View>
+
+                                            <View style={styles.modalSectionHeaderRight}>
+                                                <View style={styles.modalCountPill}>
+                                                    <Text style={styles.modalCountText}>{section.data.length}</Text>
+                                                </View>
+
+                                                <View style={styles.expandBtn}>
+                                                    <Ionicons
+                                                        name={expanded ? "remove" : "add"}
+                                                        size={16}
+                                                        color={COLORS.text}
+                                                    />
+                                                </View>
+                                            </View>
+                                        </Pressable>
+
+                                        {expanded ? (
+                                            <View style={styles.modalClientsWrap}>
+                                                {section.data.map((c) => (
+                                                    <ClientRowModal
+                                                        key={c.id}
+                                                        c={c}
+                                                        allowReassign={listMode === "pending" || listMode === "rejected"}
+                                                    />
+                                                ))}
+                                            </View>
+                                        ) : null}
                                     </View>
-                                </View>
-                            )}
+                                );
+                            }}
                             ListEmptyComponent={
                                 <View style={styles.modalEmpty}>
                                     <Ionicons name="people-outline" size={20} color={COLORS.muted} />
@@ -1102,85 +1102,53 @@ export default function AdminDailyReportScreen() {
                     </View>
                 </Modal>
 
-                <Modal visible={assignOpen} transparent animationType="fade" onRequestClose={closeAssign}>
-                    <Pressable style={styles.modalBackdrop} onPress={closeAssign} />
+                <AdminAssignModal
+                    visible={assignOpen}
+                    onClose={closeAssign}
+                    entityId={assignClientId}
+                    entityType="cliente"
+                    entityTitle={
+                        assignClientId
+                            ? (((clientsById.get(assignClientId) as any)?.name ??
+                                (clientsById.get(assignClientId) as any)?.business ??
+                                clientsById.get(assignClientId)?.phone ??
+                                "Cliente") as string)
+                            : ""
+                    }
+                    entitySubtitle={
+                        assignClientId
+                            ? (clientsById.get(assignClientId)?.address ??
+                                clientsById.get(assignClientId)?.phone ??
+                                "")
+                            : ""
+                    }
+                    users={users}
+                    currentAssignedUserId={
+                        assignClientId ? clientsById.get(assignClientId)?.assignedTo ?? null : null
+                    }
+                    loadingUsers={usersLoading}
+                    busy={busyClientId === assignClientId}
+                    onAssign={async (entityId, userId) => {
+                        try {
+                            setBusyClientId(entityId);
 
-                    <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
-                        <View style={styles.modalHeader}>
-                            <View style={{ flex: 1, gap: 2 }}>
-                                <Text style={styles.modalTitle}>Reasignar a usuario</Text>
-                                <Text style={styles.modalSub}>Selecciona un cobrador</Text>
-                            </View>
+                            setClients((prev) =>
+                                prev.map((c) => {
+                                    if (c.id !== entityId) return c;
+                                    return {
+                                        ...(c as any),
+                                        assignedTo: userId,
+                                        status: "pending",
+                                    } as ClientDoc;
+                                })
+                            );
 
-                            <Pressable
-                                onPress={closeAssign}
-                                style={({ pressed }) => [
-                                    styles.modalClose,
-                                    pressed && styles.modalClosePressed,
-                                ]}
-                            >
-                                <Ionicons name="close" size={16} color={COLORS.text} />
-                            </Pressable>
-                        </View>
-
-                        <View style={styles.modalSearch}>
-                            <Ionicons name="search-outline" size={16} color={COLORS.muted} />
-                            <TextInput
-                                value={assignSearch}
-                                onChangeText={setAssignSearch}
-                                placeholder="Buscar usuario (nombre / email)…"
-                                placeholderTextColor={COLORS.muted}
-                                style={styles.modalSearchInput}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                            />
-                            {!!assignSearch ? (
-                                <Pressable onPress={() => setAssignSearch("")} style={styles.modalSearchClear}>
-                                    <Ionicons name="close" size={16} color={COLORS.text} />
-                                </Pressable>
-                            ) : null}
-                        </View>
-
-                        <FlatList
-                            data={filteredUsersForAssign}
-                            keyExtractor={(u) => u.id}
-                            contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
-                            showsVerticalScrollIndicator={false}
-                            renderItem={({ item }) => (
-                                <Pressable
-                                    onPress={() => doAssign(item.id)}
-                                    style={({ pressed }) => [
-                                        styles.userPickRow,
-                                        pressed && styles.userPickRowPressed,
-                                    ]}
-                                >
-                                    <View style={styles.userPickAvatar}>
-                                        <Ionicons name="person-outline" size={14} color={COLORS.text} />
-                                    </View>
-                                    <View style={{ flex: 1, gap: 1 }}>
-                                        <Text style={styles.userPickName} numberOfLines={1}>
-                                            {item.name}
-                                        </Text>
-                                        <Text style={styles.userPickEmail} numberOfLines={1}>
-                                            {item.email || "—"}
-                                        </Text>
-                                    </View>
-                                    <Ionicons name="chevron-forward" size={14} color={COLORS.muted} />
-                                </Pressable>
-                            )}
-                            ListEmptyComponent={
-                                <View style={styles.modalEmpty}>
-                                    <Ionicons name="person-outline" size={20} color={COLORS.muted} />
-                                    <Text style={styles.modalEmptyText}>No hay usuarios.</Text>
-                                </View>
-                            }
-                        />
-
-                        <Text style={styles.modalHint}>
-                            * Esto cambia el assignedTo del cliente y lo deja pending en UI.
-                        </Text>
-                    </View>
-                </Modal>
+                            await assignClient(entityId, userId as any);
+                        } finally {
+                            setBusyClientId(null);
+                        }
+                    }}
+                />
 
                 <Modal visible={moneyOpen} transparent animationType="fade" onRequestClose={() => setMoneyOpen(false)}>
                     <Pressable style={styles.modalBackdrop} onPress={() => setMoneyOpen(false)} />
@@ -1659,12 +1627,6 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "800",
     },
-    modalHint: {
-        color: COLORS.muted,
-        fontSize: 11,
-        fontWeight: "700",
-        opacity: 0.9,
-    },
 
     modalSectionCard: {
         borderRadius: 15,
@@ -1673,11 +1635,45 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(255,255,255,0.025)",
         padding: 10,
     },
-    modalSectionHeader: {
+
+    modalSectionHeaderPressable: {
+        minHeight: 54,
+        borderRadius: 14,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
+
+    modalSectionHeaderPressablePressed: {
+        opacity: 0.96,
+        transform: [{ scale: 0.995 }],
+    },
+
+    modalSectionHeaderLeft: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+
+    modalSectionHeaderRight: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
     },
+
+    modalSectionAvatar: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.09)",
+    },
+
     modalSectionTitle: {
         color: COLORS.text,
         fontWeight: "900",
@@ -1703,6 +1699,25 @@ const styles = StyleSheet.create({
         color: COLORS.text,
         fontWeight: "900",
         fontSize: 11,
+    },
+
+    expandBtn: {
+        width: 30,
+        height: 30,
+        borderRadius: 10,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.045)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+    },
+
+    modalClientsWrap: {
+        gap: 8,
+        marginTop: 8,
+        paddingTop: 8,
+        borderTopWidth: 1,
+        borderTopColor: "rgba(255,255,255,0.06)",
     },
 
     modalClientCard: {
@@ -1792,41 +1807,6 @@ const styles = StyleSheet.create({
     modalReassignPlaceholder: {
         width: 36,
         height: 36,
-    },
-
-    userPickRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        padding: 10,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.07)",
-        backgroundColor: "rgba(255,255,255,0.025)",
-    },
-    userPickRowPressed: {
-        transform: [{ scale: 0.99 }],
-        opacity: 0.95,
-    },
-    userPickAvatar: {
-        width: 32,
-        height: 32,
-        borderRadius: 11,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.05)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.09)",
-    },
-    userPickName: {
-        color: COLORS.text,
-        fontWeight: "900",
-        fontSize: 13,
-    },
-    userPickEmail: {
-        color: COLORS.muted,
-        fontWeight: "700",
-        fontSize: 11,
     },
 
     moneyRowCard: {

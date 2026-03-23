@@ -16,8 +16,8 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminAssignModal from "../../components/admin/AdminAssignModal";
 import AdminBackground from "../../components/admin/AdminBackground";
-
 import {
     assignClient,
     deleteClient,
@@ -317,9 +317,8 @@ export default function AdminUserClientsRejectedHistoryScreen() {
     const [eAssigneeId, setEAssigneeId] = useState<string | null>(null);
     const [eSaving, setESaving] = useState(false);
 
-    const [userPickerOpen, setUserPickerOpen] = useState(false);
-    const [pickerQuery, setPickerQuery] = useState("");
-    const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(null);
+    const [assignOpen, setAssignOpen] = useState(false);
+    const [assignClientId, setAssignClientId] = useState<string | null>(null);
 
     const [menuOpen, setMenuOpen] = useState(false);
     const [menuClientId, setMenuClientId] = useState<string | null>(null);
@@ -415,15 +414,11 @@ export default function AdminUserClientsRejectedHistoryScreen() {
             .sort((a, b) => getRejectedLikeDateMs(b) - getRejectedLikeDateMs(a));
     }, [rejectedClients, q]);
 
-    const pickerUsers = useMemo(() => {
-        const qt = pickerQuery.trim().toLowerCase();
-        if (!qt) return users;
 
-        return users.filter((u) => {
-            const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.id)}`;
-            return hay.includes(qt);
-        });
-    }, [users, pickerQuery]);
+    const assignClientDoc = useMemo(() => {
+        if (!assignClientId) return null;
+        return clients.find((c) => c.id === assignClientId) ?? null;
+    }, [clients, assignClientId]);
 
     const menuClient = useMemo(() => {
         if (!menuClientId) return null;
@@ -464,25 +459,13 @@ export default function AdminUserClientsRejectedHistoryScreen() {
 
     const openAssignPicker = async (clientId: string) => {
         if (!users.length && !usersLoading) await reloadUsers();
-        setPickerTargetClientId(clientId);
-        setPickerQuery("");
-        setUserPickerOpen(true);
+        setAssignClientId(clientId);
+        setAssignOpen(true);
     };
 
-    const onPickUser = async (u: UserDoc) => {
-        const clientId = pickerTargetClientId;
-        setUserPickerOpen(false);
-        if (!clientId) return;
-
-        try {
-            setBusyId(clientId);
-            await assignClient(clientId, u.id);
-        } catch (e: any) {
-            Alert.alert("Error", e?.message ?? "No se pudo reasignar");
-        } finally {
-            setBusyId(null);
-            setPickerTargetClientId(null);
-        }
+    const closeAssign = () => {
+        setAssignOpen(false);
+        setAssignClientId(null);
     };
 
     const clearAssign = async (clientId: string) => {
@@ -1191,91 +1174,43 @@ export default function AdminUserClientsRejectedHistoryScreen() {
                     </View>
                 </Modal>
 
-                <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={() => setUserPickerOpen(false)}>
-                    <View style={styles.modalOverlay}>
-                        <View style={styles.pickerWrap}>
-                            <View style={styles.pickerCard}>
-                                <View style={styles.modalHeader}>
-                                    <Text style={styles.modalTitle}>Reasignar a</Text>
-                                    <Pressable onPress={() => setUserPickerOpen(false)} style={styles.modalClose}>
-                                        <Ionicons name="close" size={18} color={COLORS.text} />
-                                    </Pressable>
-                                </View>
-
-                                <View style={styles.searchWrapModal}>
-                                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                                    <TextInput
-                                        value={pickerQuery}
-                                        onChangeText={setPickerQuery}
-                                        placeholder="Buscar…"
-                                        placeholderTextColor={COLORS.muted}
-                                        style={styles.searchInput}
-                                    />
-                                    {!!pickerQuery ? (
-                                        <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
-                                            <Ionicons name="close" size={18} color={COLORS.text} />
-                                        </Pressable>
-                                    ) : null}
-                                </View>
-
-                                <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                    <Pressable
-                                        onPress={async () => {
-                                            const clientId = pickerTargetClientId;
-                                            setUserPickerOpen(false);
-                                            if (!clientId) return;
-                                            try {
-                                                setBusyId(clientId);
-                                                await assignClient(clientId, "" as any);
-                                            } catch (e: any) {
-                                                Alert.alert("Error", e?.message ?? "No se pudo desasignar");
-                                            } finally {
-                                                setBusyId(null);
-                                                setPickerTargetClientId(null);
-                                            }
-                                        }}
-                                        style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
-                                    >
-                                        <View style={styles.userAvatar}>
-                                            <Ionicons name="remove-outline" size={18} color={COLORS.text} />
-                                        </View>
-                                        <View style={{ flex: 1 }}>
-                                            <Text style={styles.userName}>Sin asignar</Text>
-                                            <Text style={styles.userEmail}>Quitar asignación</Text>
-                                        </View>
-                                    </Pressable>
-
-                                    {pickerUsers.map((u) => (
-                                        <Pressable
-                                            key={u.id}
-                                            onPress={() => onPickUser(u)}
-                                            style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
-                                        >
-                                            <View style={styles.userAvatar}>
-                                                <Ionicons name="person-outline" size={18} color={COLORS.text} />
-                                            </View>
-
-                                            <View style={{ flex: 1 }}>
-                                                <Text style={styles.userName} numberOfLines={1}>
-                                                    {u.name}
-                                                </Text>
-                                                <Text style={styles.userEmail} numberOfLines={1}>
-                                                    {u.email}
-                                                </Text>
-                                            </View>
-                                        </Pressable>
-                                    ))}
-
-                                    {!pickerUsers.length ? (
-                                        <View style={styles.emptySmall}>
-                                            <Text style={styles.emptyText}>No hay resultados.</Text>
-                                        </View>
-                                    ) : null}
-                                </ScrollView>
-                            </View>
-                        </View>
-                    </View>
-                </Modal>
+                <AdminAssignModal
+                    visible={assignOpen}
+                    onClose={closeAssign}
+                    entityId={assignClientId}
+                    entityType="cliente"
+                    entityTitle={
+                        assignClientDoc
+                            ? ((((assignClientDoc as any)?.name ??
+                                (assignClientDoc as any)?.business ??
+                                assignClientDoc.phone ??
+                                "Cliente") as string).trim() || "Cliente")
+                            : ""
+                    }
+                    entitySubtitle={
+                        assignClientDoc
+                            ? (
+                                assignClientDoc.address ||
+                                assignClientDoc.phone ||
+                                ""
+                            )
+                            : ""
+                    }
+                    users={users}
+                    currentAssignedUserId={assignClientDoc?.assignedTo ?? null}
+                    loadingUsers={usersLoading}
+                    busy={busyId === assignClientId}
+                    onAssign={async (entityId, toUserId) => {
+                        try {
+                            setBusyId(entityId);
+                            await assignClient(entityId, toUserId);
+                        } catch (e: any) {
+                            Alert.alert("Error", e?.message ?? "No se pudo reasignar");
+                        } finally {
+                            setBusyId(null);
+                        }
+                    }}
+                />
             </AdminBackground>
         </SafeAreaView>
     );

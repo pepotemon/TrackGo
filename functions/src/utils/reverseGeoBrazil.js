@@ -21,11 +21,13 @@ function pickFirstAddressValue(address, keys) {
 }
 
 function normalizeGeoKey(value) {
-    return safeLower(value)
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_+|_+$/g, "") || null;
+    return (
+        safeLower(value)
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "") || null
+    );
 }
 
 function buildEmptyReverseGeoBrazil() {
@@ -104,7 +106,7 @@ async function reverseGeoBrazil(lat, lng, now = Date.now()) {
             "country",
         ]);
 
-        const result = {
+        return {
             geoAdminCityLabel: city || null,
             geoAdminCityNormalized: normalizeGeoKey(city),
             geoAdminStateLabel: state || null,
@@ -115,8 +117,6 @@ async function reverseGeoBrazil(lat, lng, now = Date.now()) {
             geoAdminResolvedAt: now,
             geoAdminDisplayLabel: buildDisplayLabel(city, state),
         };
-
-        return result;
     } catch (error) {
         console.log("[reverseGeoBrazil] error:", error?.message || error);
         return buildEmptyReverseGeoBrazil();

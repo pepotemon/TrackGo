@@ -12,6 +12,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminAssignModal from "../../components/admin/AdminAssignModal";
 import AdminBackground from "../../components/admin/AdminBackground";
 
 import { assignClient, subscribeAdminClients } from "../../data/repositories/clientsRepo";
@@ -249,7 +250,7 @@ export default function AdminWeeklyReportScreen() {
     const [busyClientId, setBusyClientId] = useState<string | null>(null);
 
     const [earningsOpen, setEarningsOpen] = useState(false);
-
+    const [expandedUserIds, setExpandedUserIds] = useState<Record<string, boolean>>({});
     const weekStartKey = useMemo(() => dayKeyFromDate(startOfWeekMonday(new Date())), []);
     const weekEndKey = useMemo(() => dayKeyFromDate(endOfWeekSunday(new Date())), []);
 
@@ -365,6 +366,14 @@ export default function AdminWeeklyReportScreen() {
         [clientsById]
     );
 
+
+    const toggleUserSection = (userId: string) => {
+        setExpandedUserIds((prev) => {
+            const isOpen = !!prev[userId];
+            if (isOpen) return {};
+            return { [userId]: true };
+        });
+    };
     const rows: Row[] = useMemo(() => {
         const byUser: Record<string, Row> = {};
 
@@ -698,6 +707,7 @@ export default function AdminWeeklyReportScreen() {
     const closeList = () => {
         setListOpen(false);
         setListQ("");
+        setExpandedUserIds({});
     };
 
     const openAssignForClient = (clientId: string) => {
@@ -1039,6 +1049,7 @@ export default function AdminWeeklyReportScreen() {
                     }
                 />
 
+
                 <Modal visible={listOpen} transparent animationType="fade" onRequestClose={closeList}>
                     <Pressable style={styles.modalBackdrop} onPress={closeList} />
 
@@ -1054,9 +1065,7 @@ export default function AdminWeeklyReportScreen() {
                                 </Text>
                                 <Text style={styles.modalSub}>
                                     {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0)} cliente
-                                    {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0) === 1
-                                        ? ""
-                                        : "s"}
+                                    {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0) === 1 ? "" : "s"}
                                 </Text>
                             </View>
 
@@ -1092,35 +1101,64 @@ export default function AdminWeeklyReportScreen() {
                             keyExtractor={(s) => s.userId}
                             contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
                             showsVerticalScrollIndicator={false}
-                            renderItem={({ item: section }) => (
-                                <View style={styles.modalSectionCard}>
-                                    <View style={styles.modalSectionHeader}>
-                                        <View style={{ flex: 1, gap: 1 }}>
-                                            <Text style={styles.modalSectionTitle} numberOfLines={1}>
-                                                {section.title}
-                                            </Text>
-                                            {section.subtitle ? (
-                                                <Text style={styles.modalSectionSub} numberOfLines={1}>
-                                                    {section.subtitle}
-                                                </Text>
-                                            ) : null}
-                                        </View>
-                                        <View style={styles.modalCountPill}>
-                                            <Text style={styles.modalCountText}>{section.data.length}</Text>
-                                        </View>
-                                    </View>
+                            renderItem={({ item: section }) => {
+                                const expanded = !!expandedUserIds[section.userId];
 
-                                    <View style={{ gap: 8, marginTop: 8 }}>
-                                        {section.data.map((c) => (
-                                            <ClientRowModal
-                                                key={c.id}
-                                                c={c}
-                                                allowReassign={listMode === "pending" || listMode === "rejected"}
-                                            />
-                                        ))}
+                                return (
+                                    <View style={styles.modalSectionCard}>
+                                        <Pressable
+                                            onPress={() => toggleUserSection(section.userId)}
+                                            style={({ pressed }) => [
+                                                styles.modalSectionHeaderPressable,
+                                                pressed && styles.modalSectionHeaderPressablePressed,
+                                            ]}
+                                        >
+                                            <View style={styles.modalSectionHeaderLeft}>
+                                                <View style={styles.modalSectionAvatar}>
+                                                    <Ionicons name="person-outline" size={14} color={COLORS.text} />
+                                                </View>
+
+                                                <View style={{ flex: 1, gap: 1 }}>
+                                                    <Text style={styles.modalSectionTitle} numberOfLines={1}>
+                                                        {section.title}
+                                                    </Text>
+                                                    {section.subtitle ? (
+                                                        <Text style={styles.modalSectionSub} numberOfLines={1}>
+                                                            {section.subtitle}
+                                                        </Text>
+                                                    ) : null}
+                                                </View>
+                                            </View>
+
+                                            <View style={styles.modalSectionHeaderRight}>
+                                                <View style={styles.modalCountPill}>
+                                                    <Text style={styles.modalCountText}>{section.data.length}</Text>
+                                                </View>
+
+                                                <View style={styles.expandBtn}>
+                                                    <Ionicons
+                                                        name={expanded ? "remove" : "add"}
+                                                        size={16}
+                                                        color={COLORS.text}
+                                                    />
+                                                </View>
+                                            </View>
+                                        </Pressable>
+
+                                        {expanded ? (
+                                            <View style={styles.modalClientsWrap}>
+                                                {section.data.map((c) => (
+                                                    <ClientRowModal
+                                                        key={c.id}
+                                                        c={c}
+                                                        allowReassign={listMode === "pending" || listMode === "rejected"}
+                                                    />
+                                                ))}
+                                            </View>
+                                        ) : null}
                                     </View>
-                                </View>
-                            )}
+                                );
+                            }}
                             ListEmptyComponent={
                                 <View style={styles.modalEmpty}>
                                     <Ionicons name="people-outline" size={20} color={COLORS.muted} />
@@ -1131,85 +1169,55 @@ export default function AdminWeeklyReportScreen() {
                     </View>
                 </Modal>
 
-                <Modal visible={assignOpen} transparent animationType="fade" onRequestClose={closeAssign}>
-                    <Pressable style={styles.modalBackdrop} onPress={closeAssign} />
 
-                    <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
-                        <View style={styles.modalHeader}>
-                            <View style={{ flex: 1, gap: 2 }}>
-                                <Text style={styles.modalTitle}>Reasignar a usuario</Text>
-                                <Text style={styles.modalSub}>Selecciona un cobrador</Text>
-                            </View>
 
-                            <Pressable
-                                onPress={closeAssign}
-                                style={({ pressed }) => [
-                                    styles.modalClose,
-                                    pressed && styles.modalClosePressed,
-                                ]}
-                            >
-                                <Ionicons name="close" size={16} color={COLORS.text} />
-                            </Pressable>
-                        </View>
+                <AdminAssignModal
+                    visible={assignOpen}
+                    onClose={closeAssign}
+                    entityId={assignClientId}
+                    entityType="cliente"
+                    entityTitle={
+                        assignClientId
+                            ? (((clientsById.get(assignClientId) as any)?.name ??
+                                (clientsById.get(assignClientId) as any)?.business ??
+                                clientsById.get(assignClientId)?.phone ??
+                                "Cliente") as string)
+                            : ""
+                    }
+                    entitySubtitle={
+                        assignClientId
+                            ? (clientsById.get(assignClientId)?.address ??
+                                clientsById.get(assignClientId)?.phone ??
+                                "")
+                            : ""
+                    }
+                    users={users}
+                    currentAssignedUserId={
+                        assignClientId ? clientsById.get(assignClientId)?.assignedTo ?? null : null
+                    }
+                    loadingUsers={usersLoading}
+                    busy={busyClientId === assignClientId}
+                    onAssign={async (entityId, userId) => {
+                        try {
+                            setBusyClientId(entityId);
 
-                        <View style={styles.modalSearch}>
-                            <Ionicons name="search-outline" size={16} color={COLORS.muted} />
-                            <TextInput
-                                value={assignSearch}
-                                onChangeText={setAssignSearch}
-                                placeholder="Buscar usuario (nombre / email)…"
-                                placeholderTextColor={COLORS.muted}
-                                style={styles.modalSearchInput}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                            />
-                            {!!assignSearch ? (
-                                <Pressable onPress={() => setAssignSearch("")} style={styles.modalSearchClear}>
-                                    <Ionicons name="close" size={16} color={COLORS.text} />
-                                </Pressable>
-                            ) : null}
-                        </View>
+                            setClients((prev) =>
+                                prev.map((c) => {
+                                    if (c.id !== entityId) return c;
+                                    return {
+                                        ...(c as any),
+                                        assignedTo: userId,
+                                        status: "pending",
+                                    } as ClientDoc;
+                                })
+                            );
 
-                        <FlatList
-                            data={filteredUsersForAssign}
-                            keyExtractor={(u) => u.id}
-                            contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
-                            showsVerticalScrollIndicator={false}
-                            renderItem={({ item }) => (
-                                <Pressable
-                                    onPress={() => doAssign(item.id)}
-                                    style={({ pressed }) => [
-                                        styles.userPickRow,
-                                        pressed && styles.userPickRowPressed,
-                                    ]}
-                                >
-                                    <View style={styles.userPickAvatar}>
-                                        <Ionicons name="person-outline" size={14} color={COLORS.text} />
-                                    </View>
-                                    <View style={{ flex: 1, gap: 1 }}>
-                                        <Text style={styles.userPickName} numberOfLines={1}>
-                                            {item.name}
-                                        </Text>
-                                        <Text style={styles.userPickEmail} numberOfLines={1}>
-                                            {item.email || "—"}
-                                        </Text>
-                                    </View>
-                                    <Ionicons name="chevron-forward" size={14} color={COLORS.muted} />
-                                </Pressable>
-                            )}
-                            ListEmptyComponent={
-                                <View style={styles.modalEmpty}>
-                                    <Ionicons name="person-outline" size={20} color={COLORS.muted} />
-                                    <Text style={styles.modalEmptyText}>No hay usuarios.</Text>
-                                </View>
-                            }
-                        />
-
-                        <Text style={styles.modalHint}>
-                            * Esto cambia el assignedTo del cliente y lo deja pending en UI.
-                        </Text>
-                    </View>
-                </Modal>
+                            await assignClient(entityId, userId as any);
+                        } finally {
+                            setBusyClientId(null);
+                        }
+                    }}
+                />
 
                 <Modal
                     visible={earningsOpen}
@@ -1647,6 +1655,62 @@ const styles = StyleSheet.create({
         opacity: 0.96,
     },
 
+    modalSectionHeaderPressable: {
+        minHeight: 54,
+        borderRadius: 14,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
+
+    modalSectionHeaderPressablePressed: {
+        opacity: 0.96,
+        transform: [{ scale: 0.995 }],
+    },
+
+    modalSectionHeaderLeft: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+
+    modalSectionHeaderRight: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+
+    modalSectionAvatar: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.09)",
+    },
+
+    expandBtn: {
+        width: 30,
+        height: 30,
+        borderRadius: 10,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.045)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+    },
+
+    modalClientsWrap: {
+        gap: 8,
+        marginTop: 8,
+        paddingTop: 8,
+        borderTopWidth: 1,
+        borderTopColor: "rgba(255,255,255,0.06)",
+    },
     modalSearch: {
         flexDirection: "row",
         alignItems: "center",

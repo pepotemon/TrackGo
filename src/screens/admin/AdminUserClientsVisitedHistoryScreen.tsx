@@ -16,6 +16,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import AdminAssignModal from "../../components/admin/AdminAssignModal";
 import AdminBackground from "../../components/admin/AdminBackground";
 
 import {
@@ -249,9 +250,8 @@ export default function AdminUserClientsVisitedHistoryScreen() {
     const [eAssigneeId, setEAssigneeId] = useState<string | null>(null);
     const [eSaving, setESaving] = useState(false);
 
-    const [userPickerOpen, setUserPickerOpen] = useState(false);
-    const [pickerQuery, setPickerQuery] = useState("");
-    const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(null);
+    const [assignOpen, setAssignOpen] = useState(false);
+    const [assignClientId, setAssignClientId] = useState<string | null>(null);
 
     const [menuOpen, setMenuOpen] = useState(false);
     const [menuClientId, setMenuClientId] = useState<string | null>(null);
@@ -345,20 +345,15 @@ export default function AdminUserClientsVisitedHistoryScreen() {
             .sort((a, b) => getVisitedLikeDateMs(b) - getVisitedLikeDateMs(a));
     }, [visitedClients, q]);
 
-    const pickerUsers = useMemo(() => {
-        const qt = pickerQuery.trim().toLowerCase();
-        if (!qt) return users;
-
-        return users.filter((u) => {
-            const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.id)}`;
-            return hay.includes(qt);
-        });
-    }, [users, pickerQuery]);
-
     const menuClient = useMemo(() => {
         if (!menuClientId) return null;
         return clients.find((c) => c.id === menuClientId) ?? null;
     }, [clients, menuClientId]);
+
+    const assignClientDoc = useMemo(() => {
+        if (!assignClientId) return null;
+        return clients.find((c) => c.id === assignClientId) ?? null;
+    }, [clients, assignClientId]);
 
     const title = isUnassignedView ? "Visitados sin asignar" : user?.name?.trim() || "Visitados";
     const subtitle = `${formatRangeLabel(rangeKey)} · ${filteredClients.length}`;
@@ -394,25 +389,13 @@ export default function AdminUserClientsVisitedHistoryScreen() {
 
     const openAssignPicker = async (clientId: string) => {
         if (!users.length && !usersLoading) await reloadUsers();
-        setPickerTargetClientId(clientId);
-        setPickerQuery("");
-        setUserPickerOpen(true);
+        setAssignClientId(clientId);
+        setAssignOpen(true);
     };
 
-    const onPickUser = async (u: UserDoc) => {
-        const clientId = pickerTargetClientId;
-        setUserPickerOpen(false);
-        if (!clientId) return;
-
-        try {
-            setBusyId(clientId);
-            await assignClient(clientId, u.id);
-        } catch (e: any) {
-            Alert.alert("Error", e?.message ?? "No se pudo reasignar");
-        } finally {
-            setBusyId(null);
-            setPickerTargetClientId(null);
-        }
+    const closeAssign = () => {
+        setAssignOpen(false);
+        setAssignClientId(null);
     };
 
     const clearAssign = async (clientId: string) => {
@@ -1113,91 +1096,43 @@ export default function AdminUserClientsVisitedHistoryScreen() {
                     </View>
                 </Modal>
 
-                <Modal visible={userPickerOpen} transparent animationType="fade" onRequestClose={() => setUserPickerOpen(false)}>
-                    <View style={styles.modalOverlay}>
-                        <View style={styles.pickerWrap}>
-                            <View style={styles.pickerCard}>
-                                <View style={styles.modalHeader}>
-                                    <Text style={styles.modalTitle}>Reasignar a</Text>
-                                    <Pressable onPress={() => setUserPickerOpen(false)} style={styles.modalClose}>
-                                        <Ionicons name="close" size={18} color={COLORS.text} />
-                                    </Pressable>
-                                </View>
-
-                                <View style={styles.searchWrapModal}>
-                                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                                    <TextInput
-                                        value={pickerQuery}
-                                        onChangeText={setPickerQuery}
-                                        placeholder="Buscar…"
-                                        placeholderTextColor={COLORS.muted}
-                                        style={styles.searchInput}
-                                    />
-                                    {!!pickerQuery ? (
-                                        <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
-                                            <Ionicons name="close" size={18} color={COLORS.text} />
-                                        </Pressable>
-                                    ) : null}
-                                </View>
-
-                                <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
-                                    <Pressable
-                                        onPress={async () => {
-                                            const clientId = pickerTargetClientId;
-                                            setUserPickerOpen(false);
-                                            if (!clientId) return;
-                                            try {
-                                                setBusyId(clientId);
-                                                await assignClient(clientId, "" as any);
-                                            } catch (e: any) {
-                                                Alert.alert("Error", e?.message ?? "No se pudo desasignar");
-                                            } finally {
-                                                setBusyId(null);
-                                                setPickerTargetClientId(null);
-                                            }
-                                        }}
-                                        style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
-                                    >
-                                        <View style={styles.userAvatar}>
-                                            <Ionicons name="remove-outline" size={18} color={COLORS.text} />
-                                        </View>
-                                        <View style={{ flex: 1 }}>
-                                            <Text style={styles.userName}>Sin asignar</Text>
-                                            <Text style={styles.userEmail}>Quitar asignación</Text>
-                                        </View>
-                                    </Pressable>
-
-                                    {pickerUsers.map((u) => (
-                                        <Pressable
-                                            key={u.id}
-                                            onPress={() => onPickUser(u)}
-                                            style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
-                                        >
-                                            <View style={styles.userAvatar}>
-                                                <Ionicons name="person-outline" size={18} color={COLORS.text} />
-                                            </View>
-
-                                            <View style={{ flex: 1 }}>
-                                                <Text style={styles.userName} numberOfLines={1}>
-                                                    {u.name}
-                                                </Text>
-                                                <Text style={styles.userEmail} numberOfLines={1}>
-                                                    {u.email}
-                                                </Text>
-                                            </View>
-                                        </Pressable>
-                                    ))}
-
-                                    {!pickerUsers.length ? (
-                                        <View style={styles.emptySmall}>
-                                            <Text style={styles.emptyText}>No hay resultados.</Text>
-                                        </View>
-                                    ) : null}
-                                </ScrollView>
-                            </View>
-                        </View>
-                    </View>
-                </Modal>
+                <AdminAssignModal
+                    visible={assignOpen}
+                    onClose={closeAssign}
+                    entityId={assignClientId}
+                    entityType="cliente"
+                    entityTitle={
+                        assignClientDoc
+                            ? ((((assignClientDoc as any)?.name ??
+                                (assignClientDoc as any)?.business ??
+                                assignClientDoc.phone ??
+                                "Cliente") as string).trim() || "Cliente")
+                            : ""
+                    }
+                    entitySubtitle={
+                        assignClientDoc
+                            ? (
+                                assignClientDoc.address ||
+                                assignClientDoc.phone ||
+                                ""
+                            )
+                            : ""
+                    }
+                    users={users}
+                    currentAssignedUserId={assignClientDoc?.assignedTo ?? null}
+                    loadingUsers={usersLoading}
+                    busy={busyId === assignClientId}
+                    onAssign={async (entityId, toUserId) => {
+                        try {
+                            setBusyId(entityId);
+                            await assignClient(entityId, toUserId);
+                        } catch (e: any) {
+                            Alert.alert("Error", e?.message ?? "No se pudo reasignar");
+                        } finally {
+                            setBusyId(null);
+                        }
+                    }}
+                />
             </AdminBackground>
         </SafeAreaView>
     );
@@ -1267,18 +1202,6 @@ const styles = StyleSheet.create({
         borderRadius: 15,
         paddingHorizontal: 12,
         height: 46,
-    },
-    searchWrapModal: {
-        marginBottom: 10,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        borderRadius: 16,
-        paddingHorizontal: 12,
-        height: 48,
     },
     searchInput: { flex: 1, color: COLORS.text, fontSize: 14, fontWeight: "700" },
     clearBtn: {
@@ -1556,7 +1479,6 @@ const styles = StyleSheet.create({
     busyText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
 
     empty: { marginTop: 40, alignItems: "center", gap: 10, paddingHorizontal: 16 },
-    emptySmall: { paddingVertical: 10, alignItems: "center" },
     emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900", textAlign: "center" },
 
     sheetOverlay: {
@@ -1633,39 +1555,6 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
-
-    pickerWrap: { width: "100%" },
-    pickerCard: {
-        backgroundColor: COLORS.card,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        padding: 14,
-        maxHeight: "80%",
-    },
-    userRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        padding: 12,
-        borderRadius: 16,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-    },
-    userRowPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
-    userAvatar: {
-        width: 40,
-        height: 40,
-        borderRadius: 14,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
-    },
-    userName: { color: COLORS.text, fontSize: 13, fontWeight: "900" },
-    userEmail: { color: COLORS.muted, fontSize: 12, fontWeight: "800", marginTop: 2 },
 
     field: { gap: 6 },
     label: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },

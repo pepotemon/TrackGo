@@ -26,6 +26,7 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import AdminAssignModal from "../../components/admin/AdminAssignModal";
 import AdminBackground from "../../components/admin/AdminBackground";
 import { docRef } from "../../data/firestore";
 import {
@@ -72,10 +73,6 @@ function toMs(v: any): number {
 
 function normalizePhone(raw?: string | null) {
     return String(raw ?? "").replace(/\D+/g, "");
-}
-
-function safeText(x?: string) {
-    return (x ?? "").toLowerCase();
 }
 
 function safeNumber(v: any): number | null {
@@ -299,8 +296,8 @@ export default function AdminLeadChatScreen() {
 
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
-    const [userPickerOpen, setUserPickerOpen] = useState(false);
-    const [pickerQuery, setPickerQuery] = useState("");
+
+    const [assignOpen, setAssignOpen] = useState(false);
 
     const [editOpen, setEditOpen] = useState(false);
     const [eName, setEName] = useState("");
@@ -317,6 +314,11 @@ export default function AdminLeadChatScreen() {
     const listRef = useRef<any>(null);
     const lastChatModeRef = useRef("bot");
     const autoResumingRef = useRef(false);
+
+    const initialScrollDoneRef = useRef(false);
+    const isNearBottomRef = useRef(true);
+    const lastRenderedMessageIdRef = useRef<string | null>(null);
+    const forceScrollAfterSendRef = useRef(false);
 
     useEffect(() => {
         if (!clientId) {
@@ -360,6 +362,9 @@ export default function AdminLeadChatScreen() {
         }
 
         setLoadingMessages(true);
+        initialScrollDoneRef.current = false;
+        lastRenderedMessageIdRef.current = null;
+        isNearBottomRef.current = true;
 
         const unsub = subscribeClientMessages(
             clientId,
@@ -376,11 +381,34 @@ export default function AdminLeadChatScreen() {
     useEffect(() => {
         if (!messages.length) return;
 
-        const t = setTimeout(() => {
-            listRef.current?.scrollToEnd({ animated: true });
-        }, 60);
+        const lastMessage = messages[messages.length - 1];
+        const lastId = lastMessage?.id ?? null;
+        const changedLastMessage = lastId !== lastRenderedMessageIdRef.current;
 
-        return () => clearTimeout(t);
+        if (!initialScrollDoneRef.current) {
+            initialScrollDoneRef.current = true;
+            lastRenderedMessageIdRef.current = lastId;
+
+            const t = setTimeout(() => {
+                listRef.current?.scrollToEnd({ animated: false });
+            }, 40);
+
+            return () => clearTimeout(t);
+        }
+
+        if (!changedLastMessage) return;
+
+        lastRenderedMessageIdRef.current = lastId;
+
+        if (forceScrollAfterSendRef.current || isNearBottomRef.current) {
+            forceScrollAfterSendRef.current = false;
+
+            const t = setTimeout(() => {
+                listRef.current?.scrollToEnd({ animated: true });
+            }, 40);
+
+            return () => clearTimeout(t);
+        }
     }, [messages]);
 
     useEffect(() => {
@@ -434,7 +462,6 @@ export default function AdminLeadChatScreen() {
             autoResumingRef.current = true;
             await postAuthedJson("resumeBotLead", { clientId });
         } catch {
-            // silencioso: el usuario salió, no bloqueamos la navegación
         } finally {
             autoResumingRef.current = false;
         }
@@ -506,6 +533,7 @@ export default function AdminLeadChatScreen() {
 
         try {
             setSending(true);
+            forceScrollAfterSendRef.current = true;
 
             await postAuthedJson("sendManualLeadMessage", {
                 clientId,
@@ -515,6 +543,7 @@ export default function AdminLeadChatScreen() {
 
             setDraft("");
         } catch (e: any) {
+            forceScrollAfterSendRef.current = false;
             Alert.alert("Error", e?.message ?? "No se pudo enviar el mensaje.");
         } finally {
             setSending(false);
@@ -573,39 +602,6 @@ export default function AdminLeadChatScreen() {
             },
         ]);
     }, [clientId, closeActionSheet]);
-
-    const onPickUser = useCallback(async (u: UserDoc) => {
-        setUserPickerOpen(false);
-
-        if (!clientId) return;
-
-        Alert.alert(
-            "Confirmar asignación",
-            `¿Asignar este lead a ${u.name || u.email || "este usuario"}?\n\nAl asignarlo, pasará automáticamente a verificado.`,
-            [
-                { text: "Cancelar", style: "cancel" },
-                {
-                    text: "Asignar",
-                    onPress: async () => {
-                        try {
-                            await updateClientFields(clientId, {
-                                verificationStatus: "verified",
-                                leadQuality: "valid",
-                                notSuitableReason: "",
-                                verifiedAt: Date.now(),
-                                updatedAt: Date.now(),
-                            } as any);
-
-                            await assignClient(clientId, u.id);
-                            router.back();
-                        } catch (e: any) {
-                            Alert.alert("Error", e?.message ?? "No se pudo asignar");
-                        }
-                    },
-                },
-            ]
-        );
-    }, [clientId, router]);
 
     const startEdit = useCallback(() => {
         closeActionSheet();
@@ -719,16 +715,6 @@ export default function AdminLeadChatScreen() {
         cancelEdit,
     ]);
 
-    const pickerUsers = useMemo(() => {
-        const qt = pickerQuery.trim().toLowerCase();
-        if (!qt) return users;
-
-        return users.filter((u) => {
-            const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.id)}`;
-            return hay.includes(qt);
-        });
-    }, [users, pickerQuery]);
-
     const loading = loadingClient || loadingMessages;
 
     const renderMessage = useCallback<ListRenderItem<ClientMessageDoc>>(
@@ -839,15 +825,20 @@ export default function AdminLeadChatScreen() {
                                 data={messages}
                                 renderItem={renderMessage}
                                 keyExtractor={(item) => item.id}
+
                                 showsVerticalScrollIndicator={false}
                                 keyboardShouldPersistTaps="handled"
                                 contentContainerStyle={{
                                     padding: 12,
                                     paddingBottom: 14,
                                 }}
-                                onContentSizeChange={() => {
-                                    listRef.current?.scrollToEnd({ animated: true });
+                                onScroll={(e) => {
+                                    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+                                    const distanceFromBottom =
+                                        contentSize.height - (contentOffset.y + layoutMeasurement.height);
+                                    isNearBottomRef.current = distanceFromBottom <= 90;
                                 }}
+                                scrollEventThrottle={16}
                             />
                         )}
                     </View>
@@ -945,8 +936,7 @@ export default function AdminLeadChatScreen() {
                                     onPress={async () => {
                                         closeActionSheet();
                                         if (!users.length && !usersLoading) await reloadUsers();
-                                        setPickerQuery("");
-                                        setUserPickerOpen(true);
+                                        setAssignOpen(true);
                                     }}
                                     style={({ pressed }) => [styles.sheetItem, pressed && styles.pressed]}
                                 >
@@ -1133,79 +1123,34 @@ export default function AdminLeadChatScreen() {
                         </View>
                     </Modal>
 
-                    <Modal
-                        visible={userPickerOpen}
-                        transparent
-                        animationType="fade"
-                        onRequestClose={() => setUserPickerOpen(false)}
-                    >
-                        <View style={styles.inlineModalOverlay}>
-                            <View style={styles.pickerWrap}>
-                                <View style={styles.pickerCard}>
-                                    <View style={styles.modalHeader}>
-                                        <Text style={styles.modalTitle}>Asignar lead a</Text>
-                                        <Pressable
-                                            onPress={() => setUserPickerOpen(false)}
-                                            style={styles.modalClose}
-                                        >
-                                            <Ionicons name="close" size={18} color={COLORS.text} />
-                                        </Pressable>
-                                    </View>
+                    <AdminAssignModal
+                        visible={assignOpen}
+                        onClose={() => setAssignOpen(false)}
+                        entityId={clientId}
+                        entityType="lead"
+                        entityTitle={title}
+                        entitySubtitle={subtitle}
+                        users={users}
+                        currentAssignedUserId={client?.assignedTo ?? null}
+                        loadingUsers={usersLoading}
+                        busy={false}
+                        onAssign={async (entityId, userId) => {
+                            try {
+                                await updateClientFields(entityId, {
+                                    verificationStatus: "verified",
+                                    leadQuality: "valid",
+                                    notSuitableReason: "",
+                                    verifiedAt: Date.now(),
+                                    updatedAt: Date.now(),
+                                } as any);
 
-                                    <View style={styles.searchWrapModal}>
-                                        <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                                        <TextInput
-                                            value={pickerQuery}
-                                            onChangeText={setPickerQuery}
-                                            placeholder="Buscar usuario…"
-                                            placeholderTextColor={COLORS.muted}
-                                            style={styles.searchInput}
-                                        />
-                                        {!!pickerQuery ? (
-                                            <Pressable onPress={() => setPickerQuery("")} style={styles.clearBtn}>
-                                                <Ionicons name="close" size={18} color={COLORS.text} />
-                                            </Pressable>
-                                        ) : null}
-                                    </View>
-
-                                    <ScrollView
-                                        contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
-                                        showsVerticalScrollIndicator={false}
-                                        keyboardShouldPersistTaps="handled"
-                                    >
-                                        {pickerUsers.map((u) => (
-                                            <Pressable
-                                                key={u.id}
-                                                onPress={() => void onPickUser(u)}
-                                                style={({ pressed }) => [styles.userRow, pressed && styles.userRowPressed]}
-                                            >
-                                                <View style={styles.userAvatar}>
-                                                    <Ionicons name="person-outline" size={18} color={COLORS.text} />
-                                                </View>
-
-                                                <View style={{ flex: 1 }}>
-                                                    <Text style={styles.userName} numberOfLines={1}>
-                                                        {u.name}
-                                                    </Text>
-                                                    <Text style={styles.userEmail} numberOfLines={1}>
-                                                        {u.email}
-                                                    </Text>
-                                                </View>
-
-                                                <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
-                                            </Pressable>
-                                        ))}
-
-                                        {!pickerUsers.length ? (
-                                            <View style={styles.emptySmall}>
-                                                <Text style={styles.emptyText}>No hay resultados.</Text>
-                                            </View>
-                                        ) : null}
-                                    </ScrollView>
-                                </View>
-                            </View>
-                        </View>
-                    </Modal>
+                                await assignClient(entityId, userId);
+                                router.back();
+                            } catch (e: any) {
+                                Alert.alert("Error", e?.message ?? "No se pudo asignar");
+                            }
+                        }}
+                    />
                 </KeyboardAvoidingView>
             </AdminBackground>
         </SafeAreaView>
@@ -1342,37 +1287,6 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: "900",
         textAlign: "center",
-    },
-
-    searchWrapModal: {
-        marginBottom: 10,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        borderRadius: 16,
-        paddingHorizontal: 12,
-        height: 48,
-    },
-    searchInput: {
-        flex: 1,
-        color: COLORS.text,
-        fontSize: 14,
-        fontWeight: "700",
-    },
-    clearBtn: {
-        width: 32,
-        height: 32,
-        borderRadius: 10,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
-    },
-    emptySmall: {
-        paddingVertical: 10,
-        alignItems: "center",
     },
 
     bubbleWrap: {
@@ -1557,49 +1471,6 @@ const styles = StyleSheet.create({
         borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
-    },
-
-    pickerWrap: { width: "100%" },
-    pickerCard: {
-        backgroundColor: COLORS.card,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        padding: 14,
-        maxHeight: "80%",
-    },
-
-    userRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        padding: 12,
-        borderRadius: 16,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-    },
-    userRowPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
-    userAvatar: {
-        width: 40,
-        height: 40,
-        borderRadius: 14,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.10)",
-    },
-    userName: {
-        color: COLORS.text,
-        fontSize: 13,
-        fontWeight: "900",
-    },
-    userEmail: {
-        color: COLORS.muted,
-        fontSize: 12,
-        fontWeight: "800",
-        marginTop: 2,
     },
 
     field: { gap: 6 },
