@@ -451,7 +451,7 @@ export default function UserHistoryScreen() {
 
                 <View pointerEvents="none" style={[styles.footerScrim, { bottom: footerHeight - 100 }]} />
 
-                <View style={[styles.bottomFooter, { paddingBottom: Math.max(insets.bottom, 6) + 4 }]}>
+                <View style={[styles.bottomFooter, { paddingBottom: Math.max(insets.bottom, 6) - 30 }]}>
                     <View style={styles.bottomFooterTopGlow} />
 
                     <View style={styles.bottomNavContent}>
