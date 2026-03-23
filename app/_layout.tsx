@@ -166,7 +166,7 @@ export default function RootLayout() {
           >
             <Stack.Screen name="index" options={{ headerShown: false }} />
 
-            <Stack.Screen name="user-map" options={{ title: "TrackGo" }} />
+            <Stack.Screen name="user-map" options={{ headerShown: false }} />
             <Stack.Screen name="user-history" options={{ title: "TrackGo" }} />
 
             <Stack.Screen name="login" options={{ headerShown: false }} />

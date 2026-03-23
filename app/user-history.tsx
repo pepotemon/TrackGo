@@ -1,10 +1,12 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+    FlatList,
     ImageBackground,
+    KeyboardAvoidingView,
+    Modal,
     Pressable,
-    ScrollView,
     StatusBar,
     StyleSheet,
     Text,
@@ -19,6 +21,35 @@ import { subscribeUserClients } from "../src/data/repositories/clientsRepo";
 import type { ClientDoc } from "../src/types/models";
 
 type HistoryFilter = "all" | "visited" | "rejected";
+
+const COLORS = {
+    bg: "#07111F",
+    card: "rgba(10, 20, 37, 0.74)",
+    border: "rgba(255,255,255,0.08)",
+    borderSoft: "rgba(125, 211, 252, 0.16)",
+
+    text: "#F8FAFC",
+    muted: "#9FB0C4",
+    softText: "#CBD5E1",
+
+    primary: "#5AC8FA",
+    primaryBright: "#7BE0FF",
+
+    navFilter: "#C4B5FD",
+    navFilterBright: "#DDD6FE",
+    navFilterBg: "rgba(196,181,253,0.14)",
+    navFilterBorder: "rgba(196,181,253,0.26)",
+
+    ok: "#22C55E",
+    bad: "#F87171",
+    warn: "#FBBF24",
+
+    navBg: "rgba(7, 14, 27, 1)",
+    navBorder: "rgba(255,255,255,0.08)",
+    navItem: "rgba(255,255,255,0.04)",
+
+    headerBg: "rgba(3,10,20,0.96)",
+};
 
 function toMs(v: any): number {
     if (!v) return 0;
@@ -81,67 +112,16 @@ function buildTitle(c: ClientDoc) {
 function buildSubtitle(c: ClientDoc) {
     const business = String((c as any)?.business ?? "").trim();
     const address = String(c.address ?? "").trim();
-    const geo = String(
-        (c as any)?.geoAdminDisplayLabel ??
-        (c as any)?.geoDisplayLabel ??
-        (c as any)?.geoCityLabel ??
-        ""
-    ).trim();
+    const phone = String(c.phone ?? "").trim();
 
-    return business || address || geo || "Sin detalle";
+    if (business && business !== buildTitle(c)) return business;
+    if (address) return address;
+    if (phone) return phone;
+    return "Sin detalle";
 }
 
-function statusLabel(status: "pending" | "visited" | "rejected") {
-    if (status === "visited") return "Visitado";
-    if (status === "rejected") return "Rechazado";
-    return "Pendiente";
-}
-
-function statusTone(status: "pending" | "visited" | "rejected") {
-    if (status === "visited") return "ok";
-    if (status === "rejected") return "bad";
-    return "warn";
-}
-
-function sourceLabel(c: ClientDoc) {
-    const source = String((c as any)?.source ?? "").trim().toLowerCase();
-    if (source === "whatsapp_meta") return "Meta / WhatsApp";
-    return "Manual";
-}
-
-function parseStatusLabel(c: ClientDoc) {
-    const raw = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
-    if (raw === "ready") return "Completo";
-    if (raw === "partial") return "Parcial";
-    return "Vacío";
-}
-
-function verificationStatusLabel(c: ClientDoc) {
-    const raw = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
-    if (raw === "verified") return "Verificado";
-    if (raw === "pending_review") return "Por revisar";
-    if (raw === "not_suitable") return "No apto";
-    return "Incompleto";
-}
-
-function verificationTone(c: ClientDoc) {
-    const raw = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
-    if (raw === "verified") return "ok";
-    if (raw === "pending_review") return "info";
-    if (raw === "not_suitable") return "bad";
-    return "warn";
-}
-
-function parseTone(c: ClientDoc) {
-    const raw = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
-    if (raw === "ready") return "ok";
-    if (raw === "partial") return "warn";
-    return "neutral";
-}
-
-function sourceTone(c: ClientDoc) {
-    const source = String((c as any)?.source ?? "").trim().toLowerCase();
-    return source === "whatsapp_meta" ? "info" : "neutral";
+function statusLabel(status: "visited" | "rejected") {
+    return status === "visited" ? "Visitado" : "Rechazado";
 }
 
 function getStatusDateMs(c: ClientDoc) {
@@ -153,70 +133,51 @@ function getStatusDateMs(c: ClientDoc) {
     );
 }
 
-function getNotSuitableReason(c: ClientDoc) {
-    return String((c as any)?.notSuitableReason ?? "").trim();
-}
-
-function ToneBadge({
-    label,
-    tone,
+function BottomNavIcon({
     icon,
-}: {
-    label: string;
-    tone: "ok" | "bad" | "warn" | "info" | "neutral";
-    icon?: keyof typeof Ionicons.glyphMap;
-}) {
-    return (
-        <View
-            style={[
-                styles.infoBadge,
-                tone === "ok" && styles.infoBadgeOk,
-                tone === "bad" && styles.infoBadgeBad,
-                tone === "warn" && styles.infoBadgeWarn,
-                tone === "info" && styles.infoBadgeInfo,
-                tone === "neutral" && styles.infoBadgeNeutral,
-            ]}
-        >
-            {icon ? <Ionicons name={icon} size={12} color={COLORS.text} /> : null}
-            <Text style={styles.infoBadgeText} numberOfLines={1}>
-                {label}
-            </Text>
-        </View>
-    );
-}
-
-function FilterChip({
-    label,
-    icon,
-    value,
     active,
     onPress,
+    badge,
+    tint,
+    activeTint,
+    tone = "default",
 }: {
-    label: string;
     icon: keyof typeof Ionicons.glyphMap;
-    value: number;
-    active: boolean;
+    active?: boolean;
     onPress: () => void;
+    badge?: number;
+    tint?: string;
+    activeTint?: string;
+    tone?: "default" | "filter" | "map";
 }) {
+    const iconColor = active
+        ? activeTint ?? (tone === "filter" ? COLORS.navFilterBright : COLORS.primaryBright)
+        : tint ?? (tone === "filter" ? COLORS.navFilter : COLORS.primaryBright);
+
     return (
         <Pressable
             onPress={onPress}
             style={({ pressed }) => [
-                styles.filterChip,
-                active && styles.filterChipActive,
+                styles.bottomIconBtn,
+                active && (tone === "filter" ? styles.bottomIconBtnActiveFilter : styles.bottomIconBtnActiveMap),
                 pressed && styles.pressed,
             ]}
         >
-            <Ionicons
-                name={icon}
-                size={14}
-                color={active ? COLORS.text : COLORS.muted}
-            />
-            <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
-                {label}
-            </Text>
-            <View style={[styles.filterBadge, active && styles.filterBadgeActive]}>
-                <Text style={styles.filterBadgeText}>{value}</Text>
+            <View
+                style={[
+                    styles.bottomIconInner,
+                    tone === "filter" && styles.bottomIconInnerFilter,
+                    tone === "map" && styles.bottomIconInnerMap,
+                    active && tone === "filter" && styles.bottomIconInnerFilterActive,
+                    active && tone === "map" && styles.bottomIconInnerMapActive,
+                ]}
+            >
+                <Ionicons name={icon} size={18} color={iconColor} />
+                {typeof badge === "number" ? (
+                    <View style={styles.bottomIconBadge}>
+                        <Text style={styles.bottomIconBadgeText}>{badge}</Text>
+                    </View>
+                ) : null}
             </View>
         </Pressable>
     );
@@ -230,6 +191,10 @@ export default function UserHistoryScreen() {
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [filter, setFilter] = useState<HistoryFilter>("all");
     const [q, setQ] = useState("");
+    const [searchOpen, setSearchOpen] = useState(false);
+
+    const [headerHeight, setHeaderHeight] = useState(146);
+    const searchInputRef = useRef<TextInput | null>(null);
 
     useEffect(() => {
         if (loading) return;
@@ -260,34 +225,43 @@ export default function UserHistoryScreen() {
         return () => unsub();
     }, [firebaseUser?.uid]);
 
+    useEffect(() => {
+        if (!searchOpen) return;
+        const t = setTimeout(() => {
+            searchInputRef.current?.focus();
+        }, 120);
+        return () => clearTimeout(t);
+    }, [searchOpen]);
+
+    const historyClients = useMemo(() => {
+        return clients.filter((c) => {
+            const s = safeStatus(c.status);
+            return s === "visited" || s === "rejected";
+        });
+    }, [clients]);
+
     const summary = useMemo(() => {
         let visited = 0;
         let rejected = 0;
-        let pending = 0;
 
-        for (const c of clients) {
+        for (const c of historyClients) {
             const s = safeStatus(c.status);
             if (s === "visited") visited += 1;
-            else if (s === "rejected") rejected += 1;
-            else pending += 1;
+            if (s === "rejected") rejected += 1;
         }
 
         return {
             visited,
             rejected,
-            pending,
-            totalManaged: visited + rejected,
-            totalAll: clients.length,
-            effectiveness:
-                visited + rejected > 0 ? (visited / (visited + rejected)) * 100 : null,
+            total: visited + rejected,
         };
-    }, [clients]);
+    }, [historyClients]);
 
     const filteredClients = useMemo(() => {
         const qtText = q.trim().toLowerCase();
         const qtDigits = normalizePhone(q);
 
-        return clients
+        return historyClients
             .filter((c) => {
                 const status = safeStatus(c.status);
 
@@ -303,19 +277,12 @@ export default function UserHistoryScreen() {
 
                 if (qtText) {
                     const hay = `
-            ${safeText((c as any)?.name)}
-            ${safeText((c as any)?.business)}
-            ${safeText((c as any)?.businessRaw)}
-            ${safeText(c.address)}
-            ${safeText((c as any)?.geoAdminDisplayLabel)}
-            ${safeText((c as any)?.geoDisplayLabel)}
-            ${safeText((c as any)?.geoCityLabel)}
-            ${safeText(c.phone)}
-            ${safeText(sourceLabel(c))}
-            ${safeText(parseStatusLabel(c))}
-            ${safeText(verificationStatusLabel(c))}
-            ${safeText(getNotSuitableReason(c))}
-          `;
+                        ${safeText((c as any)?.name)}
+                        ${safeText((c as any)?.business)}
+                        ${safeText((c as any)?.businessRaw)}
+                        ${safeText(c.address)}
+                        ${safeText(c.phone)}
+                    `;
                     return hay.includes(qtText);
                 }
 
@@ -323,23 +290,88 @@ export default function UserHistoryScreen() {
             })
             .slice()
             .sort((a, b) => getStatusDateMs(b) - getStatusDateMs(a));
-    }, [clients, filter, q]);
+    }, [historyClients, filter, q]);
 
-    const visitedList = useMemo(
-        () => filteredClients.filter((c) => safeStatus(c.status) === "visited"),
-        [filteredClients]
-    );
+    const footerHeight = 92 + Math.max(insets.bottom, 6);
+    const listBottomPadding = footerHeight + 24;
 
-    const rejectedList = useMemo(
-        () => filteredClients.filter((c) => safeStatus(c.status) === "rejected"),
-        [filteredClients]
-    );
+    const closeSearchMode = () => {
+        setSearchOpen(false);
+    };
 
-    const filterCount = useMemo(() => {
-        if (filter === "visited") return summary.visited;
-        if (filter === "rejected") return summary.rejected;
-        return summary.totalAll;
-    }, [filter, summary]);
+    const clearSearch = () => setQ("");
+
+    const renderItem = ({ item }: { item: ClientDoc }) => {
+        const status = safeStatus(item.status) as "visited" | "rejected";
+        const dateLabel = formatStatusDateLabel(getStatusDateMs(item));
+        const title = buildTitle(item);
+        const subtitle = buildSubtitle(item);
+        const phone = String(item.phone ?? "").trim();
+        const address = String(item.address ?? "").trim();
+
+        return (
+            <Pressable onPress={() => searchOpen && closeSearchMode()} style={styles.card}>
+                <View style={styles.cardTop}>
+                    <View style={styles.cardMain}>
+                        <View style={styles.cardTitleRow}>
+                            <Text numberOfLines={1} style={styles.cardTitle}>
+                                {title}
+                            </Text>
+
+                            <View
+                                style={[
+                                    styles.statusPill,
+                                    status === "visited" ? styles.statusPillOk : styles.statusPillBad,
+                                ]}
+                            >
+                                <Text
+                                    style={[
+                                        styles.statusPillText,
+                                        status === "visited"
+                                            ? styles.statusPillTextOk
+                                            : styles.statusPillTextBad,
+                                    ]}
+                                >
+                                    {statusLabel(status)}
+                                </Text>
+                            </View>
+                        </View>
+
+                        {!!subtitle && subtitle !== title ? (
+                            <Text numberOfLines={1} style={styles.cardSubtitle}>
+                                {subtitle}
+                            </Text>
+                        ) : null}
+                    </View>
+                </View>
+
+                {!!address && address !== subtitle ? (
+                    <View style={styles.infoRow}>
+                        <Ionicons name="location-outline" size={15} color={COLORS.muted} />
+                        <Text style={styles.infoText} numberOfLines={2}>
+                            {address}
+                        </Text>
+                    </View>
+                ) : null}
+
+                {!!phone && phone !== subtitle ? (
+                    <View style={styles.infoRow}>
+                        <Ionicons name="call-outline" size={15} color={COLORS.muted} />
+                        <Text style={styles.infoText} numberOfLines={1}>
+                            {phone}
+                        </Text>
+                    </View>
+                ) : null}
+
+                <View style={styles.cardBottom}>
+                    <View style={styles.dateBadge}>
+                        <Ionicons name="time-outline" size={13} color={COLORS.muted} />
+                        <Text style={styles.dateBadgeText}>{dateLabel}</Text>
+                    </View>
+                </View>
+            </Pressable>
+        );
+    };
 
     return (
         <SafeAreaView style={styles.safe} edges={["bottom"]}>
@@ -352,20 +384,20 @@ export default function UserHistoryScreen() {
                 resizeMode="cover"
             >
                 <View style={styles.overlay}>
-                    <ScrollView
-                        contentContainerStyle={[
-                            styles.content,
-                            { paddingBottom: Math.max(20, insets.bottom + 18) },
+                    <View
+                        onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}
+                        style={[
+                            styles.fixedHeader,
+                            { paddingTop: Math.max(insets.top + 2, 10) },
                         ]}
-                        showsVerticalScrollIndicator={false}
                     >
                         <View style={styles.header}>
-                            <View style={{ flex: 1, gap: 2 }}>
+                            <View style={styles.headerLeft}>
                                 <Text style={styles.title}>Historial real</Text>
-
+                                <Text style={styles.subtitle}>
+                                    Visitados y rechazados
+                                </Text>
                             </View>
-
-
                         </View>
 
                         <View style={styles.kpiRow}>
@@ -375,7 +407,6 @@ export default function UserHistoryScreen() {
                                     <Text style={styles.kpiLabel}>Visitados</Text>
                                 </View>
                                 <Text style={styles.kpiValue}>{summary.visited}</Text>
-
                             </View>
 
                             <View style={[styles.kpiCard, styles.kpiCardBad]}>
@@ -384,273 +415,29 @@ export default function UserHistoryScreen() {
                                     <Text style={styles.kpiLabel}>Rechazados</Text>
                                 </View>
                                 <Text style={styles.kpiValue}>{summary.rejected}</Text>
-
                             </View>
                         </View>
+                    </View>
 
-                        <View style={styles.kpiRow}>
-                            <View style={styles.kpiCard}>
-                                <View style={styles.kpiTop}>
-                                    <Ionicons name="analytics-outline" size={18} color={COLORS.text} />
-                                    <Text style={styles.kpiLabel}>Gestionados reales</Text>
-                                </View>
-                                <Text style={styles.kpiValue}>{summary.totalManaged}</Text>
+                    <View
+                        pointerEvents="none"
+                        style={[styles.headerScrim, { top: headerHeight - 30 }]}
+                    />
 
-                            </View>
-
-                            <View style={styles.kpiCard}>
-                                <View style={styles.kpiTop}>
-                                    <Ionicons name="trending-up-outline" size={18} color={COLORS.info} />
-                                    <Text style={styles.kpiLabel}>Efectividad</Text>
-                                </View>
-                                <Text style={styles.kpiValue}>
-                                    {summary.effectiveness == null
-                                        ? "—"
-                                        : `${summary.effectiveness.toFixed(0)}%`}
-                                </Text>
-
-                            </View>
-                        </View>
-
-                        <View style={styles.searchWrap}>
-                            <Ionicons name="search-outline" size={18} color={COLORS.muted} />
-                            <TextInput
-                                value={q}
-                                onChangeText={setQ}
-                                placeholder="Buscar por nombre, negocio o número"
-                                placeholderTextColor={COLORS.muted}
-                                style={styles.searchInput}
-                            />
-                            {!!q ? (
-                                <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
-                                    <Ionicons name="close" size={18} color={COLORS.text} />
-                                </Pressable>
-                            ) : null}
-                        </View>
-
-                        <View style={styles.filtersRow}>
-                            <FilterChip
-                                label="Todos"
-                                icon="apps-outline"
-                                value={summary.totalAll}
-                                active={filter === "all"}
-                                onPress={() => setFilter("all")}
-                            />
-                            <FilterChip
-                                label="Visitados"
-                                icon="checkmark"
-                                value={summary.visited}
-                                active={filter === "visited"}
-                                onPress={() => setFilter("visited")}
-                            />
-                            <FilterChip
-                                label="Rechazados"
-                                icon="close"
-                                value={summary.rejected}
-                                active={filter === "rejected"}
-                                onPress={() => setFilter("rejected")}
-                            />
-                        </View>
-
-
-
-                        {filter !== "rejected" && visitedList.length > 0 ? (
-                            <View style={styles.section}>
-                                <View style={styles.sectionHead}>
-                                    <Text style={styles.sectionTitle}>Visitados</Text>
-                                    <View style={styles.sectionPillOk}>
-                                        <Text style={styles.sectionPillText}>{visitedList.length}</Text>
-                                    </View>
-                                </View>
-
-                                <View style={styles.list}>
-                                    {visitedList.map((c) => {
-                                        const dateLabel = formatStatusDateLabel(getStatusDateMs(c));
-                                        const notSuitableReason = getNotSuitableReason(c);
-
-                                        return (
-                                            <View key={c.id} style={styles.card}>
-                                                <View style={styles.cardTop}>
-                                                    <View style={{ flex: 1, gap: 4 }}>
-                                                        <View style={styles.titleRow}>
-                                                            <Text style={styles.cardTitle} numberOfLines={1}>
-                                                                {buildTitle(c)}
-                                                            </Text>
-
-                                                            <View style={[styles.statusPill, styles.statusPillOk]}>
-                                                                <Text style={[styles.statusPillText, styles.statusPillTextOk]}>
-                                                                    {statusLabel("visited")}
-                                                                </Text>
-                                                            </View>
-                                                        </View>
-
-                                                        <Text style={styles.cardSubtitle} numberOfLines={1}>
-                                                            {buildSubtitle(c)}
-                                                        </Text>
-                                                    </View>
-                                                </View>
-
-                                                <View style={styles.metaRow}>
-                                                    <ToneBadge
-                                                        label={sourceLabel(c)}
-                                                        tone={sourceTone(c)}
-                                                        icon={
-                                                            String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
-                                                                ? "logo-whatsapp"
-                                                                : "create-outline"
-                                                        }
-                                                    />
-                                                    <ToneBadge
-                                                        label={parseStatusLabel(c)}
-                                                        tone={parseTone(c)}
-                                                        icon="document-text-outline"
-                                                    />
-                                                    <ToneBadge
-                                                        label={verificationStatusLabel(c)}
-                                                        tone={verificationTone(c)}
-                                                        icon="shield-checkmark-outline"
-                                                    />
-                                                </View>
-
-                                                {!!String(c.address ?? "").trim() ? (
-                                                    <View style={styles.infoRow}>
-                                                        <Ionicons name="location-outline" size={15} color={COLORS.muted} />
-                                                        <Text style={styles.infoText} numberOfLines={2}>
-                                                            {c.address}
-                                                        </Text>
-                                                    </View>
-                                                ) : null}
-
-                                                {!!String(c.phone ?? "").trim() ? (
-                                                    <View style={styles.infoRow}>
-                                                        <Ionicons name="call-outline" size={15} color={COLORS.muted} />
-                                                        <Text style={styles.infoText} numberOfLines={1}>
-                                                            {c.phone}
-                                                        </Text>
-                                                    </View>
-                                                ) : null}
-
-                                                {notSuitableReason ? (
-                                                    <View style={styles.notSuitableTag}>
-                                                        <Ionicons name="ban-outline" size={14} color={COLORS.bad} />
-                                                        <Text style={styles.notSuitableTagText} numberOfLines={2}>
-                                                            {notSuitableReason}
-                                                        </Text>
-                                                    </View>
-                                                ) : null}
-
-                                                <View style={styles.cardBottom}>
-                                                    <View style={styles.dateBadge}>
-                                                        <Ionicons name="time-outline" size={13} color={COLORS.muted} />
-                                                        <Text style={styles.dateBadgeText}>{dateLabel}</Text>
-                                                    </View>
-                                                </View>
-                                            </View>
-                                        );
-                                    })}
-                                </View>
-                            </View>
-                        ) : null}
-
-                        {filter !== "visited" && rejectedList.length > 0 ? (
-                            <View style={styles.section}>
-                                <View style={styles.sectionHead}>
-                                    <Text style={styles.sectionTitle}>Rechazados</Text>
-                                    <View style={styles.sectionPillBad}>
-                                        <Text style={styles.sectionPillText}>{rejectedList.length}</Text>
-                                    </View>
-                                </View>
-
-                                <View style={styles.list}>
-                                    {rejectedList.map((c) => {
-                                        const dateLabel = formatStatusDateLabel(getStatusDateMs(c));
-                                        const notSuitableReason = getNotSuitableReason(c);
-
-                                        return (
-                                            <View key={c.id} style={styles.card}>
-                                                <View style={styles.cardTop}>
-                                                    <View style={{ flex: 1, gap: 4 }}>
-                                                        <View style={styles.titleRow}>
-                                                            <Text style={styles.cardTitle} numberOfLines={1}>
-                                                                {buildTitle(c)}
-                                                            </Text>
-
-                                                            <View style={[styles.statusPill, styles.statusPillBad]}>
-                                                                <Text style={[styles.statusPillText, styles.statusPillTextBad]}>
-                                                                    {statusLabel("rejected")}
-                                                                </Text>
-                                                            </View>
-                                                        </View>
-
-                                                        <Text style={styles.cardSubtitle} numberOfLines={1}>
-                                                            {buildSubtitle(c)}
-                                                        </Text>
-                                                    </View>
-                                                </View>
-
-                                                <View style={styles.metaRow}>
-                                                    <ToneBadge
-                                                        label={sourceLabel(c)}
-                                                        tone={sourceTone(c)}
-                                                        icon={
-                                                            String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
-                                                                ? "logo-whatsapp"
-                                                                : "create-outline"
-                                                        }
-                                                    />
-                                                    <ToneBadge
-                                                        label={parseStatusLabel(c)}
-                                                        tone={parseTone(c)}
-                                                        icon="document-text-outline"
-                                                    />
-                                                    <ToneBadge
-                                                        label={verificationStatusLabel(c)}
-                                                        tone={verificationTone(c)}
-                                                        icon="shield-checkmark-outline"
-                                                    />
-                                                </View>
-
-                                                {!!String(c.address ?? "").trim() ? (
-                                                    <View style={styles.infoRow}>
-                                                        <Ionicons name="location-outline" size={15} color={COLORS.muted} />
-                                                        <Text style={styles.infoText} numberOfLines={2}>
-                                                            {c.address}
-                                                        </Text>
-                                                    </View>
-                                                ) : null}
-
-                                                {!!String(c.phone ?? "").trim() ? (
-                                                    <View style={styles.infoRow}>
-                                                        <Ionicons name="call-outline" size={15} color={COLORS.muted} />
-                                                        <Text style={styles.infoText} numberOfLines={1}>
-                                                            {c.phone}
-                                                        </Text>
-                                                    </View>
-                                                ) : null}
-
-                                                {notSuitableReason ? (
-                                                    <View style={styles.notSuitableTag}>
-                                                        <Ionicons name="ban-outline" size={14} color={COLORS.bad} />
-                                                        <Text style={styles.notSuitableTagText} numberOfLines={2}>
-                                                            {notSuitableReason}
-                                                        </Text>
-                                                    </View>
-                                                ) : null}
-
-                                                <View style={styles.cardBottom}>
-                                                    <View style={styles.dateBadge}>
-                                                        <Ionicons name="time-outline" size={13} color={COLORS.muted} />
-                                                        <Text style={styles.dateBadgeText}>{dateLabel}</Text>
-                                                    </View>
-                                                </View>
-                                            </View>
-                                        );
-                                    })}
-                                </View>
-                            </View>
-                        ) : null}
-
-                        {!filteredClients.length ? (
+                    <FlatList
+                        data={filteredClients}
+                        keyExtractor={(item) => item.id}
+                        renderItem={renderItem}
+                        keyboardShouldPersistTaps="handled"
+                        showsVerticalScrollIndicator={false}
+                        contentContainerStyle={[
+                            styles.listContent,
+                            {
+                                paddingTop: headerHeight + 10,
+                                paddingBottom: listBottomPadding,
+                            },
+                        ]}
+                        ListEmptyComponent={
                             <View style={styles.empty}>
                                 <Ionicons name="documents-outline" size={24} color={COLORS.muted} />
                                 <Text style={styles.emptyTitle}>Sin resultados</Text>
@@ -658,26 +445,133 @@ export default function UserHistoryScreen() {
                                     No hay clientes para el filtro seleccionado.
                                 </Text>
                             </View>
-                        ) : null}
-                    </ScrollView>
+                        }
+                    />
+                </View>
+
+                <View pointerEvents="none" style={[styles.footerScrim, { bottom: footerHeight - 100 }]} />
+
+                <View style={[styles.bottomFooter, { paddingBottom: Math.max(insets.bottom, 6) + 4 }]}>
+                    <View style={styles.bottomFooterTopGlow} />
+
+                    <View style={styles.bottomNavContent}>
+                        <View style={styles.bottomNavLeft}>
+                            <BottomNavIcon
+                                icon="apps-outline"
+                                active={filter === "all"}
+                                onPress={() => setFilter("all")}
+                                badge={summary.total}
+                                tint={COLORS.navFilter}
+                                activeTint={COLORS.navFilterBright}
+                                tone="filter"
+                            />
+                            <BottomNavIcon
+                                icon="checkmark"
+                                active={filter === "visited"}
+                                onPress={() => setFilter("visited")}
+                                badge={summary.visited}
+                                tint={COLORS.ok}
+                                activeTint={COLORS.ok}
+                                tone="filter"
+                            />
+                            <BottomNavIcon
+                                icon="close"
+                                active={filter === "rejected"}
+                                onPress={() => setFilter("rejected")}
+                                badge={summary.rejected}
+                                tint={COLORS.bad}
+                                activeTint={COLORS.bad}
+                                tone="filter"
+                            />
+                            <BottomNavIcon
+                                icon="search-outline"
+                                onPress={() => setSearchOpen(true)}
+                                tint={COLORS.navFilter}
+                                tone="filter"
+                            />
+                        </View>
+
+                        <View style={styles.bottomNavDividerWrap}>
+                            <Text style={styles.bottomNavDividerText}>|</Text>
+                        </View>
+
+                        <View style={styles.bottomNavRight}>
+                            <BottomNavIcon
+                                icon="chevron-back-outline"
+                                onPress={() => router.back()}
+                                tint={COLORS.primaryBright}
+                                tone="map"
+                            />
+                        </View>
+                    </View>
                 </View>
             </ImageBackground>
+
+            <Modal visible={searchOpen} transparent animationType="fade" onRequestClose={closeSearchMode}>
+                <Pressable style={styles.searchBackdrop} onPress={closeSearchMode} />
+                <KeyboardAvoidingView
+
+                    style={styles.searchModalWrap}
+                >
+                    <View style={styles.searchModalCard}>
+                        <View style={styles.searchModalHeader}>
+                            <View style={styles.searchModalIconWrap}>
+                                <Ionicons name="search-outline" size={18} color={COLORS.navFilterBright} />
+                            </View>
+                            <Text style={styles.searchModalTitle}>Buscar cliente</Text>
+
+                            <Pressable onPress={closeSearchMode} style={styles.searchModalClose}>
+                                <Ionicons name="close" size={18} color={COLORS.text} />
+                            </Pressable>
+                        </View>
+
+                        <View style={styles.searchInputWrap}>
+                            <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                            <TextInput
+                                ref={searchInputRef}
+                                value={q}
+                                onChangeText={setQ}
+                                placeholder="Nombre, negocio, teléfono, dirección…"
+                                placeholderTextColor={COLORS.muted}
+                                style={styles.searchInput}
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                                returnKeyType="search"
+                            />
+                            {!!q ? (
+                                <Pressable onPress={clearSearch} style={styles.searchClearBtn}>
+                                    <Ionicons name="close" size={16} color={COLORS.text} />
+                                </Pressable>
+                            ) : null}
+                        </View>
+
+                        <View style={styles.searchModalActions}>
+                            <Pressable
+                                onPress={clearSearch}
+                                style={({ pressed }) => [
+                                    styles.searchActionGhost,
+                                    pressed && styles.pressed,
+                                ]}
+                            >
+                                <Text style={styles.searchActionGhostText}>Limpiar</Text>
+                            </Pressable>
+
+                            <Pressable
+                                onPress={closeSearchMode}
+                                style={({ pressed }) => [
+                                    styles.searchActionPrimary,
+                                    pressed && styles.pressed,
+                                ]}
+                            >
+                                <Text style={styles.searchActionPrimaryText}>Listo</Text>
+                            </Pressable>
+                        </View>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
         </SafeAreaView>
     );
 }
-
-const COLORS = {
-    bg: "#0B1220",
-    card: "#111827",
-    border: "#1F2937",
-    text: "#F9FAFB",
-    muted: "#9CA3AF",
-    soft: "#CBD5E1",
-    ok: "#22C55E",
-    bad: "#F87171",
-    warn: "#FBBF24",
-    info: "#60A5FA",
-};
 
 const styles = StyleSheet.create({
     safe: { flex: 1, backgroundColor: COLORS.bg },
@@ -692,20 +586,47 @@ const styles = StyleSheet.create({
         paddingHorizontal: 16,
     },
 
-    content: {
-        paddingTop: 12,
-        gap: 12,
-    },
-
     pressed: {
         transform: [{ scale: 0.99 }],
         opacity: 0.96,
     },
 
+    fixedHeader: {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 20,
+        paddingHorizontal: 16,
+        paddingBottom: 10,
+        backgroundColor: COLORS.headerBg,
+    },
+
+    headerScrim: {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        height: 42,
+        backgroundColor: "rgba(7,14,27,0.18)",
+        zIndex: 19,
+    },
+
+    listContent: {
+        paddingBottom: 140,
+    },
+
     header: {
+        paddingTop: 2,
+        paddingBottom: 8,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
+        justifyContent: "space-between",
+        gap: 12,
+    },
+
+    headerLeft: {
+        flex: 1,
+        gap: 2,
     },
 
     title: {
@@ -720,27 +641,10 @@ const styles = StyleSheet.create({
         fontWeight: "800",
     },
 
-    headerPill: {
-        height: 34,
-        paddingHorizontal: 10,
-        borderRadius: 999,
-        backgroundColor: "rgba(96,165,250,0.10)",
-        borderWidth: 1,
-        borderColor: "rgba(96,165,250,0.24)",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-    },
-
-    headerPillText: {
-        color: "#BFDBFE",
-        fontSize: 11,
-        fontWeight: "900",
-    },
-
     kpiRow: {
         flexDirection: "row",
         gap: 12,
+        marginBottom: 6,
     },
 
     kpiCard: {
@@ -781,169 +685,6 @@ const styles = StyleSheet.create({
         fontWeight: "900",
     },
 
-    kpiHint: {
-        color: COLORS.muted,
-        fontSize: 11,
-        fontWeight: "800",
-    },
-
-    searchWrap: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        backgroundColor: "#0F172A",
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        borderRadius: 16,
-        paddingHorizontal: 12,
-        height: 48,
-    },
-
-    searchInput: {
-        flex: 1,
-        color: COLORS.text,
-        fontSize: 14,
-        fontWeight: "700",
-    },
-
-    clearBtn: {
-        width: 34,
-        height: 34,
-        borderRadius: 12,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.06)",
-    },
-
-    filtersRow: {
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: 8,
-    },
-
-    filterChip: {
-        minHeight: 38,
-        paddingHorizontal: 12,
-        borderRadius: 999,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-    },
-
-    filterChipActive: {
-        backgroundColor: "rgba(96,165,250,0.12)",
-        borderColor: "rgba(96,165,250,0.28)",
-    },
-
-    filterChipText: {
-        color: COLORS.muted,
-        fontSize: 12,
-        fontWeight: "900",
-    },
-
-    filterChipTextActive: {
-        color: COLORS.text,
-    },
-
-    filterBadge: {
-        minWidth: 24,
-        height: 20,
-        borderRadius: 999,
-        paddingHorizontal: 6,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.10)",
-    },
-
-    filterBadgeActive: {
-        backgroundColor: "rgba(255,255,255,0.16)",
-    },
-
-    filterBadgeText: {
-        color: COLORS.text,
-        fontSize: 11,
-        fontWeight: "900",
-    },
-
-    banner: {
-        minHeight: 42,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
-    },
-
-    bannerDot: {
-        width: 9,
-        height: 9,
-        borderRadius: 999,
-        backgroundColor: COLORS.info,
-    },
-
-    bannerText: {
-        color: COLORS.soft,
-        fontSize: 12,
-        fontWeight: "900",
-    },
-
-    section: {
-        gap: 10,
-    },
-
-    sectionHead: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 10,
-    },
-
-    sectionTitle: {
-        color: COLORS.text,
-        fontSize: 15,
-        fontWeight: "900",
-    },
-
-    sectionPillOk: {
-        minWidth: 34,
-        height: 28,
-        paddingHorizontal: 10,
-        borderRadius: 999,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(34,197,94,0.12)",
-        borderWidth: 1,
-        borderColor: "rgba(34,197,94,0.28)",
-    },
-
-    sectionPillBad: {
-        minWidth: 34,
-        height: 28,
-        paddingHorizontal: 10,
-        borderRadius: 999,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "rgba(248,113,113,0.12)",
-        borderWidth: 1,
-        borderColor: "rgba(248,113,113,0.28)",
-    },
-
-    sectionPillText: {
-        color: COLORS.text,
-        fontSize: 12,
-        fontWeight: "900",
-    },
-
-    list: {
-        gap: 10,
-    },
-
     card: {
         backgroundColor: COLORS.card,
         borderWidth: 1,
@@ -951,6 +692,7 @@ const styles = StyleSheet.create({
         borderRadius: 18,
         padding: 14,
         gap: 10,
+        marginBottom: 10,
     },
 
     cardTop: {
@@ -959,7 +701,12 @@ const styles = StyleSheet.create({
         gap: 10,
     },
 
-    titleRow: {
+    cardMain: {
+        flex: 1,
+        gap: 4,
+    },
+
+    cardTitleRow: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
@@ -1010,53 +757,6 @@ const styles = StyleSheet.create({
         color: "#FCA5A5",
     },
 
-    metaRow: {
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: 8,
-    },
-
-    infoBadge: {
-        height: 26,
-        paddingHorizontal: 9,
-        borderRadius: 999,
-        borderWidth: 1,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-    },
-
-    infoBadgeText: {
-        color: COLORS.text,
-        fontSize: 11,
-        fontWeight: "900",
-    },
-
-    infoBadgeOk: {
-        backgroundColor: "rgba(34,197,94,0.10)",
-        borderColor: "rgba(34,197,94,0.24)",
-    },
-
-    infoBadgeBad: {
-        backgroundColor: "rgba(248,113,113,0.10)",
-        borderColor: "rgba(248,113,113,0.24)",
-    },
-
-    infoBadgeWarn: {
-        backgroundColor: "rgba(251,191,36,0.10)",
-        borderColor: "rgba(251,191,36,0.24)",
-    },
-
-    infoBadgeInfo: {
-        backgroundColor: "rgba(96,165,250,0.10)",
-        borderColor: "rgba(96,165,250,0.24)",
-    },
-
-    infoBadgeNeutral: {
-        backgroundColor: "rgba(255,255,255,0.05)",
-        borderColor: "rgba(255,255,255,0.10)",
-    },
-
     infoRow: {
         flexDirection: "row",
         alignItems: "flex-start",
@@ -1070,26 +770,6 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "700",
         lineHeight: 18,
-    },
-
-    notSuitableTag: {
-        alignSelf: "flex-start",
-        minHeight: 30,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        borderRadius: 999,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        backgroundColor: "rgba(248,113,113,0.12)",
-        borderWidth: 1,
-        borderColor: "rgba(248,113,113,0.30)",
-    },
-
-    notSuitableTagText: {
-        color: "#FCA5A5",
-        fontSize: 12,
-        fontWeight: "900",
     },
 
     cardBottom: {
@@ -1116,7 +796,7 @@ const styles = StyleSheet.create({
     },
 
     empty: {
-        marginTop: 8,
+        marginTop: 18,
         alignItems: "center",
         gap: 8,
         paddingVertical: 18,
@@ -1133,5 +813,262 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: "800",
         textAlign: "center",
+    },
+
+    footerScrim: {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        height: 84,
+        backgroundColor: "rgba(7, 14, 27, 0.18)",
+    },
+
+    bottomFooter: {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: COLORS.navBg,
+        borderTopWidth: 1,
+        borderTopColor: "rgba(255,255,255,0.08)",
+        paddingTop: 20,
+        paddingHorizontal: 12,
+        minHeight: 80,
+    },
+
+    bottomFooterTopGlow: {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        top: 0,
+        height: 1,
+        backgroundColor: "rgba(255,255,255,0.02)",
+    },
+
+    bottomNavContent: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+    },
+
+    bottomNavLeft: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        flex: 1,
+    },
+
+    bottomNavRight: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+    },
+
+    bottomNavDividerWrap: {
+        width: 22,
+        alignItems: "center",
+        justifyContent: "center",
+        marginHorizontal: 2,
+    },
+
+    bottomNavDividerText: {
+        color: "rgba(255,255,255,0.42)",
+        fontSize: 28,
+        fontWeight: "700",
+        lineHeight: 28,
+        marginTop: -2,
+    },
+
+    bottomIconBtn: {
+        width: 42,
+        height: 42,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    bottomIconBtnActiveMap: {
+        backgroundColor: "rgba(255,255,255,0.03)",
+    },
+
+    bottomIconBtnActiveFilter: {
+        backgroundColor: "rgba(255,255,255,0.02)",
+    },
+
+    bottomIconInner: {
+        width: 34,
+        height: 34,
+        borderRadius: 12,
+        backgroundColor: COLORS.navItem,
+        borderWidth: 1,
+        borderColor: COLORS.borderSoft,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    bottomIconInnerFilter: {
+        borderColor: COLORS.navFilterBorder,
+        backgroundColor: "rgba(196,181,253,0.06)",
+    },
+
+    bottomIconInnerMap: {
+        borderColor: "rgba(123,224,255,0.18)",
+        backgroundColor: "rgba(90,200,250,0.06)",
+    },
+
+    bottomIconInnerFilterActive: {
+        backgroundColor: COLORS.navFilterBg,
+        borderColor: "rgba(221,214,254,0.34)",
+    },
+
+    bottomIconInnerMapActive: {
+        backgroundColor: "rgba(90,200,250,0.14)",
+        borderColor: "rgba(123,224,255,0.30)",
+    },
+
+    bottomIconBadge: {
+        position: "absolute",
+        top: -4,
+        right: -6,
+        minWidth: 16,
+        height: 16,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.92)",
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 3,
+    },
+
+    bottomIconBadgeText: {
+        color: COLORS.bg,
+        fontSize: 9,
+        fontWeight: "900",
+    },
+
+    searchBackdrop: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0,0,0,0.58)",
+    },
+
+    searchModalWrap: {
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 18,
+    },
+
+    searchModalCard: {
+        width: "100%",
+        maxWidth: 460,
+        borderRadius: 22,
+        backgroundColor: "#0B1628",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+        padding: 16,
+        gap: 14,
+    },
+
+    searchModalHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+
+    searchModalIconWrap: {
+        width: 36,
+        height: 36,
+        borderRadius: 12,
+        backgroundColor: "rgba(196,181,253,0.12)",
+        borderWidth: 1,
+        borderColor: "rgba(196,181,253,0.22)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    searchModalTitle: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 16,
+        fontWeight: "900",
+    },
+
+    searchModalClose: {
+        width: 38,
+        height: 38,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+
+    searchInputWrap: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        minHeight: 52,
+        borderRadius: 16,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+        paddingHorizontal: 12,
+    },
+
+    searchInput: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "700",
+        paddingVertical: 10,
+    },
+
+    searchClearBtn: {
+        width: 30,
+        height: 30,
+        borderRadius: 10,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.06)",
+    },
+
+    searchModalActions: {
+        flexDirection: "row",
+        gap: 10,
+    },
+
+    searchActionGhost: {
+        flex: 1,
+        height: 46,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.12)",
+    },
+
+    searchActionGhostText: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+
+    searchActionPrimary: {
+        flex: 1,
+        height: 46,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(196,181,253,0.14)",
+        borderWidth: 1,
+        borderColor: "rgba(196,181,253,0.30)",
+    },
+
+    searchActionPrimaryText: {
+        color: COLORS.navFilterBright,
+        fontSize: 13,
+        fontWeight: "900",
     },
 });

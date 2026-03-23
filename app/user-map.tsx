@@ -791,7 +791,7 @@ export default function UserMapScreen() {
                 >
                     <View style={styles.mapHeaderChip}>
                         <Ionicons name="map-outline" size={14} color="#0F172A" />
-                        <Text style={styles.mapHeaderTitle}>Mapa</Text>
+                        <Text style={styles.mapHeaderTitle}>TrackGo | Mapa</Text>
                         <Text style={styles.mapHeaderSubtitle} numberOfLines={1}>
                             {coverageLabel}
                         </Text>
