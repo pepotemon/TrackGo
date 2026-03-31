@@ -973,6 +973,7 @@ export default function AdminLeadQueueScreen() {
             const clientName = vm.name || vm.phone || "Lead";
             markClientSeenInstant(vm);
 
+
             router.push({
                 pathname: "/admin/lead-chat" as any,
                 params: {

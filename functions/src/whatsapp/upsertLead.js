@@ -19,6 +19,9 @@ const {
     buildEmptyReverseGeoBrazil,
     reverseGeoBrazil,
 } = require("../utils/reverseGeoBrazil");
+const {
+    resolveCoordsFromGoogleMapsUrl,
+} = require("../utils/googleMapsResolver");
 const { detectInboundIntent, getVerificationStatusFromLead } = require("../bot/intents");
 const { findClientByPhone, findClientByWaId } = require("./findClient");
 
@@ -223,28 +226,61 @@ function extractCoordsFromMapsUrl(url) {
     }
 }
 
-function resolveEffectiveCoords(locationLat, locationLng, mapsUrl) {
+async function resolveEffectiveCoords(locationLat, locationLng, mapsUrl) {
     if (hasValidCoords(locationLat, locationLng)) {
         return {
             lat: locationLat,
             lng: locationLng,
             source: "location",
+            resolvedUrl: safeString(mapsUrl || ""),
+            geocodeQuery: "",
         };
     }
 
-    const fromMaps = extractCoordsFromMapsUrl(mapsUrl);
+    const mapsUrlClean = safeString(mapsUrl || "");
+    if (!mapsUrlClean) {
+        return {
+            lat: null,
+            lng: null,
+            source: "",
+            resolvedUrl: "",
+            geocodeQuery: "",
+        };
+    }
+
+    try {
+        const resolved = await resolveCoordsFromGoogleMapsUrl(mapsUrlClean);
+
+        if (hasValidCoords(resolved?.lat, resolved?.lng)) {
+            return {
+                lat: resolved.lat,
+                lng: resolved.lng,
+                source: safeString(resolved?.source || "maps_url"),
+                resolvedUrl: safeString(resolved?.resolvedUrl || mapsUrlClean),
+                geocodeQuery: safeString(resolved?.geocodeQuery || ""),
+            };
+        }
+    } catch (error) {
+        console.log("[GEO RESOLVER] error:", error?.message || error);
+    }
+
+    const fromMaps = extractCoordsFromMapsUrl(mapsUrlClean);
     if (hasValidCoords(fromMaps.lat, fromMaps.lng)) {
         return {
             lat: fromMaps.lat,
             lng: fromMaps.lng,
             source: "maps_url",
+            resolvedUrl: mapsUrlClean,
+            geocodeQuery: "",
         };
     }
 
     return {
         lat: null,
         lng: null,
-        source: "",
+        source: "maps_unresolved",
+        resolvedUrl: mapsUrlClean,
+        geocodeQuery: "",
     };
 }
 
@@ -276,20 +312,35 @@ function createUpsertLeadAsClient({
 
         const generatedMapsUrlFromText = extractGoogleMapsUrlFromText(rawText);
 
-        const generatedMapsUrl =
+        const initialMapsUrl =
             generatedMapsUrlFromText || generatedMapsUrlFromCoords || "";
 
-        const effectiveCoords = resolveEffectiveCoords(
+        const effectiveCoords = await resolveEffectiveCoords(
             rawLocationLat,
             rawLocationLng,
-            generatedMapsUrl
+            initialMapsUrl
         );
 
         const lat = effectiveCoords.lat;
         const lng = effectiveCoords.lng;
 
+        const generatedMapsUrl =
+            safeString(effectiveCoords.resolvedUrl) ||
+            initialMapsUrl ||
+            (hasValidCoords(lat, lng) ? buildGoogleMapsUrlFromCoords(lat, lng) : "");
+
         const hasMapsInThisMessage =
             !!generatedMapsUrl || hasValidCoords(lat, lng);
+
+        if (generatedMapsUrl) {
+            console.log("[GEO DEBUG]", {
+                phone: safeString(phone || "").slice(-4),
+                source: safeString(effectiveCoords.source || ""),
+                lat: hasValidCoords(lat, lng) ? lat : null,
+                lng: hasValidCoords(lat, lng) ? lng : null,
+                q: safeString(effectiveCoords.geocodeQuery || ""),
+            });
+        }
 
         const resolvedTrackGoGeo = hasValidCoords(lat, lng)
             ? resolveTrackGoGeoFromCoords(lat, lng, now)

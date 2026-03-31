@@ -21,10 +21,14 @@ function isLikelyCep(text) {
     return /\b\d{5}\-?\d{3}\b/.test(text || "");
 }
 
+function factorSafe(value) {
+    return Number.isFinite(value) && value !== 0 ? value : 1;
+}
+
 function roundCoord(v) {
     const n = safeNumber(v, NaN);
     if (!Number.isFinite(n)) return null;
-    return Math.round(n * 1000000) / 1000000;
+    return Math.round(n * 1000000) / factorSafe(1000000);
 }
 
 function hasValidCoords(lat, lng) {
@@ -50,7 +54,10 @@ function looksLikeMapsUrl(url) {
         u.includes("maps.app.goo.gl") ||
         u.includes("goo.gl/maps") ||
         u.includes("maps.google.com") ||
-        u.includes("share.google/")
+        u.includes("share.google/") ||
+        u.includes("google.com/?q=") ||
+        u.includes("google.com/search") ||
+        u.includes("g.co/kgs/")
     );
 }
 

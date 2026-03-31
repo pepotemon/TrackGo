@@ -28,7 +28,10 @@ import Svg, {
 
 import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
-import { subscribeWeeklyInvestment, type WeeklyInvestmentAllocations } from "../../data/repositories/investmentsRepo";
+import {
+    subscribeWeeklyInvestment,
+    type WeeklyInvestmentAllocations,
+} from "../../data/repositories/investmentsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
 
@@ -50,17 +53,27 @@ function weekRangeKeysMonToSat(base = new Date()) {
     const start = new Date(d);
     start.setDate(d.getDate() - diffToMonday);
     const end = new Date(start);
-    end.setDate(start.getDate() + 5); // ✅ Lun–Sáb (6 días)
-    return { startKey: dayKeyFromDate(start), endKey: dayKeyFromDate(end), startDate: start, endDate: end };
+    end.setDate(start.getDate() + 5); // Lun–Sáb
+    return {
+        startKey: dayKeyFromDate(start),
+        endKey: dayKeyFromDate(end),
+        startDate: start,
+        endDate: end,
+    };
 }
 
 function weekRangeFromMondayStartMonToSat(mondayStart: Date) {
     const start = new Date(mondayStart);
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
-    end.setDate(start.getDate() + 5); // ✅ Lun–Sáb
+    end.setDate(start.getDate() + 5); // Lun–Sáb
     end.setHours(0, 0, 0, 0);
-    return { startKey: dayKeyFromDate(start), endKey: dayKeyFromDate(end), startDate: start, endDate: end };
+    return {
+        startKey: dayKeyFromDate(start),
+        endKey: dayKeyFromDate(end),
+        startDate: start,
+        endDate: end,
+    };
 }
 
 function addDays(d: Date, days: number) {
@@ -127,6 +140,24 @@ function monthDay(keyYYYYMMDD: string) {
     return keyYYYYMMDD?.slice?.(5) ?? keyYYYYMMDD;
 }
 
+function monthKeyFromDayKey(keyYYYYMMDD: string) {
+    return keyYYYYMMDD?.slice?.(0, 7) ?? "";
+}
+
+const MONTHS_SHORT_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+function formatMonthLabelLong(monthKey: string) {
+    const [year, month] = String(monthKey || "").split("-");
+    const idx = Math.max(1, Math.min(12, Number(month) || 1)) - 1;
+    return `${MONTHS_SHORT_ES[idx]} ${year || ""}`.trim();
+}
+
+function formatMonthLabelShort(monthKey: string) {
+    const [year, month] = String(monthKey || "").split("-");
+    const idx = Math.max(1, Math.min(12, Number(month) || 1)) - 1;
+    return `${MONTHS_SHORT_ES[idx]}/${String(year || "").slice(-2)}`;
+}
+
 // ------------------------
 // PRO SVG Charts (with gutter + tooltip)
 // ------------------------
@@ -174,9 +205,9 @@ function buildCatmullRomPath(points: { x: number; y: number }[], tension = 1) {
         const cp2y = p2.y - ((p3.y - p1.y) / 6) * tension;
 
         d.push(
-            `C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(
+            `C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(
                 2
-            )} ${p2.y.toFixed(2)}`
+            )}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`
         );
     }
 
@@ -256,7 +287,9 @@ function ProLineChart({
         const last = inner.pts[inner.pts.length - 1];
         const first = inner.pts[0];
         const baseY = height - CHART_CFG.paddingBottom;
-        return `${path} L ${last.x.toFixed(2)} ${baseY.toFixed(2)} L ${first.x.toFixed(2)} ${baseY.toFixed(2)} Z`;
+        return `${path} L ${last.x.toFixed(2)} ${baseY.toFixed(2)} L ${first.x.toFixed(
+            2
+        )} ${baseY.toFixed(2)} Z`;
     }, [path, inner.pts, height]);
 
     const yTicks = useMemo(() => {
@@ -276,10 +309,12 @@ function ProLineChart({
         const p = inner.pts[selectedIdx];
         if (!p) return null;
 
-        const text = tooltipItems?.[selectedIdx] ?? `${labels[selectedIdx] ?? ""} · ${p.v.toFixed(0)}`;
+        const text =
+            tooltipItems?.[selectedIdx] ?? `${labels[selectedIdx] ?? ""} · ${p.v.toFixed(0)}`;
 
         const maxChars = 34;
-        const shown = text.length > maxChars ? text.slice(0, maxChars - 1) + "…" : text;
+        const shown =
+            text.length > maxChars ? text.slice(0, maxChars - 1) + "…" : text;
 
         const boxW = 180;
         const boxH = 34;
@@ -309,8 +344,21 @@ function ProLineChart({
                         <G>
                             {yTicks.map((t, idx) => (
                                 <G key={idx}>
-                                    <Line x1={inner.plotLeft} x2={inner.plotRight} y1={t.y} y2={t.y} stroke={theme.grid} strokeWidth={1} />
-                                    <SvgText x={inner.labelX} y={t.y - 4} fill={theme.muted} fontSize={CHART_CFG.fontSize} fontWeight="700">
+                                    <Line
+                                        x1={inner.plotLeft}
+                                        x2={inner.plotRight}
+                                        y1={t.y}
+                                        y2={t.y}
+                                        stroke={theme.grid}
+                                        strokeWidth={1}
+                                    />
+                                    <SvgText
+                                        x={inner.labelX}
+                                        y={t.y - 4}
+                                        fill={theme.muted}
+                                        fontSize={CHART_CFG.fontSize}
+                                        fontWeight="700"
+                                    >
                                         {t.val.toFixed(0)}
                                     </SvgText>
                                 </G>
@@ -334,7 +382,13 @@ function ProLineChart({
                             ? inner.pts.map((p, idx) => (
                                 <G key={idx}>
                                     <Circle cx={p.x} cy={p.y} r={dotRadius} fill={theme.accent} opacity={0.92} />
-                                    <Circle cx={p.x} cy={p.y} r={14} fill="transparent" onPress={() => setSelectedIdx(idx)} />
+                                    <Circle
+                                        cx={p.x}
+                                        cy={p.y}
+                                        r={14}
+                                        fill="transparent"
+                                        onPress={() => setSelectedIdx(idx)}
+                                    />
                                 </G>
                             ))
                             : null}
@@ -352,7 +406,13 @@ function ProLineChart({
                                     stroke="rgba(255,255,255,0.10)"
                                     strokeWidth={1}
                                 />
-                                <SvgText x={tooltip.x0 + 10} y={tooltip.y0 + 21} fill="rgba(255,255,255,0.90)" fontSize={11} fontWeight="800">
+                                <SvgText
+                                    x={tooltip.x0 + 10}
+                                    y={tooltip.y0 + 21}
+                                    fill="rgba(255,255,255,0.90)"
+                                    fontSize={11}
+                                    fontWeight="800"
+                                >
                                     {tooltip.shown}
                                 </SvgText>
                             </G>
@@ -362,7 +422,10 @@ function ProLineChart({
                             <G>
                                 {labels.map((lab, idx) => {
                                     const n = Math.max(1, labels.length);
-                                    const x = n <= 1 ? inner.plotLeft : inner.plotLeft + (inner.iw / (n - 1)) * idx;
+                                    const x =
+                                        n <= 1
+                                            ? inner.plotLeft
+                                            : inner.plotLeft + (inner.iw / (n - 1)) * idx;
                                     const y = height - 6;
                                     return (
                                         <SvgText
@@ -386,7 +449,13 @@ function ProLineChart({
                                     return (
                                         <G key={idx}>
                                             <Circle cx={p.x} cy={y} r={3} fill="rgba(255,255,255,0.30)" />
-                                            <Circle cx={p.x} cy={y} r={14} fill="transparent" onPress={() => setSelectedIdx(idx)} />
+                                            <Circle
+                                                cx={p.x}
+                                                cy={y}
+                                                r={14}
+                                                fill="transparent"
+                                                onPress={() => setSelectedIdx(idx)}
+                                            />
                                         </G>
                                     );
                                 })}
@@ -478,8 +547,21 @@ function ProBarChart({
                         <G>
                             {yTicks.map((t, idx) => (
                                 <G key={idx}>
-                                    <Line x1={inner.plotLeft} x2={inner.plotRight} y1={t.y} y2={t.y} stroke={theme.grid} strokeWidth={1} />
-                                    <SvgText x={inner.labelX} y={t.y - 4} fill={theme.muted} fontSize={CHART_CFG.fontSize} fontWeight="700">
+                                    <Line
+                                        x1={inner.plotLeft}
+                                        x2={inner.plotRight}
+                                        y1={t.y}
+                                        y2={t.y}
+                                        stroke={theme.grid}
+                                        strokeWidth={1}
+                                    />
+                                    <SvgText
+                                        x={inner.labelX}
+                                        y={t.y - 4}
+                                        fill={theme.muted}
+                                        fontSize={CHART_CFG.fontSize}
+                                        fontWeight="700"
+                                    >
                                         {t.val.toFixed(0)}
                                     </SvgText>
                                 </G>
@@ -488,7 +570,16 @@ function ProBarChart({
 
                         <G>
                             {inner.bars.map((b, idx) => (
-                                <Rect key={idx} x={b.x} y={b.y} width={barWidth} height={Math.max(0, b.h)} rx={radius} ry={radius} fill="url(#barFill)" />
+                                <Rect
+                                    key={idx}
+                                    x={b.x}
+                                    y={b.y}
+                                    width={barWidth}
+                                    height={Math.max(0, b.h)}
+                                    rx={radius}
+                                    ry={radius}
+                                    fill="url(#barFill)"
+                                />
                             ))}
                         </G>
 
@@ -499,7 +590,15 @@ function ProBarChart({
                                 const x = inner.plotLeft + slot * idx + slot / 2;
                                 const y = height - 6;
                                 return (
-                                    <SvgText key={lab + idx} x={x} y={y} fill={theme.muted} fontSize={CHART_CFG.fontSize} fontWeight="800" textAnchor="middle">
+                                    <SvgText
+                                        key={lab + idx}
+                                        x={x}
+                                        y={y}
+                                        fill={theme.muted}
+                                        fontSize={CHART_CFG.fontSize}
+                                        fontWeight="800"
+                                        textAnchor="middle"
+                                    >
                                         {lab}
                                     </SvgText>
                                 );
@@ -528,18 +627,23 @@ export default function AdminAccountingScreen() {
     // inversión semanal (presupuesto)
     const [investment, setInvestment] = useState<number>(0);
 
-    // ✅ allocations desde firestore (para usar después en pantalla individual)
+    // allocations desde firestore
     const [allocations, setAllocations] = useState<WeeklyInvestmentAllocations>({});
 
-    // ✅ HISTORIAL 12 semanas
-    const HISTORY_WEEKS = 12;
+    // historial semanas
+    const HISTORY_WEEKS = 24;
     const [historyEventsByWeek, setHistoryEventsByWeek] = useState<Record<string, DailyEventDoc[]>>({});
     const [historyInvByWeek, setHistoryInvByWeek] = useState<Record<string, number>>({});
     const [historyErr, setHistoryErr] = useState<string | null>(null);
 
-    // ✅ colapsar/expandir lista de semanas
-    const [historyListOpen, setHistoryListOpen] = useState(false);
-    const toggleHistoryList = useCallback(() => setHistoryListOpen((v) => !v), []);
+    const [expandedMonths, setExpandedMonths] = useState<Record<string, boolean>>({});
+
+    const toggleMonth = useCallback((monthKey: string) => {
+        setExpandedMonths((prev) => ({
+            ...prev,
+            [monthKey]: !prev[monthKey],
+        }));
+    }, []);
 
     // load users
     useEffect(() => {
@@ -605,7 +709,7 @@ export default function AdminAccountingScreen() {
         return () => unsub();
     }, [startKey]);
 
-    // ✅ Historial 12 semanas (Lun–Sáb)
+    // Historial 24 semanas (Lun–Sáb)
     const historyWeeks = useMemo(() => {
         const baseMonday = new Date(startDate);
         baseMonday.setHours(0, 0, 0, 0);
@@ -614,7 +718,12 @@ export default function AdminAccountingScreen() {
         for (let i = HISTORY_WEEKS - 1; i >= 0; i--) {
             const monday = addDays(baseMonday, -7 * i);
             const r = weekRangeFromMondayStartMonToSat(monday);
-            arr.push({ startKey: r.startKey, endKey: r.endKey, startDate: r.startDate, endDate: r.endDate });
+            arr.push({
+                startKey: r.startKey,
+                endKey: r.endKey,
+                startDate: r.startDate,
+                endDate: r.endDate,
+            });
         }
         return arr; // oldest -> newest
     }, [startDate]);
@@ -765,7 +874,7 @@ export default function AdminAccountingScreen() {
     const chartValuesVisited = useMemo(() => dailySeries.map((d) => d.visited), [dailySeries]);
     const chartLabels = useMemo(() => dailySeries.map((d) => d.label), [dailySeries]);
 
-    // ✅ Historial semanal: bruta / inversión / real (Lun–Sáb)
+    // Historial semanal: bruta / inversión / real (Lun–Sáb)
     const weeklyHistory = useMemo(() => {
         return historyWeeks.map((w) => {
             const evs = historyEventsByWeek[w.startKey] ?? [];
@@ -795,25 +904,97 @@ export default function AdminAccountingScreen() {
             const gross = clamp2(Object.values(perUserAmount).reduce((a, b) => a + b, 0));
             const inv = clamp2(historyInvByWeek[w.startKey] ?? 0);
             const real = clamp2(gross - inv);
-            const roi = inv > 0 ? (real / inv) * 100 : null;
+            const roiVal = inv > 0 ? (real / inv) * 100 : null;
+            const monthKey = monthKeyFromDayKey(w.startKey);
 
             return {
                 startKey: w.startKey,
                 endKey: w.endKey,
                 label: monthDay(w.startKey),
+                monthKey,
+                monthLabelLong: formatMonthLabelLong(monthKey),
                 visited,
                 rejected,
                 gross,
                 inv,
                 real,
-                roi,
+                roi: roiVal,
+                hasMovement:
+                    visited > 0 ||
+                    rejected > 0 ||
+                    gross > 0 ||
+                    inv > 0 ||
+                    real !== 0,
             };
         });
     }, [historyWeeks, historyEventsByWeek, historyInvByWeek, userById]);
 
-    const weeklyRealValues = useMemo(() => weeklyHistory.map((x) => x.real), [weeklyHistory]);
-    const weeklyTooltipItems = useMemo(() => weeklyHistory.map((w) => `${w.startKey} → ${w.endKey}`), [weeklyHistory]);
-    const weeklyLabels = useMemo(() => weeklyHistory.map((_, i) => String(i + 1)), [weeklyHistory]);
+    const activeMonths = useMemo(() => {
+        const map = new Map<
+            string,
+            {
+                monthKey: string;
+                labelLong: string;
+                labelShort: string;
+                gross: number;
+                inv: number;
+                real: number;
+                visited: number;
+                rejected: number;
+                roi: number | null;
+                weeks: typeof weeklyHistory;
+                hasMovement: boolean;
+            }
+        >();
+
+        for (const w of weeklyHistory) {
+            if (!map.has(w.monthKey)) {
+                map.set(w.monthKey, {
+                    monthKey: w.monthKey,
+                    labelLong: formatMonthLabelLong(w.monthKey),
+                    labelShort: formatMonthLabelShort(w.monthKey),
+                    gross: 0,
+                    inv: 0,
+                    real: 0,
+                    visited: 0,
+                    rejected: 0,
+                    roi: null,
+                    weeks: [],
+                    hasMovement: false,
+                });
+            }
+
+            const item = map.get(w.monthKey)!;
+            item.gross = clamp2(item.gross + w.gross);
+            item.inv = clamp2(item.inv + w.inv);
+            item.real = clamp2(item.real + w.real);
+            item.visited += w.visited;
+            item.rejected += w.rejected;
+            item.weeks.push(w);
+            item.hasMovement = item.hasMovement || w.hasMovement;
+        }
+
+        const out = Array.from(map.values())
+            .filter((m) => m.hasMovement)
+            .map((m) => ({
+                ...m,
+                roi: m.inv > 0 ? (m.real / m.inv) * 100 : null,
+            }))
+            .sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+
+        return out;
+    }, [weeklyHistory]);
+
+    const monthlyRealValues = useMemo(() => activeMonths.map((m) => m.real), [activeMonths]);
+    const monthlyLabels = useMemo(() => activeMonths.map((m) => m.labelShort), [activeMonths]);
+    const monthlyTooltipItems = useMemo(
+        () =>
+            activeMonths.map(
+                (m) =>
+                    `${m.labelLong} · Bruta R$ ${money(m.gross)} · Inv R$ ${money(m.inv)} · Real R$ ${money(m.real)}`
+            ),
+        [activeMonths]
+    );
 
     const perfTone = useMemo(() => {
         if (profit > 0) return "pos";
@@ -858,7 +1039,6 @@ export default function AdminAccountingScreen() {
         [chartTheme]
     );
 
-    // ✅ abre pantalla editor semanal (reemplaza modal)
     const openBudgetScreen = useCallback(() => {
         router.push({
             pathname: "/admin/weekly-budget" as any,
@@ -866,7 +1046,6 @@ export default function AdminAccountingScreen() {
         });
     }, [router, startKey, endKey]);
 
-    // ✅ (después hacemos esta pantalla)
     const goToUserAccounting = useCallback(() => {
         router.push({
             pathname: "/admin/accounting-user" as any,
@@ -879,14 +1058,18 @@ export default function AdminAccountingScreen() {
             <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
             <AdminBackground>
                 <ScrollView
-                    contentContainerStyle={[styles.content, { paddingBottom: Math.max(20, insets.bottom + 16) }]}
+                    contentContainerStyle={[
+                        styles.content,
+                        { paddingBottom: Math.max(20, insets.bottom + 16) },
+                    ]}
                     showsVerticalScrollIndicator={false}
                 >
                     <View style={styles.header}>
                         <View style={{ flex: 1, gap: 2 }}>
                             <Text style={styles.title}>Contabilidad</Text>
                             <Text style={styles.sub}>
-                                Semana <Text style={styles.strong}>{startKey}</Text> → <Text style={styles.strong}>{endKey}</Text>
+                                Semana <Text style={styles.strong}>{startKey}</Text> →{" "}
+                                <Text style={styles.strong}>{endKey}</Text>
                             </Text>
                             {weekErr ? <Text style={styles.errText}>Eventos: {weekErr}</Text> : null}
                         </View>
@@ -930,18 +1113,38 @@ export default function AdminAccountingScreen() {
                                 <View
                                     style={[
                                         styles.perfPill,
-                                        perfTone === "pos" ? styles.perfPillPos : perfTone === "neg" ? styles.perfPillNeg : styles.perfPillNeutral,
+                                        perfTone === "pos"
+                                            ? styles.perfPillPos
+                                            : perfTone === "neg"
+                                                ? styles.perfPillNeg
+                                                : styles.perfPillNeutral,
                                     ]}
                                 >
                                     <Ionicons
-                                        name={perfTone === "pos" ? "trending-up-outline" : perfTone === "neg" ? "trending-down-outline" : "remove-outline"}
+                                        name={
+                                            perfTone === "pos"
+                                                ? "trending-up-outline"
+                                                : perfTone === "neg"
+                                                    ? "trending-down-outline"
+                                                    : "remove-outline"
+                                        }
                                         size={14}
-                                        color={perfTone === "pos" ? COLORS.ok : perfTone === "neg" ? COLORS.bad : COLORS.muted}
+                                        color={
+                                            perfTone === "pos"
+                                                ? COLORS.ok
+                                                : perfTone === "neg"
+                                                    ? COLORS.bad
+                                                    : COLORS.muted
+                                        }
                                     />
                                     <Text
                                         style={[
                                             styles.perfPillText,
-                                            perfTone === "pos" ? styles.perfTextPos : perfTone === "neg" ? styles.perfTextNeg : styles.perfTextNeutral,
+                                            perfTone === "pos"
+                                                ? styles.perfTextPos
+                                                : perfTone === "neg"
+                                                    ? styles.perfTextNeg
+                                                    : styles.perfTextNeutral,
                                         ]}
                                     >
                                         {perfLabel}
@@ -949,10 +1152,21 @@ export default function AdminAccountingScreen() {
                                 </View>
                             </View>
 
-                            <Text style={[styles.kpiValue, perfTone === "pos" ? styles.valuePos : perfTone === "neg" ? styles.valueNeg : null]}>
+                            <Text
+                                style={[
+                                    styles.kpiValue,
+                                    perfTone === "pos"
+                                        ? styles.valuePos
+                                        : perfTone === "neg"
+                                            ? styles.valueNeg
+                                            : null,
+                                ]}
+                            >
                                 R$ {money(profit)}
                             </Text>
-                            <Text style={styles.kpiHint}>{investment <= 0 ? "ROI: — (sin inversión)" : `ROI: ${roi?.toFixed(1)}%`}</Text>
+                            <Text style={styles.kpiHint}>
+                                {investment <= 0 ? "ROI: — (sin inversión)" : `ROI: ${roi?.toFixed(1)}%`}
+                            </Text>
                             <View style={styles.kpiHintRow}>
                                 <Text style={styles.kpiHint2}>Prom/día: R$ {money(avgPerDay)}</Text>
                                 <View style={styles.tapHint}>
@@ -978,84 +1192,192 @@ export default function AdminAccountingScreen() {
                         <View style={styles.chartBlock}>
                             <Text style={styles.cardSub}>Ganancia bruta por día</Text>
                             <View style={styles.svgCard}>
-                                <ProBarChart values={chartValuesGross} labels={chartLabels} theme={chartTheme} barWidth={CHART_CFG.barWidth} />
+                                <ProBarChart
+                                    values={chartValuesGross}
+                                    labels={chartLabels}
+                                    theme={chartTheme}
+                                    barWidth={CHART_CFG.barWidth}
+                                />
                             </View>
                         </View>
 
                         <View style={styles.chartBlock}>
                             <Text style={styles.cardSub}>Visitados por día</Text>
                             <View style={styles.svgCard}>
-                                <ProLineChart values={chartValuesVisited} labels={chartLabels} theme={warnTheme} strokeWidth={CHART_CFG.lineStrokeWidth} dotRadius={CHART_CFG.dotRadius} showDots />
+                                <ProLineChart
+                                    values={chartValuesVisited}
+                                    labels={chartLabels}
+                                    theme={warnTheme}
+                                    strokeWidth={CHART_CFG.lineStrokeWidth}
+                                    dotRadius={CHART_CFG.dotRadius}
+                                    showDots
+                                />
                             </View>
                         </View>
                     </View>
 
-                    {/* ✅ HISTORIAL 12 SEMANAS */}
+                    {/* HISTORIAL: solo meses activos, semanas ocultas por defecto */}
                     <View style={styles.card}>
-                        <Pressable onPress={toggleHistoryList} style={({ pressed }) => [styles.historyHeader, pressed && styles.pressed]}>
+                        <View style={styles.historyHeaderStatic}>
                             <View style={{ flex: 1, gap: 2 }}>
                                 <Text style={styles.cardTitle}>Historial</Text>
+                                <Text style={styles.cardSub}>
+                                    Meses activos con desglose semanal al tocar
+                                </Text>
                                 {historyErr ? <Text style={styles.errText}>Historial: {historyErr}</Text> : null}
                             </View>
 
                             <View style={styles.historyRight}>
                                 <View style={styles.weekPill}>
                                     <Ionicons name="time-outline" size={14} color={COLORS.muted} />
-                                    <Text style={styles.weekPillText}>{HISTORY_WEEKS}w</Text>
-                                </View>
-
-                                <View style={styles.chevBox}>
-                                    <Ionicons name={historyListOpen ? "chevron-up" : "chevron-down"} size={18} color="rgba(255,255,255,0.72)" />
+                                    <Text style={styles.weekPillText}>{activeMonths.length}m</Text>
                                 </View>
                             </View>
-                        </Pressable>
+                        </View>
 
                         <View style={styles.chartBlock}>
-                            <Text style={styles.cardSub}>Ganancia real por semana</Text>
+                            <Text style={styles.cardSub}>Ganancia real por mes activo</Text>
                             <View style={styles.svgCard}>
                                 <ProLineChart
-                                    values={weeklyRealValues}
-                                    labels={weeklyLabels}
+                                    values={monthlyRealValues}
+                                    labels={monthlyLabels}
                                     theme={realTheme}
                                     strokeWidth={CHART_CFG.lineStrokeWidth}
                                     dotRadius={CHART_CFG.dotRadius}
                                     showDots
-                                    xMode="dots"
-                                    tooltipItems={weeklyTooltipItems}
+                                    xMode="labels"
+                                    tooltipItems={monthlyTooltipItems}
                                 />
                             </View>
                         </View>
 
-                        {historyListOpen ? (
-                            <View style={{ gap: 8 }}>
-                                {weeklyHistory
-                                    .slice()
-                                    .reverse()
-                                    .map((w) => {
-                                        const tone = w.real > 0 ? "pos" : w.real < 0 ? "neg" : "neutral";
-                                        return (
-                                            <View key={w.startKey} style={styles.weekRow}>
-                                                <View style={{ flex: 1, gap: 2 }}>
-                                                    <Text style={styles.weekRowTitle}>
-                                                        {w.startKey} → {w.endKey}
-                                                    </Text>
+                        <View style={{ gap: 10 }}>
+                            {activeMonths
+                                .slice()
+                                .reverse()
+                                .map((month) => {
+                                    const monthTone =
+                                        month.real > 0 ? "pos" : month.real < 0 ? "neg" : "neutral";
+                                    const isOpen = !!expandedMonths[month.monthKey];
+
+                                    return (
+                                        <View key={month.monthKey} style={styles.monthGroup}>
+                                            <Pressable
+                                                onPress={() => toggleMonth(month.monthKey)}
+                                                style={({ pressed }) => [
+                                                    styles.monthRow,
+                                                    pressed && styles.pressed,
+                                                ]}
+                                            >
+                                                <View style={{ flex: 1, gap: 4 }}>
+                                                    <View style={styles.monthTopLine}>
+                                                        <Text style={styles.monthRowTitle}>
+                                                            {month.labelLong}
+                                                        </Text>
+
+                                                        <View style={styles.monthMiniMeta}>
+                                                            <Text style={styles.monthMiniMetaText}>
+                                                                {month.weeks.length} sem
+                                                            </Text>
+                                                        </View>
+                                                    </View>
+
                                                     <Text style={styles.weekRowSub} numberOfLines={1}>
-                                                        {w.visited} visitados · {w.rejected} rechazados · Bruta R$ {money(w.gross)} · Inv R$ {money(w.inv)}
+                                                        {month.visited} visitados · {month.rejected} rechazados ·
+                                                        Bruta R$ {money(month.gross)} · Inv R$ {money(month.inv)}
                                                     </Text>
                                                 </View>
 
-                                                <View style={[styles.weekRealPill, tone === "pos" ? styles.weekRealPos : tone === "neg" ? styles.weekRealNeg : styles.weekRealNeu]}>
-                                                    <Text style={styles.weekRealText}>R$ {money(w.real)}</Text>
-                                                    <Text style={styles.weekRealSmall}>{w.roi == null ? "ROI —" : `${w.roi.toFixed(0)}%`}</Text>
+                                                <View style={styles.monthRight}>
+                                                    <View
+                                                        style={[
+                                                            styles.weekRealPill,
+                                                            monthTone === "pos"
+                                                                ? styles.weekRealPos
+                                                                : monthTone === "neg"
+                                                                    ? styles.weekRealNeg
+                                                                    : styles.weekRealNeu,
+                                                        ]}
+                                                    >
+                                                        <Text style={styles.weekRealText}>
+                                                            R$ {money(month.real)}
+                                                        </Text>
+                                                        <Text style={styles.weekRealSmall}>
+                                                            {month.roi == null
+                                                                ? "ROI —"
+                                                                : `${month.roi.toFixed(0)}%`}
+                                                        </Text>
+                                                    </View>
+
+                                                    <View style={styles.monthChevron}>
+                                                        <Ionicons
+                                                            name={isOpen ? "chevron-up" : "chevron-down"}
+                                                            size={18}
+                                                            color="rgba(255,255,255,0.72)"
+                                                        />
+                                                    </View>
                                                 </View>
-                                            </View>
-                                        );
-                                    })}
-                            </View>
-                        ) : null}
+                                            </Pressable>
+
+                                            {isOpen ? (
+                                                <View style={styles.monthWeeksWrap}>
+                                                    {month.weeks
+                                                        .slice()
+                                                        .reverse()
+                                                        .map((w) => {
+                                                            const tone =
+                                                                w.real > 0
+                                                                    ? "pos"
+                                                                    : w.real < 0
+                                                                        ? "neg"
+                                                                        : "neutral";
+
+                                                            return (
+                                                                <View key={w.startKey} style={styles.weekRow}>
+                                                                    <View style={{ flex: 1, gap: 2 }}>
+                                                                        <Text style={styles.weekRowTitle}>
+                                                                            {w.startKey} → {w.endKey}
+                                                                        </Text>
+                                                                        <Text
+                                                                            style={styles.weekRowSub}
+                                                                            numberOfLines={1}
+                                                                        >
+                                                                            {w.visited} visitados · {w.rejected} rechazados ·
+                                                                            Bruta R$ {money(w.gross)} · Inv R$ {money(w.inv)}
+                                                                        </Text>
+                                                                    </View>
+
+                                                                    <View
+                                                                        style={[
+                                                                            styles.weekRealPill,
+                                                                            tone === "pos"
+                                                                                ? styles.weekRealPos
+                                                                                : tone === "neg"
+                                                                                    ? styles.weekRealNeg
+                                                                                    : styles.weekRealNeu,
+                                                                        ]}
+                                                                    >
+                                                                        <Text style={styles.weekRealText}>
+                                                                            R$ {money(w.real)}
+                                                                        </Text>
+                                                                        <Text style={styles.weekRealSmall}>
+                                                                            {w.roi == null
+                                                                                ? "ROI —"
+                                                                                : `${w.roi.toFixed(0)}%`}
+                                                                        </Text>
+                                                                    </View>
+                                                                </View>
+                                                            );
+                                                        })}
+                                                </View>
+                                            ) : null}
+                                        </View>
+                                    );
+                                })}
+                        </View>
                     </View>
 
-                    {/* (debug opcional) */}
+                    {/* debug opcional */}
                     {/* <Text style={{ color: "#fff" }}>{JSON.stringify(allocations, null, 2)}</Text> */}
                 </ScrollView>
             </AdminBackground>
@@ -1120,7 +1442,12 @@ const styles = StyleSheet.create({
         padding: 12,
         gap: 6,
     },
-    kpiTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+    kpiTopRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
 
     kpiLabel: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
     kpiValue: { color: COLORS.text, fontSize: 18, fontWeight: "900" },
@@ -1130,8 +1457,19 @@ const styles = StyleSheet.create({
     kpiHint: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.9 },
     kpiHint2: { color: COLORS.muted, fontSize: 11, fontWeight: "800", opacity: 0.85 },
 
-    kpiHintRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
-    tapHint: { width: 18, height: 18, alignItems: "center", justifyContent: "center", opacity: 0.9 },
+    kpiHintRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
+    tapHint: {
+        width: 18,
+        height: 18,
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: 0.9,
+    },
 
     perfPill: {
         flexDirection: "row",
@@ -1142,9 +1480,18 @@ const styles = StyleSheet.create({
         borderRadius: 999,
         borderWidth: 1,
     },
-    perfPillPos: { backgroundColor: "rgba(34,197,94,0.12)", borderColor: "rgba(34,197,94,0.30)" },
-    perfPillNeg: { backgroundColor: "rgba(248,113,113,0.12)", borderColor: "rgba(248,113,113,0.30)" },
-    perfPillNeutral: { backgroundColor: "rgba(255,255,255,0.04)", borderColor: "rgba(255,255,255,0.10)" },
+    perfPillPos: {
+        backgroundColor: "rgba(34,197,94,0.12)",
+        borderColor: "rgba(34,197,94,0.30)",
+    },
+    perfPillNeg: {
+        backgroundColor: "rgba(248,113,113,0.12)",
+        borderColor: "rgba(248,113,113,0.30)",
+    },
+    perfPillNeutral: {
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderColor: "rgba(255,255,255,0.10)",
+    },
     perfPillText: { fontSize: 11, fontWeight: "900" },
     perfTextPos: { color: "#86EFAC" },
     perfTextNeg: { color: "#FCA5A5" },
@@ -1158,7 +1505,12 @@ const styles = StyleSheet.create({
         padding: 12,
         gap: 12,
     },
-    cardTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+    cardTopRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
     cardTitle: { color: COLORS.text, fontSize: 14, fontWeight: "900" },
     cardSub: { color: COLORS.muted, fontSize: 12, fontWeight: "800", opacity: 0.92 },
 
@@ -1180,8 +1532,76 @@ const styles = StyleSheet.create({
     },
     svgWrap: { width: "100%" as any },
 
-    historyHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
-    historyRight: { flexDirection: "row", alignItems: "center", gap: 10 },
+    historyHeaderStatic: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+    historyRight: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+
+    monthGroup: { gap: 8 },
+    monthRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        padding: 12,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.10)",
+        backgroundColor: "rgba(255,255,255,0.04)",
+    },
+    monthTopLine: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    monthRowTitle: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 13,
+    },
+    monthMiniMeta: {
+        height: 22,
+        paddingHorizontal: 8,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.05)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+    },
+    monthMiniMetaText: {
+        color: COLORS.muted,
+        fontSize: 10,
+        fontWeight: "900",
+    },
+    monthRight: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    monthChevron: {
+        width: 28,
+        height: 28,
+        borderRadius: 10,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+    },
+
+    monthWeeksWrap: {
+        gap: 8,
+        paddingLeft: 12,
+        borderLeftWidth: 1,
+        borderLeftColor: "rgba(255,255,255,0.08)",
+        marginLeft: 8,
+    },
 
     weekRow: {
         flexDirection: "row",
@@ -1194,7 +1614,11 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(255,255,255,0.03)",
     },
     weekRowTitle: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
-    weekRowSub: { color: "rgba(255,255,255,0.55)", fontWeight: "800", fontSize: 11 },
+    weekRowSub: {
+        color: "rgba(255,255,255,0.55)",
+        fontWeight: "800",
+        fontSize: 11,
+    },
 
     weekRealPill: {
         width: 108,
@@ -1205,21 +1629,24 @@ const styles = StyleSheet.create({
         alignItems: "flex-end",
         justifyContent: "center",
     },
-    weekRealPos: { backgroundColor: "rgba(34,197,94,0.12)", borderColor: "rgba(34,197,94,0.28)" },
-    weekRealNeg: { backgroundColor: "rgba(248,113,113,0.12)", borderColor: "rgba(248,113,113,0.28)" },
-    weekRealNeu: { backgroundColor: "rgba(255,255,255,0.04)", borderColor: "rgba(255,255,255,0.10)" },
-    weekRealText: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
-    weekRealSmall: { color: "rgba(255,255,255,0.55)", fontWeight: "900", fontSize: 10, marginTop: 2 },
-
-    chevBox: {
-        width: 34,
-        height: 34,
-        borderRadius: 12,
-        alignItems: "center",
-        justifyContent: "center",
+    weekRealPos: {
+        backgroundColor: "rgba(34,197,94,0.12)",
+        borderColor: "rgba(34,197,94,0.28)",
+    },
+    weekRealNeg: {
+        backgroundColor: "rgba(248,113,113,0.12)",
+        borderColor: "rgba(248,113,113,0.28)",
+    },
+    weekRealNeu: {
         backgroundColor: "rgba(255,255,255,0.04)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.08)",
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+    weekRealText: { color: COLORS.text, fontWeight: "900", fontSize: 12 },
+    weekRealSmall: {
+        color: "rgba(255,255,255,0.55)",
+        fontWeight: "900",
+        fontSize: 10,
+        marginTop: 2,
     },
 
     pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
