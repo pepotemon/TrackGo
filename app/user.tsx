@@ -621,10 +621,6 @@ export default function UserHome() {
         return count;
     }, [todayLatestByClient, shouldCountEvent]);
 
-    const todayHandledCount = useMemo(() => {
-        return todayVisitedCount + todayRejectedCount;
-    }, [todayVisitedCount, todayRejectedCount]);
-
     const pendingPriorityMap = useMemo(() => {
         const pendingOnly = clients
             .filter((c) => c.status === "pending")
@@ -1226,9 +1222,6 @@ export default function UserHome() {
                                     </View>
                                 </View>
 
-                                <Text style={styles.quickTitle}>Actividad de hoy</Text>
-                                <Text style={styles.quickMoney}>{todayHandledCount}</Text>
-
                                 <View style={styles.tinyRow}>
                                     <TinyStat
                                         icon="checkmark-circle-outline"
@@ -1262,21 +1255,18 @@ export default function UserHome() {
                                     </View>
                                 </View>
 
-                                <Text style={styles.quickTitle}>Cartera visible</Text>
-                                <Text style={styles.quickMoney}>{counts.weekVisible}</Text>
-
                                 <View style={styles.tinyRow}>
-                                    <TinyStat
-                                        icon="time-outline"
-                                        color={COLORS.warn}
-                                        value={counts.pending}
-                                        label="Pendientes"
-                                    />
                                     <TinyStat
                                         icon="checkmark-circle-outline"
                                         color={COLORS.ok}
                                         value={weekCounts.visited}
                                         label="Visitados"
+                                    />
+                                    <TinyStat
+                                        icon="close-circle-outline"
+                                        color={COLORS.bad}
+                                        value={weekCounts.rejected}
+                                        label="Rechazados"
                                     />
                                 </View>
                             </View>
@@ -1896,24 +1886,12 @@ const styles = StyleSheet.create({
     badgeTextPrimary: {
         color: "#D8B4FE",
     },
-    quickTitle: {
-        color: COLORS.text,
-        fontSize: 14,
-        fontWeight: "900",
-        marginTop: 2,
-    },
-    quickMoney: {
-        color: COLORS.text,
-        fontSize: 20,
-        fontWeight: "900",
-        marginTop: 1,
-    },
     tinyRow: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
         gap: 8,
-        marginTop: 5,
+        marginTop: 2,
     },
     tinyStatWrap: {
         flex: 1,
