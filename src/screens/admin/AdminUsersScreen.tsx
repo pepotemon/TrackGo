@@ -12,6 +12,7 @@ import {
     ScrollView,
     StatusBar,
     StyleSheet,
+    Switch,
     Text,
     TextInput,
     View,
@@ -21,10 +22,7 @@ import AdminBackground from "../../components/admin/AdminBackground";
 import AdminCreateUserModal from "../../components/admin/AdminCreateUserModal";
 
 import { db } from "../../config/firebase";
-import {
-    listUsers,
-    updateUserRatePerVisit,
-} from "../../data/repositories/usersRepo";
+import { listUsers, updateUserRatePerVisit } from "../../data/repositories/usersRepo";
 import type { UserDoc, UserGeoCoverage } from "../../types/models";
 
 function safeText(x?: string) {
@@ -39,7 +37,10 @@ function normalizeLooseText(value?: string | null) {
     return safeString(value)
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+        .toLowerCase()
+        .replace(/[\s\-\/]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
 }
 
 function onlyNumberLike(text: string) {
@@ -76,7 +77,19 @@ function buildWhatsAppUrl(phoneDigits: string) {
 }
 
 function getGeoCoverageList(u: UserDoc): UserGeoCoverage[] {
-    return Array.isArray((u as any)?.geoCoverage) ? ((u as any).geoCoverage as UserGeoCoverage[]) : [];
+    return Array.isArray((u as any)?.geoCoverage)
+        ? ((u as any).geoCoverage as UserGeoCoverage[])
+        : [];
+}
+
+function getAutoAssignEnabled(u: UserDoc) {
+    return !!u.autoAssignEnabled;
+}
+
+function getAutoAssignDailyLimit(u: UserDoc) {
+    return typeof u.autoAssignDailyLimit === "number" && isFinite(u.autoAssignDailyLimit)
+        ? u.autoAssignDailyLimit
+        : null;
 }
 
 function makeCoverageId(stateLabel: string, cityLabel: string) {
@@ -176,6 +189,8 @@ export default function AdminUsersScreen() {
     const [editCoverageState, setEditCoverageState] = useState("");
     const [editCoverageCity, setEditCoverageCity] = useState("");
     const [editCoverageList, setEditCoverageList] = useState<UserGeoCoverage[]>([]);
+    const [editAutoAssignEnabled, setEditAutoAssignEnabled] = useState(false);
+    const [editAutoAssignDailyLimit, setEditAutoAssignDailyLimit] = useState("");
     const [editSaving, setEditSaving] = useState(false);
 
     const [blockSavingById, setBlockSavingById] = useState<Record<string, boolean>>({});
@@ -209,7 +224,8 @@ export default function AdminUsersScreen() {
         const admins = users.filter((u) => u.role === "admin").length;
         const actives = users.filter((u) => !!u.active).length;
         const blocked = users.filter((u) => !u.active).length;
-        return { total: users.length, admins, actives, blocked };
+        const autoAssign = users.filter((u) => u.role === "user" && !!u.autoAssignEnabled).length;
+        return { total: users.length, admins, actives, blocked, autoAssign };
     }, [users]);
 
     const filteredUsers = useMemo(() => {
@@ -222,9 +238,13 @@ export default function AdminUsersScreen() {
                 .map((x) => `${safeText(x.stateLabel)} ${safeText(x.cityLabel)} ${safeText(x.displayLabel)}`)
                 .join(" ");
 
+            const autoBlob = `${u.autoAssignEnabled ? "auto on" : "auto off"} ${safeText(
+                String(u.autoAssignDailyLimit ?? "")
+            )}`;
+
             const hay = `${safeText(u.name)} ${safeText(u.email)} ${safeText(u.role)} ${wa} ${safeText(
                 u.id
-            )} ${geoBlob}`;
+            )} ${geoBlob} ${autoBlob}`;
 
             return hay.includes(qt);
         });
@@ -339,6 +359,10 @@ export default function AdminUsersScreen() {
         setEditCoverageState("");
         setEditCoverageCity("");
         setEditCoverageList(getGeoCoverageList(u));
+        setEditAutoAssignEnabled(getAutoAssignEnabled(u));
+        setEditAutoAssignDailyLimit(
+            getAutoAssignDailyLimit(u) != null ? String(getAutoAssignDailyLimit(u)) : ""
+        );
         setOpenEdit(true);
     };
 
@@ -351,6 +375,8 @@ export default function AdminUsersScreen() {
         setEditCoverageState("");
         setEditCoverageCity("");
         setEditCoverageList([]);
+        setEditAutoAssignEnabled(false);
+        setEditAutoAssignDailyLimit("");
         setEditSaving(false);
     };
 
@@ -361,6 +387,16 @@ export default function AdminUsersScreen() {
         const cleanWhatsapp = normalizePhone(editWhatsapp);
         const rate = Number(onlyNumberLike(editRate)) || 0;
         const normalizedCoverage = normalizeCoverageList(editCoverageList);
+        const dailyLimitRaw = onlyNumberLike(editAutoAssignDailyLimit);
+        const dailyLimit = dailyLimitRaw ? Number(dailyLimitRaw) : null;
+
+        if (editAutoAssignEnabled && !normalizedCoverage.length) {
+            Alert.alert(
+                "Cobertura requerida",
+                "Para activar asignación automática, agrega al menos una cobertura."
+            );
+            return;
+        }
 
         setEditSaving(true);
         try {
@@ -370,6 +406,12 @@ export default function AdminUsersScreen() {
                 ratePerVisit: rate,
                 geoCoverage: normalizedCoverage,
                 primaryGeoCoverageLabel: normalizedCoverage[0]?.displayLabel ?? null,
+
+                autoAssignEnabled: editAutoAssignEnabled,
+                autoAssignDailyLimit: editAutoAssignEnabled ? dailyLimit : null,
+                autoAssignPriority: 1,
+                assignmentMode: "round_robin",
+
                 updatedAt: Date.now(),
             } as any);
 
@@ -430,7 +472,8 @@ export default function AdminUsersScreen() {
                             Total <Text style={styles.hStrong}>{counts.total}</Text> · Activos{" "}
                             <Text style={styles.hStrong}>{counts.actives}</Text> · Bloq{" "}
                             <Text style={styles.hStrong}>{counts.blocked}</Text> · Admin{" "}
-                            <Text style={styles.hStrong}>{counts.admins}</Text>
+                            <Text style={styles.hStrong}>{counts.admins}</Text> · Auto{" "}
+                            <Text style={styles.hStrong}>{counts.autoAssign}</Text>
                         </Text>
                     </View>
 
@@ -447,7 +490,7 @@ export default function AdminUsersScreen() {
                     <TextInput
                         value={q}
                         onChangeText={setQ}
-                        placeholder="Buscar por nombre, email, rol, WhatsApp o cobertura…"
+                        placeholder="Buscar por nombre, email, rol, WhatsApp, cobertura o auto…"
                         placeholderTextColor={COLORS.muted}
                         style={styles.searchInput}
                     />
@@ -470,6 +513,8 @@ export default function AdminUsersScreen() {
 
                         const feeSaving = !!feeSavingById[item.id];
                         const blockSaving = !!blockSavingById[item.id];
+                        const autoEnabled = getAutoAssignEnabled(item);
+                        const autoLimit = getAutoAssignDailyLimit(item);
 
                         return (
                             <View style={styles.card}>
@@ -526,6 +571,52 @@ export default function AdminUsersScreen() {
                                         </Text>
                                     )}
                                 </View>
+
+                                {item.role === "user" ? (
+                                    <View style={styles.autoAssignSection}>
+                                        <Text style={styles.coverageTitle}>Asignación automática</Text>
+
+                                        <View style={styles.autoAssignRow}>
+                                            <View
+                                                style={[
+                                                    styles.autoAssignPill,
+                                                    autoEnabled
+                                                        ? styles.autoAssignPillActive
+                                                        : styles.autoAssignPillInactive,
+                                                ]}
+                                            >
+                                                <Ionicons
+                                                    name={autoEnabled ? "flash-outline" : "pause-outline"}
+                                                    size={13}
+                                                    color={autoEnabled ? "#93C5FD" : COLORS.muted}
+                                                />
+                                                <Text
+                                                    style={[
+                                                        styles.autoAssignPillText,
+                                                        autoEnabled
+                                                            ? styles.autoAssignPillTextActive
+                                                            : styles.autoAssignPillTextInactive,
+                                                    ]}
+                                                >
+                                                    {autoEnabled ? "ACTIVA" : "INACTIVA"}
+                                                </Text>
+                                            </View>
+
+                                            {autoEnabled && autoLimit != null ? (
+                                                <View style={styles.autoAssignLimitPill}>
+                                                    <Ionicons
+                                                        name="speedometer-outline"
+                                                        size={13}
+                                                        color="#C4B5FD"
+                                                    />
+                                                    <Text style={styles.autoAssignLimitText}>
+                                                        Límite {autoLimit}/día
+                                                    </Text>
+                                                </View>
+                                            ) : null}
+                                        </View>
+                                    </View>
+                                ) : null}
 
                                 <View style={styles.actionsRow}>
                                     <View style={{ flexDirection: "row", gap: 10 }}>
@@ -600,7 +691,10 @@ export default function AdminUsersScreen() {
                                     </Pressable>
                                 </View>
 
-                                <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                <ScrollView
+                                    contentContainerStyle={{ gap: 12, paddingBottom: 6 }}
+                                    showsVerticalScrollIndicator={false}
+                                >
                                     <View style={styles.field}>
                                         <Text style={styles.label}>Nombre</Text>
                                         <TextInput
@@ -714,11 +808,80 @@ export default function AdminUsersScreen() {
                                                 ))}
                                             </View>
                                         ) : (
-                                            <Text style={styles.coverageEmpty}>
-                                                Sin coberturas aún
-                                            </Text>
+                                            <Text style={styles.coverageEmpty}>Sin coberturas aún</Text>
                                         )}
                                     </View>
+
+                                    {editId && users.find((u) => u.id === editId)?.role === "user" ? (
+                                        <View style={styles.autoAssignEditCard}>
+                                            <View style={styles.autoAssignEditHeader}>
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={styles.coverageEditorTitle}>
+                                                        Asignación automática
+                                                    </Text>
+                                                    <Text style={styles.hintSmall}>
+                                                        Si está activa, este usuario recibirá leads automáticamente según su cobertura.
+                                                    </Text>
+                                                </View>
+
+                                                <Switch
+                                                    value={editAutoAssignEnabled}
+                                                    onValueChange={setEditAutoAssignEnabled}
+                                                    trackColor={{
+                                                        false: "rgba(255,255,255,0.12)",
+                                                        true: "rgba(37,99,235,0.45)",
+                                                    }}
+                                                    thumbColor={editAutoAssignEnabled ? "#2563EB" : "#9CA3AF"}
+                                                />
+                                            </View>
+
+                                            <View style={styles.autoAssignRow}>
+                                                <View
+                                                    style={[
+                                                        styles.autoAssignPill,
+                                                        editAutoAssignEnabled
+                                                            ? styles.autoAssignPillActive
+                                                            : styles.autoAssignPillInactive,
+                                                    ]}
+                                                >
+                                                    <Ionicons
+                                                        name={editAutoAssignEnabled ? "flash-outline" : "pause-outline"}
+                                                        size={13}
+                                                        color={editAutoAssignEnabled ? "#93C5FD" : COLORS.muted}
+                                                    />
+                                                    <Text
+                                                        style={[
+                                                            styles.autoAssignPillText,
+                                                            editAutoAssignEnabled
+                                                                ? styles.autoAssignPillTextActive
+                                                                : styles.autoAssignPillTextInactive,
+                                                        ]}
+                                                    >
+                                                        {editAutoAssignEnabled ? "ACTIVA" : "INACTIVA"}
+                                                    </Text>
+                                                </View>
+                                            </View>
+
+                                            {editAutoAssignEnabled ? (
+                                                <View style={styles.field}>
+                                                    <Text style={styles.label}>Límite diario (opcional)</Text>
+                                                    <TextInput
+                                                        placeholder="Ej: 20"
+                                                        placeholderTextColor={COLORS.muted}
+                                                        value={editAutoAssignDailyLimit}
+                                                        onChangeText={(t) =>
+                                                            setEditAutoAssignDailyLimit(onlyNumberLike(t))
+                                                        }
+                                                        keyboardType="numeric"
+                                                        style={styles.input}
+                                                    />
+                                                    <Text style={styles.hintSmall}>
+                                                        Déjalo vacío si no quieres límite por día.
+                                                    </Text>
+                                                </View>
+                                            ) : null}
+                                        </View>
+                                    ) : null}
 
                                     <View style={{ flexDirection: "row", gap: 10 }}>
                                         <Pressable
@@ -889,6 +1052,60 @@ const styles = StyleSheet.create({
         opacity: 0.8,
     },
 
+    autoAssignSection: {
+        gap: 8,
+        paddingTop: 2,
+    },
+    autoAssignRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        flexWrap: "wrap",
+    },
+    autoAssignPill: {
+        minHeight: 30,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    autoAssignPillActive: {
+        backgroundColor: "rgba(37,99,235,0.14)",
+        borderColor: "rgba(37,99,235,0.32)",
+    },
+    autoAssignPillInactive: {
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+    autoAssignPillText: {
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    autoAssignPillTextActive: {
+        color: "#93C5FD",
+    },
+    autoAssignPillTextInactive: {
+        color: COLORS.muted,
+    },
+    autoAssignLimitPill: {
+        minHeight: 30,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: "rgba(124,58,237,0.35)",
+        backgroundColor: "rgba(124,58,237,0.14)",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    autoAssignLimitText: {
+        color: "#C4B5FD",
+        fontSize: 11,
+        fontWeight: "900",
+    },
+
     actionsRow: {
         flexDirection: "row",
         alignItems: "center",
@@ -1031,7 +1248,6 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: "700",
     },
-    grid2: { flexDirection: "row", gap: 10 },
 
     coverageEditor: {
         gap: 10,
@@ -1084,6 +1300,20 @@ const styles = StyleSheet.create({
         backgroundColor: COLORS.primary,
         alignItems: "center",
         justifyContent: "center",
+    },
+
+    autoAssignEditCard: {
+        gap: 10,
+        padding: 12,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "rgba(255,255,255,0.03)",
+    },
+    autoAssignEditHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
     },
 
     ghostBtn: {

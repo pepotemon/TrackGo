@@ -10,6 +10,8 @@ const {
     hasValidCoords,
     buildGoogleMapsUrlFromCoords,
     extractGoogleMapsUrlFromText,
+    looksLikeMapsUrl,
+    isGoogleMapsStaticAssetUrl,
 } = require("../utils/geo");
 const {
     buildEmptyTrackGoGeo,
@@ -56,11 +58,6 @@ function pickVerificationStatus(prevStatus, nextStatus, leadQuality, parseStatus
 
     if (prev === "verified") return "verified";
 
-    /**
-     * Regla clave fase 2:
-     * si ya fue marcado como no apto, NO se reactiva automáticamente
-     * por nuevos mensajes. Solo un humano lo cambia.
-     */
     if (prev === "not_suitable") return "not_suitable";
 
     if (quality === "not_suitable") {
@@ -94,6 +91,30 @@ function pickBetterAddress(prevAddress, nextAddress) {
 
     if (next.length > prev.length + 4) return next;
     return prev;
+}
+
+function isUsableNavigableMapsUrl(url) {
+    const u = safeString(url || "");
+    if (!u) return false;
+    if (!looksLikeMapsUrl(u)) return false;
+    if (isGoogleMapsStaticAssetUrl(u)) return false;
+    return true;
+}
+
+function buildSafePublicMapsUrl({
+    originalMapsUrl,
+    resolvedUrl,
+    lat,
+    lng,
+}) {
+    const original = safeString(originalMapsUrl || "");
+    const resolved = safeString(resolvedUrl || "");
+
+    if (isUsableNavigableMapsUrl(original)) return original;
+    if (isUsableNavigableMapsUrl(resolved)) return resolved;
+    if (hasValidCoords(lat, lng)) return buildGoogleMapsUrlFromCoords(lat, lng);
+
+    return "";
 }
 
 function pickBetterMapsUrl(prevMapsUrl, nextMapsUrl, hasMapsInThisMessage) {
@@ -178,10 +199,6 @@ function pickReverseGeoFields(prevClient, nextGeo, hasMapsInThisMessage) {
 function buildHistoryClearPatchForVerificationStatus(verificationStatus) {
     const status = safeString(verificationStatus || "");
 
-    /**
-     * Si sigue no apto, conservamos bucket/archivo persistido.
-     * Si no lo es, limpiamos historial persistido para que vuelva a cola activa.
-     */
     if (status === "not_suitable") {
         return {};
     }
@@ -226,37 +243,58 @@ function extractCoordsFromMapsUrl(url) {
     }
 }
 
-async function resolveEffectiveCoords(locationLat, locationLng, mapsUrl) {
+async function resolveEffectiveCoords(locationLat, locationLng, originalMapsUrl) {
+    const originalClean = safeString(originalMapsUrl || "");
+
     if (hasValidCoords(locationLat, locationLng)) {
+        const publicMapsUrl = buildSafePublicMapsUrl({
+            originalMapsUrl: originalClean,
+            resolvedUrl: "",
+            lat: locationLat,
+            lng: locationLng,
+        });
+
         return {
             lat: locationLat,
             lng: locationLng,
             source: "location",
-            resolvedUrl: safeString(mapsUrl || ""),
+            originalMapsUrl: originalClean,
+            resolvedUrl: "",
+            publicMapsUrl,
             geocodeQuery: "",
         };
     }
 
-    const mapsUrlClean = safeString(mapsUrl || "");
-    if (!mapsUrlClean) {
+    if (!originalClean) {
         return {
             lat: null,
             lng: null,
             source: "",
+            originalMapsUrl: "",
             resolvedUrl: "",
+            publicMapsUrl: "",
             geocodeQuery: "",
         };
     }
 
     try {
-        const resolved = await resolveCoordsFromGoogleMapsUrl(mapsUrlClean);
+        const resolved = await resolveCoordsFromGoogleMapsUrl(originalClean);
 
         if (hasValidCoords(resolved?.lat, resolved?.lng)) {
+            const publicMapsUrl = buildSafePublicMapsUrl({
+                originalMapsUrl: originalClean,
+                resolvedUrl: resolved?.resolvedUrl || "",
+                lat: resolved.lat,
+                lng: resolved.lng,
+            });
+
             return {
                 lat: resolved.lat,
                 lng: resolved.lng,
                 source: safeString(resolved?.source || "maps_url"),
-                resolvedUrl: safeString(resolved?.resolvedUrl || mapsUrlClean),
+                originalMapsUrl: originalClean,
+                resolvedUrl: safeString(resolved?.resolvedUrl || ""),
+                publicMapsUrl,
                 geocodeQuery: safeString(resolved?.geocodeQuery || ""),
             };
         }
@@ -264,13 +302,22 @@ async function resolveEffectiveCoords(locationLat, locationLng, mapsUrl) {
         console.log("[GEO RESOLVER] error:", error?.message || error);
     }
 
-    const fromMaps = extractCoordsFromMapsUrl(mapsUrlClean);
+    const fromMaps = extractCoordsFromMapsUrl(originalClean);
     if (hasValidCoords(fromMaps.lat, fromMaps.lng)) {
+        const publicMapsUrl = buildSafePublicMapsUrl({
+            originalMapsUrl: originalClean,
+            resolvedUrl: "",
+            lat: fromMaps.lat,
+            lng: fromMaps.lng,
+        });
+
         return {
             lat: fromMaps.lat,
             lng: fromMaps.lng,
             source: "maps_url",
-            resolvedUrl: mapsUrlClean,
+            originalMapsUrl: originalClean,
+            resolvedUrl: "",
+            publicMapsUrl,
             geocodeQuery: "",
         };
     }
@@ -279,7 +326,9 @@ async function resolveEffectiveCoords(locationLat, locationLng, mapsUrl) {
         lat: null,
         lng: null,
         source: "maps_unresolved",
-        resolvedUrl: mapsUrlClean,
+        originalMapsUrl: originalClean,
+        resolvedUrl: "",
+        publicMapsUrl: isUsableNavigableMapsUrl(originalClean) ? originalClean : "",
         geocodeQuery: "",
     };
 }
@@ -297,6 +346,7 @@ function createUpsertLeadAsClient({
         messageId,
         contactWaId,
         locationData,
+        originalMapsUrl,
     }) {
         const now = Date.now();
         const parsed = parseLeadText(rawText, profileName);
@@ -312,29 +362,33 @@ function createUpsertLeadAsClient({
 
         const generatedMapsUrlFromText = extractGoogleMapsUrlFromText(rawText);
 
-        const initialMapsUrl =
-            generatedMapsUrlFromText || generatedMapsUrlFromCoords || "";
+        const inboundOriginalMapsUrl =
+            safeString(originalMapsUrl || "") ||
+            safeString(generatedMapsUrlFromText || "") ||
+            safeString(generatedMapsUrlFromCoords || "");
 
         const effectiveCoords = await resolveEffectiveCoords(
             rawLocationLat,
             rawLocationLng,
-            initialMapsUrl
+            inboundOriginalMapsUrl
         );
 
         const lat = effectiveCoords.lat;
         const lng = effectiveCoords.lng;
 
         const generatedMapsUrl =
-            safeString(effectiveCoords.resolvedUrl) ||
-            initialMapsUrl ||
+            safeString(effectiveCoords.publicMapsUrl || "") ||
             (hasValidCoords(lat, lng) ? buildGoogleMapsUrlFromCoords(lat, lng) : "");
 
         const hasMapsInThisMessage =
             !!generatedMapsUrl || hasValidCoords(lat, lng);
 
-        if (generatedMapsUrl) {
+        if (generatedMapsUrl || effectiveCoords.originalMapsUrl) {
             console.log("[GEO DEBUG]", {
                 phone: safeString(phone || "").slice(-4),
+                originalMapsUrl: safeString(effectiveCoords.originalMapsUrl || ""),
+                resolvedUrl: safeString(effectiveCoords.resolvedUrl || ""),
+                publicMapsUrl: generatedMapsUrl,
                 source: safeString(effectiveCoords.source || ""),
                 lat: hasValidCoords(lat, lng) ? lat : null,
                 lng: hasValidCoords(lat, lng) ? lng : null,
@@ -401,7 +455,13 @@ function createUpsertLeadAsClient({
                 leadQuality,
                 notSuitableReason,
                 phone,
+
                 mapsUrl: pickBetterMapsUrl("", generatedMapsUrl, hasMapsInThisMessage),
+                originalMapsUrl: safeString(effectiveCoords.originalMapsUrl || ""),
+                resolvedMapsUrl: safeString(effectiveCoords.resolvedUrl || ""),
+                mapsResolveSource: safeString(effectiveCoords.source || ""),
+                mapsResolveQuery: safeString(effectiveCoords.geocodeQuery || ""),
+
                 address: pickBetterAddress(
                     "",
                     parsed.parsedAddress || locationAddress || ""
@@ -497,7 +557,13 @@ function createUpsertLeadAsClient({
                     verificationStatus,
                     parseStatus: finalParseStatus,
                     processedAt: now,
+
                     mapsUrl: draftClient.mapsUrl || "",
+                    originalMapsUrl: draftClient.originalMapsUrl || "",
+                    resolvedMapsUrl: draftClient.resolvedMapsUrl || "",
+                    mapsResolveSource: draftClient.mapsResolveSource || "",
+                    mapsResolveQuery: draftClient.mapsResolveQuery || "",
+
                     lat: draftClient.lat,
                     lng: draftClient.lng,
                     locationCaptured: !!locationData,
@@ -573,6 +639,25 @@ function createUpsertLeadAsClient({
             hasMapsInThisMessage
         );
 
+        const mergedOriginalMapsUrl =
+            safeString(effectiveCoords.originalMapsUrl || "") ||
+            safeString(prev.originalMapsUrl || "");
+
+        const mergedResolvedMapsUrl =
+            hasMapsInThisMessage
+                ? safeString(effectiveCoords.resolvedUrl || "")
+                : safeString(prev.resolvedMapsUrl || "");
+
+        const mergedMapsResolveSource =
+            hasMapsInThisMessage
+                ? safeString(effectiveCoords.source || "")
+                : safeString(prev.mapsResolveSource || "");
+
+        const mergedMapsResolveQuery =
+            hasMapsInThisMessage
+                ? safeString(effectiveCoords.geocodeQuery || "")
+                : safeString(prev.mapsResolveQuery || "");
+
         const mergedClientBase = {
             ...prev,
 
@@ -615,6 +700,10 @@ function createUpsertLeadAsClient({
                 generatedMapsUrl,
                 hasMapsInThisMessage
             ),
+            originalMapsUrl: mergedOriginalMapsUrl,
+            resolvedMapsUrl: mergedResolvedMapsUrl,
+            mapsResolveSource: mergedMapsResolveSource,
+            mapsResolveQuery: mergedMapsResolveQuery,
 
             lat: mergedCoords.lat,
             lng: mergedCoords.lng,
@@ -683,6 +772,11 @@ function createUpsertLeadAsClient({
 
             address: mergedClient.address,
             mapsUrl: mergedClient.mapsUrl,
+            originalMapsUrl: mergedClient.originalMapsUrl,
+            resolvedMapsUrl: mergedClient.resolvedMapsUrl,
+            mapsResolveSource: mergedClient.mapsResolveSource,
+            mapsResolveQuery: mergedClient.mapsResolveQuery,
+
             lat: mergedClient.lat,
             lng: mergedClient.lng,
             currentLeadMapsConfirmedAt: mergedClient.currentLeadMapsConfirmedAt,
@@ -755,7 +849,13 @@ function createUpsertLeadAsClient({
                 verificationStatus: mergedClient.verificationStatus,
                 parseStatus: finalParseStatus,
                 processedAt: now,
+
                 mapsUrl: mergedClient.mapsUrl || "",
+                originalMapsUrl: mergedClient.originalMapsUrl || "",
+                resolvedMapsUrl: mergedClient.resolvedMapsUrl || "",
+                mapsResolveSource: mergedClient.mapsResolveSource || "",
+                mapsResolveQuery: mergedClient.mapsResolveQuery || "",
+
                 lat: mergedClient.lat ?? null,
                 lng: mergedClient.lng ?? null,
                 locationCaptured: !!locationData,

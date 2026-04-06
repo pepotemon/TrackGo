@@ -44,11 +44,30 @@ function hasValidCoords(lat, lng) {
 
 function buildGoogleMapsUrlFromCoords(lat, lng) {
     if (!hasValidCoords(lat, lng)) return "";
-    return `https://www.google.com/maps?q=${lat},${lng}`;
+    return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+}
+
+function isGoogleMapsStaticAssetUrl(url) {
+    const u = safeLower(url);
+    if (!u) return false;
+
+    return (
+        u.includes("/maps/api/staticmap") ||
+        u.includes("staticmap?") ||
+        u.includes("/maps/api/streetview") ||
+        u.includes("/maps/vt?") ||
+        u.includes("/vt?") ||
+        u.includes("googleusercontent.com/map") ||
+        u.includes("gstatic.com/map") ||
+        u.includes("maps.googleapis.com/maps/api/staticmap")
+    );
 }
 
 function looksLikeMapsUrl(url) {
     const u = safeLower(url);
+    if (!u) return false;
+    if (isGoogleMapsStaticAssetUrl(u)) return false;
+
     return (
         u.includes("google.com/maps") ||
         u.includes("maps.app.goo.gl") ||
@@ -61,6 +80,22 @@ function looksLikeMapsUrl(url) {
     );
 }
 
+function decodeHtmlEntities(value) {
+    return safeString(value)
+        .replace(/&amp;/gi, "&")
+        .replace(/&#38;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'");
+}
+
+function cleanExtractedUrl(raw) {
+    return cleanupExtractedText(decodeHtmlEntities(raw))
+        .replace(/[)\],.;"'<>\\]+$/g, "")
+        .trim();
+}
+
 function extractGoogleMapsUrlFromText(text) {
     const source = safeString(text);
     if (!source) return "";
@@ -68,7 +103,7 @@ function extractGoogleMapsUrlFromText(text) {
     const matches = source.match(/(https?:\/\/[^\s]+)/gi) || [];
 
     for (const raw of matches) {
-        const cleaned = cleanupExtractedText(raw).replace(/[)\],.;]+$/g, "");
+        const cleaned = cleanExtractedUrl(raw);
         if (looksLikeMapsUrl(cleaned)) return cleaned;
     }
 
@@ -169,6 +204,7 @@ module.exports = {
     roundCoord,
     hasValidCoords,
     buildGoogleMapsUrlFromCoords,
+    isGoogleMapsStaticAssetUrl,
     looksLikeMapsUrl,
     extractGoogleMapsUrlFromText,
     looksLikeAddressPattern,

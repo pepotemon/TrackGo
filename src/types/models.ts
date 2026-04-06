@@ -8,8 +8,9 @@ export type UserRole = "admin" | "user";
  * - city: ciudad/municipio principal
  * - district: barrio / distrito / zona puntual
  * - state: estado completo (uso excepcional)
+ * - country: país completo (reservado / soporte backend)
  */
-export type UserGeoCoverageType = "city" | "district" | "state";
+export type UserGeoCoverageType = "city" | "district" | "state" | "country";
 
 /**
  * ✅ Cobertura territorial asignada al usuario
@@ -98,6 +99,19 @@ export type UserDoc = {
      * primera ciudad principal visible
      */
     primaryGeoCoverageLabel?: string | null;
+
+    /**
+     * 🚀 Auto-assign config
+     */
+    autoAssignEnabled?: boolean;
+    autoAssignPriority?: number;
+    autoAssignDailyLimit?: number | null;
+    assignmentMode?:
+    | "round_robin"
+    | "least_loaded"
+    | "coverage_auto"
+    | "coverage_manual"
+    | "manual";
 };
 
 // ----------------------
@@ -197,16 +211,6 @@ export type ClientLeadHistoryBucket = "incomplete" | "not_suitable";
  */
 export type ClientGeoConfidence = "high" | "medium" | "low";
 
-/**
- * ✅ Nuevo:
- * geo comercial / operativo (trackgo)
- * - geoCityLabel: plaza/hub comercial detectado
- * - geoOutOfCoverage: true si cayó fuera del radio operativo
- *
- * ✅ Nuevo:
- * geo administrativo real (reverse geocoding)
- * - ciudad / estado / país detectados por coordenadas reales
- */
 export type ClientDoc = {
     id: string;
 
@@ -434,6 +438,13 @@ export type ClientDoc = {
      * geoAdminCityLabel || geoNearestHubLabel || geoState...
      */
     geoAdminDisplayLabel?: string | null;
+
+    /**
+     * 🚀 Auto-assign metadata
+     */
+    autoAssignedAt?: number | null;
+    autoAssignMatchType?: "city" | "hub_city" | "state" | "country" | null;
+    autoAssignCoverageKey?: string | null;
 };
 
 // ----------------------

@@ -10,11 +10,32 @@ const {
     hasValidCoords,
     buildGoogleMapsUrlFromCoords,
     extractGoogleMapsUrlFromText,
+    looksLikeMapsUrl,
+    isGoogleMapsStaticAssetUrl,
 } = require("../utils/geo");
 const { appendClientMessage } = require("./manualReply");
+const { autoAssignLead } = require("../assignments/autoAssignLead");
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function pickInboundOriginalMapsUrl({ textBody, locationData }) {
+    const textMapsUrl = extractGoogleMapsUrlFromText(textBody);
+
+    if (textMapsUrl && looksLikeMapsUrl(textMapsUrl) && !isGoogleMapsStaticAssetUrl(textMapsUrl)) {
+        return textMapsUrl;
+    }
+
+    if (locationData?.mapsUrl && looksLikeMapsUrl(locationData.mapsUrl) && !isGoogleMapsStaticAssetUrl(locationData.mapsUrl)) {
+        return locationData.mapsUrl;
+    }
+
+    if (hasValidCoords(locationData?.lat, locationData?.lng)) {
+        return buildGoogleMapsUrlFromCoords(locationData.lat, locationData.lng);
+    }
+
+    return "";
 }
 
 function createProcessIncomingWhatsappMessage({
@@ -89,6 +110,10 @@ function createProcessIncomingWhatsappMessage({
             }
 
             const now = Date.now();
+            const originalMapsUrl = pickInboundOriginalMapsUrl({
+                textBody,
+                locationData,
+            });
 
             await inboxRef.set(
                 {
@@ -104,10 +129,13 @@ function createProcessIncomingWhatsappMessage({
                     dayKey: dayKeyFromMs(now),
                     parseStatus: "processing",
                     status: "processing",
-                    mapsUrl:
-                        locationData?.mapsUrl ||
-                        extractGoogleMapsUrlFromText(textBody) ||
-                        "",
+
+                    mapsUrl: originalMapsUrl,
+                    originalMapsUrl,
+                    resolvedMapsUrl: "",
+                    mapsResolveSource: "",
+                    mapsResolveQuery: "",
+
                     lat: locationData?.lat ?? null,
                     lng: locationData?.lng ?? null,
                     locationAddress: locationData?.address || "",
@@ -160,6 +188,7 @@ function createProcessIncomingWhatsappMessage({
                     messageId,
                     contactWaId: waId,
                     locationData,
+                    originalMapsUrl,
                 });
 
                 if (result?.clientId) {
@@ -178,12 +207,25 @@ function createProcessIncomingWhatsappMessage({
                             locationCaptured: !!locationData,
                             lat: locationData?.lat ?? null,
                             lng: locationData?.lng ?? null,
-                            mapsUrl:
-                                locationData?.mapsUrl ||
-                                extractGoogleMapsUrlFromText(textBody) ||
-                                "",
+
+                            originalMapsUrl: originalMapsUrl || "",
+                            resolvedMapsUrl: safeString(result?.mergedClient?.resolvedMapsUrl || ""),
+                            mapsUrl: safeString(result?.mergedClient?.mapsUrl || ""),
+                            mapsResolveSource: safeString(result?.mergedClient?.mapsResolveSource || ""),
+                            mapsResolveQuery: safeString(result?.mergedClient?.mapsResolveQuery || ""),
                         },
                     });
+                }
+
+                if (result?.clientId && result?.mergedClient) {
+                    try {
+                        await autoAssignLead({
+                            id: result.clientId,
+                            ...result.mergedClient,
+                        });
+                    } catch (autoAssignError) {
+                        console.error("[AUTO ASSIGN] error:", autoAssignError);
+                    }
                 }
 
                 await inboxRef.set(
@@ -222,7 +264,13 @@ function createProcessIncomingWhatsappMessage({
                         verificationStatus: safeString(
                             result?.mergedClient?.verificationStatus || ""
                         ),
+
                         mapsUrl: safeString(result?.mergedClient?.mapsUrl || ""),
+                        originalMapsUrl: safeString(result?.mergedClient?.originalMapsUrl || originalMapsUrl || ""),
+                        resolvedMapsUrl: safeString(result?.mergedClient?.resolvedMapsUrl || ""),
+                        mapsResolveSource: safeString(result?.mergedClient?.mapsResolveSource || ""),
+                        mapsResolveQuery: safeString(result?.mergedClient?.mapsResolveQuery || ""),
+
                         lat: result?.mergedClient?.lat ?? null,
                         lng: result?.mergedClient?.lng ?? null,
                     },

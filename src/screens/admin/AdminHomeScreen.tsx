@@ -41,7 +41,8 @@ type AdminAction = {
     | "/admin/users"
     | "/admin/clients"
     | "/admin/accounting"
-    | "/admin/leads";
+    | "/admin/leads"
+    | "/admin/auto-assign-history";
 };
 
 type LeadsRangeMode = "week" | "month";
@@ -780,6 +781,35 @@ export default function AdminHomeScreen() {
                                     {leadsRangeMode === "week" ? "Semana actual" : "Mes actual"} · Cola activa:{" "}
                                     {visibleLeadStats.activeQueue} · Total: {visibleLeadStats.total}
                                 </Text>
+
+                                <View style={styles.leadsFooterActions}>
+                                    <Pressable
+                                        onPress={(e) => {
+                                            e.stopPropagation();
+                                            router.push({ pathname: "/admin/auto-assign-history" as any });
+                                        }}
+                                        style={({ pressed }) => [
+                                            styles.secondaryActionBtn,
+                                            pressed && styles.pressed,
+                                        ]}
+                                    >
+                                        <View style={styles.secondaryActionIconWrap}>
+                                            <Ionicons
+                                                name="flash-outline"
+                                                size={16}
+                                                color={COLORS.primaryBright}
+                                            />
+                                        </View>
+                                        <Text style={styles.secondaryActionText}>
+                                            Autoasignaciones de hoy
+                                        </Text>
+                                        <Ionicons
+                                            name="chevron-forward-outline"
+                                            size={16}
+                                            color={COLORS.softText}
+                                        />
+                                    </Pressable>
+                                </View>
                             </Pressable>
                         </ScrollView>
 
@@ -1070,6 +1100,40 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         flexWrap: "wrap",
         gap: 8,
+    },
+
+    leadsFooterActions: {
+        marginTop: 2,
+    },
+
+    secondaryActionBtn: {
+        minHeight: 44,
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+
+    secondaryActionIconWrap: {
+        width: 28,
+        height: 28,
+        borderRadius: 10,
+        backgroundColor: "rgba(90,200,250,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(90,200,250,0.20)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    secondaryActionText: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 12,
+        fontWeight: "900",
     },
 
     bottomNavBar: {

@@ -7,6 +7,7 @@ import {
     Pressable,
     ScrollView,
     StyleSheet,
+    Switch,
     Text,
     TextInput,
     View,
@@ -28,7 +29,10 @@ function normalizeLooseText(value?: string | null) {
     return safeString(value)
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+        .toLowerCase()
+        .replace(/[\s\-\/]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
 }
 
 function onlyNumberLike(text: string) {
@@ -133,6 +137,9 @@ export default function AdminCreateUserModal({
     const [newCoverageCity, setNewCoverageCity] = useState("");
     const [newCoverageList, setNewCoverageList] = useState<UserGeoCoverage[]>([]);
 
+    const [autoAssignEnabled, setAutoAssignEnabled] = useState(false);
+    const [autoAssignDailyLimit, setAutoAssignDailyLimit] = useState("");
+
     const [err, setErr] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
 
@@ -150,6 +157,8 @@ export default function AdminCreateUserModal({
         setNewCoverageState("");
         setNewCoverageCity("");
         setNewCoverageList([]);
+        setAutoAssignEnabled(false);
+        setAutoAssignDailyLimit("");
         setErr(null);
         setSaving(false);
     };
@@ -184,9 +193,16 @@ export default function AdminCreateUserModal({
         const cleanEmail = email.trim();
         const cleanWhatsapp = normalizePhone(whatsappPhoneNew);
         const rate = Number(onlyNumberLike(ratePerVisitNew)) || 0;
+        const dailyLimitRaw = onlyNumberLike(autoAssignDailyLimit);
+        const dailyLimit = dailyLimitRaw ? Number(dailyLimitRaw) : null;
 
         if (!cleanUid) {
             setErr("UID es obligatorio. Copia el UID desde Firebase Auth.");
+            return;
+        }
+
+        if (autoAssignEnabled && !normalizedCoverage.length) {
+            setErr("Para activar asignación automática, agrega al menos una cobertura.");
             return;
         }
 
@@ -203,6 +219,11 @@ export default function AdminCreateUserModal({
                 whatsappPhone: cleanWhatsapp,
                 geoCoverage: normalizedCoverage,
                 primaryGeoCoverageLabel: normalizedCoverage[0]?.displayLabel ?? null,
+
+                autoAssignEnabled,
+                autoAssignDailyLimit: autoAssignEnabled ? dailyLimit : null,
+                autoAssignPriority: 1,
+                assignmentMode: "round_robin",
             };
 
             await upsertUserDoc(docData);
@@ -382,6 +403,71 @@ export default function AdminCreateUserModal({
                                 ) : (
                                     <Text style={styles.coverageEmpty}>Sin coberturas aún</Text>
                                 )}
+                            </View>
+
+                            <View style={styles.autoAssignCard}>
+                                <View style={styles.autoAssignHeader}>
+                                    <View style={{ flex: 1 }}>
+                                        <Text style={styles.autoAssignTitle}>Asignación automática</Text>
+                                        <Text style={styles.autoAssignHint}>
+                                            Si está activa, este usuario podrá recibir leads automáticamente según su cobertura.
+                                        </Text>
+                                    </View>
+
+                                    <Switch
+                                        value={autoAssignEnabled}
+                                        onValueChange={setAutoAssignEnabled}
+                                        trackColor={{
+                                            false: "rgba(255,255,255,0.12)",
+                                            true: "rgba(37,99,235,0.45)",
+                                        }}
+                                        thumbColor={autoAssignEnabled ? "#2563EB" : "#9CA3AF"}
+                                    />
+                                </View>
+
+                                <View style={styles.autoAssignStatusRow}>
+                                    <View
+                                        style={[
+                                            styles.autoAssignPill,
+                                            autoAssignEnabled
+                                                ? styles.autoAssignPillActive
+                                                : styles.autoAssignPillInactive,
+                                        ]}
+                                    >
+                                        <Ionicons
+                                            name={autoAssignEnabled ? "flash-outline" : "pause-outline"}
+                                            size={13}
+                                            color={autoAssignEnabled ? "#93C5FD" : COLORS.muted}
+                                        />
+                                        <Text
+                                            style={[
+                                                styles.autoAssignPillText,
+                                                autoAssignEnabled
+                                                    ? styles.autoAssignPillTextActive
+                                                    : styles.autoAssignPillTextInactive,
+                                            ]}
+                                        >
+                                            {autoAssignEnabled ? "ACTIVA" : "INACTIVA"}
+                                        </Text>
+                                    </View>
+                                </View>
+
+                                {autoAssignEnabled ? (
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Límite diario (opcional)</Text>
+                                        <TextInput
+                                            placeholder="Ej: 20"
+                                            placeholderTextColor={COLORS.muted}
+                                            value={autoAssignDailyLimit}
+                                            onChangeText={(t) => setAutoAssignDailyLimit(onlyNumberLike(t))}
+                                            keyboardType="numeric"
+                                            style={styles.input}
+                                        />
+                                        <Text style={styles.hintSmall}>
+                                            Déjalo vacío si no quieres límite por día.
+                                        </Text>
+                                    </View>
+                                ) : null}
                             </View>
 
                             {err ? (
@@ -591,6 +677,63 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "800",
         opacity: 0.8,
+    },
+
+    autoAssignCard: {
+        gap: 10,
+        padding: 12,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "rgba(255,255,255,0.03)",
+    },
+    autoAssignHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+    },
+    autoAssignTitle: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    autoAssignHint: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "800",
+        lineHeight: 16,
+        marginTop: 2,
+    },
+    autoAssignStatusRow: {
+        flexDirection: "row",
+        alignItems: "center",
+    },
+    autoAssignPill: {
+        minHeight: 30,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    autoAssignPillActive: {
+        backgroundColor: "rgba(37,99,235,0.14)",
+        borderColor: "rgba(37,99,235,0.32)",
+    },
+    autoAssignPillInactive: {
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderColor: "rgba(255,255,255,0.10)",
+    },
+    autoAssignPillText: {
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    autoAssignPillTextActive: {
+        color: "#93C5FD",
+    },
+    autoAssignPillTextInactive: {
+        color: COLORS.muted,
     },
 
     errorBox: {

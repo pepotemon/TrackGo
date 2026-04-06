@@ -7,6 +7,7 @@ const {
     roundCoord,
     hasValidCoords,
     looksLikeMapsUrl,
+    isGoogleMapsStaticAssetUrl,
 } = require("./geo");
 
 function tryDecode(value) {
@@ -20,13 +21,37 @@ function tryDecode(value) {
     }
 }
 
-function extractCoordsFromAnyText(text) {
+function decodeHtmlEntities(value) {
+    return safeString(value)
+        .replace(/&amp;/gi, "&")
+        .replace(/&#38;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'");
+}
+
+function normalizeFetchedUrl(url) {
+    return decodeHtmlEntities(tryDecode(url)).trim();
+}
+
+function isNavigableGoogleMapsUrl(url) {
+    const u = normalizeFetchedUrl(url).toLowerCase();
+    if (!u) return false;
+    if (!looksLikeMapsUrl(u)) return false;
+    if (isGoogleMapsStaticAssetUrl(u)) return false;
+
+    return true;
+}
+
+function extractCoordsFromAnyText(text, options = {}) {
     const source = safeString(text);
     if (!source) {
         return { lat: null, lng: null };
     }
 
-    const decoded = tryDecode(source);
+    const decoded = normalizeFetchedUrl(source);
+    const treatAsAsset = options?.treatAsAsset === true;
 
     const patterns = [
         /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
@@ -36,11 +61,14 @@ function extractCoordsFromAnyText(text) {
         /[?&]saddr=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
         /[?&]daddr=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
         /[?&]ll=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-        /[?&]center=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
         /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
         /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/i,
         /place\/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
         /(?:^|[^0-9-])(-?\d{1,2}\.\d+),\s*(-?\d{1,3}\.\d+)(?:[^0-9]|$)/i,
+    ];
+
+    const assetOnlyPatterns = [
+        /[?&]center=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
     ];
 
     for (const pattern of patterns) {
@@ -55,19 +83,37 @@ function extractCoordsFromAnyText(text) {
         }
     }
 
+    if (!treatAsAsset) {
+        for (const pattern of assetOnlyPatterns) {
+            const match = decoded.match(pattern);
+            if (!match?.[1] || !match?.[2]) continue;
+
+            const lat = roundCoord(match[1]);
+            const lng = roundCoord(match[2]);
+
+            if (hasValidCoords(lat, lng)) {
+                return { lat, lng };
+            }
+        }
+    }
+
     return { lat: null, lng: null };
 }
 
 function extractMapsUrlsFromHtml(html) {
-    const source = safeString(html);
+    const source = decodeHtmlEntities(safeString(html));
     if (!source) return [];
 
     const matches = source.match(/https?:\/\/[^\s"'<>\\]+/gi) || [];
+
     const cleaned = matches
         .map((raw) =>
-            cleanupExtractedText(raw).replace(/[)\],.;"'<>\\]+$/g, "")
+            cleanupExtractedText(raw)
+                .replace(/[)\],.;"'<>\\]+$/g, "")
+                .trim()
         )
-        .filter((url) => looksLikeMapsUrl(url));
+        .map((url) => normalizeFetchedUrl(url))
+        .filter((url) => isNavigableGoogleMapsUrl(url));
 
     return Array.from(new Set(cleaned));
 }
@@ -78,7 +124,7 @@ function extractCoordsFromHtmlMeta(html) {
         return { lat: null, lng: null };
     }
 
-    const decoded = tryDecode(source);
+    const decoded = normalizeFetchedUrl(source);
 
     const hints = [
         /"center":\s*\{\s*"lat":\s*(-?\d+(?:\.\d+)?),\s*"lng":\s*(-?\d+(?:\.\d+)?)\s*\}/i,
@@ -127,6 +173,9 @@ function stripGoogleMapsNoise(value) {
         .replace(/\broute\b/gi, "")
         .replace(/\bshare\b/gi, "")
         .replace(/\bplace\b/gi, "")
+        .replace(/\bstatic map\b/gi, "")
+        .replace(/\bmapa estatico\b/gi, "")
+        .replace(/\bmapa estático\b/gi, "")
         .replace(/\s+/g, " ")
         .trim();
 }
@@ -157,7 +206,7 @@ function extractMetaContent(html, propertyOrName) {
     for (const pattern of patterns) {
         const match = source.match(pattern);
         if (match?.[1]) {
-            return cleanupCandidateText(match[1]);
+            return cleanupCandidateText(decodeHtmlEntities(match[1]));
         }
     }
 
@@ -169,14 +218,14 @@ function extractTitleText(html) {
     if (!source) return "";
 
     const match = source.match(/<title[^>]*>([^<]+)<\/title>/i);
-    return cleanupCandidateText(match?.[1] || "");
+    return cleanupCandidateText(decodeHtmlEntities(match?.[1] || ""));
 }
 
 function extractPlaceTextFromUrl(url) {
     const source = safeString(url);
     if (!source) return [];
 
-    const decoded = tryDecode(source);
+    const decoded = normalizeFetchedUrl(source);
     const out = [];
 
     const patterns = [
@@ -219,9 +268,9 @@ function extractTextCandidatesFromHtml(html) {
     );
 
     if (jsonLdMatches?.[1]) {
-        const street = cleanupCandidateText(jsonLdMatches[1]);
-        const city = cleanupCandidateText(jsonLdMatches[2]);
-        const state = cleanupCandidateText(jsonLdMatches[3]);
+        const street = cleanupCandidateText(decodeHtmlEntities(jsonLdMatches[1]));
+        const city = cleanupCandidateText(decodeHtmlEntities(jsonLdMatches[2]));
+        const state = cleanupCandidateText(decodeHtmlEntities(jsonLdMatches[3]));
         const combined = [street, city, state].filter(Boolean).join(", ");
         if (combined) candidates.push(combined);
     }
@@ -388,7 +437,7 @@ async function fetchUrlFollowingRedirects(url) {
             },
         });
 
-        const finalUrl = safeString(response?.url || source);
+        const finalUrl = normalizeFetchedUrl(response?.url || source);
         let html = "";
 
         try {
@@ -405,7 +454,7 @@ async function fetchUrlFollowingRedirects(url) {
         };
     } catch {
         return {
-            finalUrl: source,
+            finalUrl: normalizeFetchedUrl(source),
             html: "",
             ok: false,
             status: 0,
@@ -414,9 +463,9 @@ async function fetchUrlFollowingRedirects(url) {
 }
 
 async function resolveCoordsFromGoogleMapsUrl(url) {
-    const originalUrl = safeString(url);
+    const originalUrl = normalizeFetchedUrl(url);
 
-    if (!originalUrl || !looksLikeMapsUrl(originalUrl)) {
+    if (!originalUrl || !isNavigableGoogleMapsUrl(originalUrl)) {
         return {
             lat: null,
             lng: null,
@@ -426,7 +475,9 @@ async function resolveCoordsFromGoogleMapsUrl(url) {
         };
     }
 
-    const direct = extractCoordsFromAnyText(originalUrl);
+    const direct = extractCoordsFromAnyText(originalUrl, {
+        treatAsAsset: isGoogleMapsStaticAssetUrl(originalUrl),
+    });
     if (hasValidCoords(direct.lat, direct.lng)) {
         return {
             lat: direct.lat,
@@ -438,25 +489,32 @@ async function resolveCoordsFromGoogleMapsUrl(url) {
     }
 
     const fetched = await fetchUrlFollowingRedirects(originalUrl);
+    const finalNavigableUrl = isNavigableGoogleMapsUrl(fetched.finalUrl)
+        ? fetched.finalUrl
+        : originalUrl;
 
-    const fromFinalUrl = extractCoordsFromAnyText(fetched.finalUrl);
+    const fromFinalUrl = extractCoordsFromAnyText(finalNavigableUrl, {
+        treatAsAsset: isGoogleMapsStaticAssetUrl(finalNavigableUrl),
+    });
     if (hasValidCoords(fromFinalUrl.lat, fromFinalUrl.lng)) {
         return {
             lat: fromFinalUrl.lat,
             lng: fromFinalUrl.lng,
             source: "maps_url_redirect",
-            resolvedUrl: fetched.finalUrl || originalUrl,
+            resolvedUrl: finalNavigableUrl,
             geocodeQuery: "",
         };
     }
 
-    const fromHtml = extractCoordsFromAnyText(fetched.html);
+    const fromHtml = extractCoordsFromAnyText(fetched.html, {
+        treatAsAsset: false,
+    });
     if (hasValidCoords(fromHtml.lat, fromHtml.lng)) {
         return {
             lat: fromHtml.lat,
             lng: fromHtml.lng,
             source: "maps_html_text",
-            resolvedUrl: fetched.finalUrl || originalUrl,
+            resolvedUrl: finalNavigableUrl,
             geocodeQuery: "",
         };
     }
@@ -467,14 +525,19 @@ async function resolveCoordsFromGoogleMapsUrl(url) {
             lat: fromHtmlMeta.lat,
             lng: fromHtmlMeta.lng,
             source: "maps_html_meta",
-            resolvedUrl: fetched.finalUrl || originalUrl,
+            resolvedUrl: finalNavigableUrl,
             geocodeQuery: "",
         };
     }
 
     const htmlUrls = extractMapsUrlsFromHtml(fetched.html);
     for (const nestedUrl of htmlUrls) {
-        const nestedCoords = extractCoordsFromAnyText(nestedUrl);
+        if (!isNavigableGoogleMapsUrl(nestedUrl)) continue;
+
+        const nestedCoords = extractCoordsFromAnyText(nestedUrl, {
+            treatAsAsset: isGoogleMapsStaticAssetUrl(nestedUrl),
+        });
+
         if (hasValidCoords(nestedCoords.lat, nestedCoords.lng)) {
             return {
                 lat: nestedCoords.lat,
@@ -487,7 +550,7 @@ async function resolveCoordsFromGoogleMapsUrl(url) {
     }
 
     const geocodeQueries = buildGeocodeQueries(
-        fetched.finalUrl || originalUrl,
+        finalNavigableUrl,
         fetched.html
     );
 
@@ -502,7 +565,7 @@ async function resolveCoordsFromGoogleMapsUrl(url) {
                 lat: geocoded.lat,
                 lng: geocoded.lng,
                 source: "maps_text_geocode",
-                resolvedUrl: fetched.finalUrl || originalUrl,
+                resolvedUrl: finalNavigableUrl,
                 geocodeQuery: geocoded.label || query,
             };
         }
@@ -512,7 +575,7 @@ async function resolveCoordsFromGoogleMapsUrl(url) {
         lat: null,
         lng: null,
         source: "maps_unresolved",
-        resolvedUrl: fetched.finalUrl || originalUrl,
+        resolvedUrl: finalNavigableUrl,
         geocodeQuery: "",
     };
 }
