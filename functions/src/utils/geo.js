@@ -6,15 +6,27 @@ const {
     normalizeLooseText,
 } = require("./text");
 
-function dayKeyFromDate(d) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
+const TRACKGO_TIME_ZONE = "America/Belem";
+
+function dayKeyFromDate(d, timeZone = TRACKGO_TIME_ZONE) {
+    const date = d instanceof Date ? d : new Date(d);
+
+    const parts = new globalThis.Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(date);
+
+    const year = parts.find((p) => p.type === "year")?.value ?? "0000";
+    const month = parts.find((p) => p.type === "month")?.value ?? "00";
+    const day = parts.find((p) => p.type === "day")?.value ?? "00";
+
+    return `${year}-${month}-${day}`;
 }
 
-function dayKeyFromMs(ms) {
-    return dayKeyFromDate(new Date(ms));
+function dayKeyFromMs(ms, timeZone = TRACKGO_TIME_ZONE) {
+    return dayKeyFromDate(new Date(ms), timeZone);
 }
 
 function isLikelyCep(text) {
@@ -198,6 +210,7 @@ function looksLikeBrazilAddress(text) {
 }
 
 module.exports = {
+    TRACKGO_TIME_ZONE,
     dayKeyFromDate,
     dayKeyFromMs,
     isLikelyCep,

@@ -42,7 +42,7 @@ type AutoAssignLogDoc = {
     coverageKey?: string | null;
 
     createdAt: number;
-    dayKey: string;
+    dayKey?: string;
     mode?: string | null;
 };
 
@@ -55,7 +55,11 @@ function safeText(v?: string | null) {
 }
 
 function todayDayKey() {
-    return new Date().toISOString().slice(0, 10);
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
 }
 
 function formatHour(ms?: number | null) {
@@ -73,10 +77,10 @@ function formatHour(ms?: number | null) {
 function matchTypeLabel(matchType?: string | null) {
     const t = safeString(matchType);
 
-    if (t === "city") return " Match Ciudad";
-    if (t === "hub_city") return "Hub";
-    if (t === "state") return "Estado";
-    if (t === "country") return "País";
+    if (t === "city") return "Asignado por ciudad";
+    if (t === "hub_city") return "Asignado por hub";
+    if (t === "state") return "Asignado por estado";
+    if (t === "country") return "Asignado por país";
     return "Match";
 }
 

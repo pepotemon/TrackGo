@@ -1,4 +1,5 @@
 const admin = require("firebase-admin");
+const { dayKeyFromMs } = require("../utils/geo");
 
 function s(v) {
     return String(v ?? "").trim();
@@ -10,9 +11,11 @@ async function logAutoAssign({
     matchType,
     coverageKey,
     coverageItem,
+    createdAt,
+    dayKey,
 }) {
-    const now = Date.now();
-    const dayKey = new Date(now).toISOString().slice(0, 10);
+    const now = Number.isFinite(createdAt) ? createdAt : Date.now();
+    const resolvedDayKey = s(dayKey) || dayKeyFromMs(now);
 
     await admin.firestore().collection("autoAssignLogs").add({
         leadId: s(lead?.id),
@@ -49,7 +52,7 @@ async function logAutoAssign({
         coverageKey: s(coverageKey),
 
         createdAt: now,
-        dayKey,
+        dayKey: resolvedDayKey,
         mode: "coverage_auto",
     });
 }

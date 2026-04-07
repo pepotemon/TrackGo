@@ -1,4 +1,5 @@
 const admin = require("firebase-admin");
+const { dayKeyFromMs } = require("../utils/geo");
 const { selectAutoAssignUser } = require("./selectAutoAssignUser");
 const { logAutoAssign } = require("./autoAssignLogger");
 
@@ -32,10 +33,10 @@ async function autoAssignLead(lead) {
             coverageKey,
             coverageItem,
             stateRef,
-            dayKey,
         } = selected;
 
         const now = Date.now();
+        const dayKey = dayKeyFromMs(now);
         const clientRef = admin.firestore().collection("clients").doc(lead.id);
 
         await clientRef.update({
@@ -76,6 +77,8 @@ async function autoAssignLead(lead) {
             matchType,
             coverageKey,
             coverageItem,
+            createdAt: now,
+            dayKey,
         });
 
         console.log("[AUTO ASSIGN] assigned:", {
@@ -83,6 +86,7 @@ async function autoAssignLead(lead) {
             userId: user.id,
             matchType,
             coverageKey,
+            dayKey,
         });
     } catch (e) {
         console.error("[AUTO ASSIGN] autoAssignLead error:", e);
