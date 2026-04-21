@@ -1320,7 +1320,6 @@ export default function UserHome() {
                                 icon="checkmark"
                                 active={filter === "visited"}
                                 onPress={() => setFilter("visited")}
-                                badge={counts.visited}
                                 tint={COLORS.ok}
                                 activeTint={COLORS.ok}
                                 tone="filter"
@@ -1329,7 +1328,6 @@ export default function UserHome() {
                                 icon="close"
                                 active={filter === "rejected"}
                                 onPress={() => setFilter("rejected")}
-                                badge={counts.rejected}
                                 tint={COLORS.bad}
                                 activeTint={COLORS.bad}
                                 tone="filter"
@@ -1338,7 +1336,6 @@ export default function UserHome() {
                                 icon="apps-outline"
                                 active={filter === "all"}
                                 onPress={() => setFilter("all")}
-                                badge={counts.weekVisible}
                                 tint={COLORS.navFilter}
                                 activeTint={COLORS.navFilterBright}
                                 tone="filter"
@@ -1438,52 +1435,58 @@ export default function UserHome() {
 
             <Modal visible={noteModalOpen} transparent animationType="fade" onRequestClose={closeNoteModal}>
                 <Pressable style={styles.modalBackdrop} onPress={closeNoteModal} />
-                <View style={[styles.modalCard, { bottom: Math.max(16, insets.bottom + 8) }]}>
-                    <View style={styles.modalHeader}>
-                        <Text style={styles.modalTitle}>Nota del cliente</Text>
-                        <Pressable
-                            onPress={closeNoteModal}
-                            style={({ pressed }) => [styles.modalClose, pressed && styles.pressed]}
-                        >
-                            <Ionicons name="close" size={18} color={COLORS.text} />
-                        </Pressable>
+                <KeyboardAvoidingView
+                    behavior={Platform.OS === "ios" ? "padding" : "height"}
+                    style={styles.noteModalWrap}
+                    keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
+                >
+                    <View style={[styles.modalCard, styles.noteModalCard, { marginBottom: Math.max(16, insets.bottom + 8) }]}>
+                        <View style={styles.modalHeader}>
+                            <Text style={styles.modalTitle}>Nota del cliente</Text>
+                            <Pressable
+                                onPress={closeNoteModal}
+                                style={({ pressed }) => [styles.modalClose, pressed && styles.pressed]}
+                            >
+                                <Ionicons name="close" size={18} color={COLORS.text} />
+                            </Pressable>
+                        </View>
+
+                        <TextInput
+                            value={noteDraft}
+                            onChangeText={setNoteDraft}
+                            placeholder="Ej: Volver a las 5pm / Hablar con el dueño / Está ocupado por la mañana…"
+                            placeholderTextColor={COLORS.muted}
+                            style={styles.noteInput}
+                            multiline
+                        />
+
+                        <View style={styles.modalActions}>
+                            <Pressable
+                                onPress={clearNote}
+                                style={({ pressed }) => [
+                                    styles.modalBtn,
+                                    styles.modalBtnDanger,
+                                    pressed && styles.pressed,
+                                ]}
+                            >
+                                <Ionicons name="trash-outline" size={18} color={COLORS.bad} />
+                                <Text style={styles.modalBtnTextDanger}>Borrar</Text>
+                            </Pressable>
+
+                            <Pressable
+                                onPress={saveNote}
+                                style={({ pressed }) => [
+                                    styles.modalBtn,
+                                    styles.modalBtnPrimary,
+                                    pressed && styles.pressed,
+                                ]}
+                            >
+                                <Ionicons name="save-outline" size={18} color={COLORS.text} />
+                                <Text style={styles.modalBtnText}>Guardar</Text>
+                            </Pressable>
+                        </View>
                     </View>
-
-                    <TextInput
-                        value={noteDraft}
-                        onChangeText={setNoteDraft}
-                        placeholder="Ej: Volver a las 5pm / Hablar con el dueño / Está ocupado por la mañana…"
-                        placeholderTextColor={COLORS.muted}
-                        style={styles.noteInput}
-                        multiline
-                    />
-
-                    <View style={styles.modalActions}>
-                        <Pressable
-                            onPress={clearNote}
-                            style={({ pressed }) => [
-                                styles.modalBtn,
-                                styles.modalBtnDanger,
-                                pressed && styles.pressed,
-                            ]}
-                        >
-                            <Ionicons name="trash-outline" size={18} color={COLORS.bad} />
-                            <Text style={styles.modalBtnTextDanger}>Borrar</Text>
-                        </Pressable>
-
-                        <Pressable
-                            onPress={saveNote}
-                            style={({ pressed }) => [
-                                styles.modalBtn,
-                                styles.modalBtnPrimary,
-                                pressed && styles.pressed,
-                            ]}
-                        >
-                            <Ionicons name="save-outline" size={18} color={COLORS.text} />
-                            <Text style={styles.modalBtnText}>Guardar</Text>
-                        </Pressable>
-                    </View>
-                </View>
+                </KeyboardAvoidingView>
             </Modal>
 
             <Modal visible={rejectModalOpen} transparent animationType="fade" onRequestClose={resetRejectFlow}>
@@ -2320,6 +2323,11 @@ const styles = StyleSheet.create({
         ...StyleSheet.absoluteFillObject,
         backgroundColor: "rgba(0,0,0,0.55)",
     },
+    noteModalWrap: {
+        flex: 1,
+        justifyContent: "flex-end",
+        paddingHorizontal: 16,
+    },
     modalCard: {
         position: "absolute",
         left: 16,
@@ -2330,6 +2338,11 @@ const styles = StyleSheet.create({
         borderColor: "rgba(255,255,255,0.08)",
         padding: 14,
         gap: 12,
+    },
+    noteModalCard: {
+        position: "relative",
+        left: undefined,
+        right: undefined,
     },
     modalHeader: {
         flexDirection: "row",
