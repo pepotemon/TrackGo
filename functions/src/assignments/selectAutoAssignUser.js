@@ -1,4 +1,5 @@
 const admin = require("firebase-admin");
+const { dayKeyFromMs } = require("../utils/geo");
 const { matchUserToLead, sn } = require("./coverageMatcher");
 
 async function countUserAssignmentsToday(dayKey, userId, coverageKey) {
@@ -11,6 +12,14 @@ async function countUserAssignmentsToday(dayKey, userId, coverageKey) {
         .get();
 
     return snap.size || 0;
+}
+
+function rankCoverageKey(key) {
+    if (key.startsWith("city:")) return 1;
+    if (key.startsWith("hub:")) return 2;
+    if (key.startsWith("state:")) return 3;
+    if (key.startsWith("country:")) return 4;
+    return 99;
 }
 
 async function selectAutoAssignUser(lead) {
@@ -36,7 +45,17 @@ async function selectAutoAssignUser(lead) {
         });
     });
 
-    if (!candidates.length) return null;
+    if (!candidates.length) {
+        console.log("[AUTO ASSIGN] no candidates:", {
+            clientId: lead?.id || "",
+            geoAdminCityLabel: lead?.geoAdminCityLabel || "",
+            geoAdminCityNormalized: lead?.geoAdminCityNormalized || "",
+            geoCityLabel: lead?.geoCityLabel || "",
+            geoCityNormalized: lead?.geoCityNormalized || "",
+            geoNearestHubLabel: lead?.geoNearestHubLabel || "",
+        });
+        return null;
+    }
 
     const grouped = new Map();
 
@@ -47,15 +66,7 @@ async function selectAutoAssignUser(lead) {
     }
 
     const preferredKeys = Array.from(grouped.keys()).sort((a, b) => {
-        const rank = (key) => {
-            if (key.startsWith("city:")) return 1;
-            if (key.startsWith("hub:")) return 2;
-            if (key.startsWith("state:")) return 3;
-            if (key.startsWith("country:")) return 4;
-            return 99;
-        };
-
-        return rank(a) - rank(b);
+        return rankCoverageKey(a) - rankCoverageKey(b);
     });
 
     const selectedCoverageKey = preferredKeys[0];
@@ -63,7 +74,7 @@ async function selectAutoAssignUser(lead) {
 
     if (!bucket.length) return null;
 
-    const dayKey = new Date().toISOString().slice(0, 10);
+    const dayKey = dayKeyFromMs(Date.now());
 
     const enriched = [];
     for (const item of bucket) {
@@ -80,6 +91,13 @@ async function selectAutoAssignUser(lead) {
                 : null;
 
         if (dailyLimit != null && userDailyCount >= dailyLimit) {
+            console.log("[AUTO ASSIGN] user skipped by daily limit:", {
+                userId: item.user.id,
+                dayKey,
+                coverageKey: selectedCoverageKey,
+                userDailyCount,
+                dailyLimit,
+            });
             continue;
         }
 
@@ -94,7 +112,14 @@ async function selectAutoAssignUser(lead) {
         });
     }
 
-    if (!enriched.length) return null;
+    if (!enriched.length) {
+        console.log("[AUTO ASSIGN] no eligible users after limits:", {
+            clientId: lead?.id || "",
+            dayKey,
+            coverageKey: selectedCoverageKey,
+        });
+        return null;
+    }
 
     const stateRef = admin
         .firestore()
@@ -123,6 +148,17 @@ async function selectAutoAssignUser(lead) {
         const aName = String(a.user?.name || a.user?.email || a.user?.id || "");
         const bName = String(b.user?.name || b.user?.email || b.user?.id || "");
         return aName.localeCompare(bName, "es", { sensitivity: "base" });
+    });
+
+    console.log("[AUTO ASSIGN] selected user:", {
+        clientId: lead?.id || "",
+        dayKey,
+        coverageKey: selectedCoverageKey,
+        matchType: enriched[0]?.matchType || "",
+        userId: enriched[0]?.user?.id || "",
+        userName: enriched[0]?.user?.name || "",
+        userDailyCount: enriched[0]?.userDailyCount ?? 0,
+        lastAssignedUserId,
     });
 
     return {

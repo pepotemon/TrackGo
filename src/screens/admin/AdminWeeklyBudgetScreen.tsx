@@ -16,12 +16,15 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AdminBackground from "../../components/admin/AdminBackground";
-
 import {
+    deleteWeeklyInvestmentGroupTemplate,
     subscribeWeeklyInvestment,
+    subscribeWeeklyInvestmentGroupTemplates,
+    syncWeeklyGroupsToTemplates,
     upsertWeeklyInvestment,
     type WeeklyInvestmentAllocations,
     type WeeklyInvestmentGroup,
+    type WeeklyInvestmentGroupTemplate,
 } from "../../data/repositories/investmentsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { UserDoc } from "../../types/models";
@@ -104,6 +107,15 @@ function draftFromRemoteGroups(
     return out;
 }
 
+function templateToDraft(template: WeeklyInvestmentGroupTemplate): GroupDraft {
+    return {
+        id: makeGroupId(),
+        name: String(template.name || "Grupo"),
+        amount: template.defaultAmount > 0 ? String(clamp2(template.defaultAmount)) : "",
+        userIds: Array.isArray(template.userIds) ? [...template.userIds] : [],
+    };
+}
+
 export default function AdminWeeklyBudgetScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -123,6 +135,7 @@ export default function AdminWeeklyBudgetScreen() {
     );
 
     const [users, setUsers] = useState<UserDoc[]>([]);
+    const [templates, setTemplates] = useState<WeeklyInvestmentGroupTemplate[]>([]);
     const [budgetDraft, setBudgetDraft] = useState<string>("0");
     const [groupDrafts, setGroupDrafts] = useState<GroupDraft[]>([]);
     const [saving, setSaving] = useState(false);
@@ -130,7 +143,6 @@ export default function AdminWeeklyBudgetScreen() {
     const [step, setStep] = useState<StepKey>("home");
     const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
 
-    // draft temporal solo mientras editas/creas un grupo
     const [editorDraft, setEditorDraft] = useState<GroupDraft | null>(null);
     const [isNewEditorDraft, setIsNewEditorDraft] = useState(false);
 
@@ -145,6 +157,14 @@ export default function AdminWeeklyBudgetScreen() {
             const u = await listUsers("user");
             setUsers(u ?? []);
         })();
+    }, []);
+
+    useEffect(() => {
+        const unsub = subscribeWeeklyInvestmentGroupTemplates((items) => {
+            setTemplates(items ?? []);
+        });
+
+        return () => unsub();
     }, []);
 
     const usersById = useMemo(() => {
@@ -221,13 +241,6 @@ export default function AdminWeeklyBudgetScreen() {
     const onChangeBudgetDraft = (txt: string) => {
         draftDirtyRef.current = true;
         setBudgetDraft(txt);
-    };
-
-    const updateGroup = (groupId: string, patch: Partial<GroupDraft>) => {
-        groupsDirtyRef.current = true;
-        setGroupDrafts((prev) =>
-            prev.map((g) => (g.id === groupId ? { ...g, ...patch } : g))
-        );
     };
 
     const removeGroup = (groupId: string) => {
@@ -384,6 +397,8 @@ export default function AdminWeeklyBudgetScreen() {
                 normalizedGroups
             );
 
+            await syncWeeklyGroupsToTemplates(normalizedGroups, weekStartKey);
+
             draftDirtyRef.current = false;
             groupsDirtyRef.current = false;
             setStep("home");
@@ -391,7 +406,10 @@ export default function AdminWeeklyBudgetScreen() {
             setEditorDraft(null);
             setIsNewEditorDraft(false);
 
-            Alert.alert("Guardado", "La inversión semanal fue guardada correctamente.");
+            Alert.alert(
+                "Guardado",
+                "La inversión semanal fue guardada y los grupos quedaron disponibles para reutilizar."
+            );
         } catch (e: any) {
             Alert.alert("Error", e?.message ?? "No se pudo guardar.");
         } finally {
@@ -420,6 +438,50 @@ export default function AdminWeeklyBudgetScreen() {
         setEditorDraft(temp);
         setIsNewEditorDraft(true);
         setStep("groupEditor");
+    };
+
+    const applyTemplate = (template: WeeklyInvestmentGroupTemplate) => {
+        const nextDraft = templateToDraft(template);
+
+        Alert.alert(
+            "Usar grupo guardado",
+            `¿Deseas agregar "${template.name}" a esta semana?`,
+            [
+                { text: "Cancelar", style: "cancel" },
+                {
+                    text: "Agregar",
+                    style: "default",
+                    onPress: () => {
+                        groupsDirtyRef.current = true;
+                        setGroupDrafts((prev) => [...prev, nextDraft]);
+                    },
+                },
+            ]
+        );
+    };
+
+    const confirmDeleteTemplate = (template: WeeklyInvestmentGroupTemplate) => {
+        Alert.alert(
+            "Eliminar grupo guardado",
+            `¿Deseas eliminar "${template.name}" de la biblioteca? Esto no borra las semanas antiguas.`,
+            [
+                { text: "Cancelar", style: "cancel" },
+                {
+                    text: "Eliminar",
+                    style: "destructive",
+                    onPress: async () => {
+                        try {
+                            await deleteWeeklyInvestmentGroupTemplate(template.id);
+                        } catch (e: any) {
+                            Alert.alert(
+                                "Error",
+                                e?.message ?? "No se pudo eliminar el grupo guardado."
+                            );
+                        }
+                    },
+                },
+            ]
+        );
     };
 
     const validGroupsCount = normalizedGroups.length;
@@ -603,7 +665,7 @@ export default function AdminWeeklyBudgetScreen() {
                     <Text style={styles.heroEyebrow}>Mi inversión de esta semana</Text>
                     <Text style={styles.heroAmount}>R$ {money(totalDraft)}</Text>
                     <Text style={styles.heroSub}>
-                        {validGroupsCount} grupos guardados · restante R$ {money(remainingDraft)}
+                        {validGroupsCount} grupos usados · restante R$ {money(remainingDraft)}
                     </Text>
 
                     <Pressable
@@ -722,57 +784,29 @@ export default function AdminWeeklyBudgetScreen() {
                         </View>
                     )}
                 </View>
-            </>
-        );
-    };
 
-    const renderBudgetStep = () => {
-        return (
-            <View style={[styles.card, styles.stepCard]}>
-                <View style={styles.stepHeader}>
-                    <View style={[styles.stepBadge, styles.stepBadgePrimary]}>
-                        <Ionicons name="wallet-outline" size={13} color={COLORS.primaryBright} />
-                        <Text style={styles.stepBadgeText}>Paso 1</Text>
-                    </View>
-
+                <View style={styles.card}>
                     <View style={styles.titleRow}>
-                        <View style={[styles.titleIconWrap, styles.titleIconWrapCyan]}>
-                            <Ionicons name="cash-outline" size={16} color={COLORS.primaryBright} />
+                        <View style={[styles.titleIconWrap, styles.titleIconWrapBlueSoft]}>
+                            <Ionicons name="time-outline" size={16} color={COLORS.info} />
                         </View>
-                        <Text style={styles.sectionTitle}>Añadir presupuesto</Text>
+                        <Text style={styles.sectionTitle}>Biblioteca reutilizable</Text>
                     </View>
 
-                    <Text style={styles.stepHint}>
-                        Define cuánto vas a invertir esta semana.
-                    </Text>
+                    {templates.length === 0 ? (
+                        <View style={styles.emptyBox}>
+                            <Ionicons name="archive-outline" size={20} color={COLORS.primarySoft} />
+                            <Text style={styles.emptyText}>
+                                Cuando guardes grupos de una semana, quedarán aquí para reutilizarlos.
+                            </Text>
+                        </View>
+                    ) : (
+                        <Text style={styles.templatesCountText}>
+                            {templates.length} grupos guardados para próximas semanas.
+                        </Text>
+                    )}
                 </View>
-
-                <View style={styles.bigInputWrap}>
-                    <View style={styles.bigInputIconWrap}>
-                        <Ionicons name="logo-usd" size={18} color={COLORS.primaryBright} />
-                    </View>
-                    <Text style={styles.bigMoneyPrefix}>R$</Text>
-                    <TextInput
-                        value={budgetDraft}
-                        onChangeText={onChangeBudgetDraft}
-                        keyboardType="numeric"
-                        placeholder="0"
-                        placeholderTextColor="rgba(255,255,255,0.35)"
-                        style={styles.bigInput}
-                    />
-                </View>
-
-                <View style={styles.noteCard}>
-                    <Ionicons
-                        name="information-circle-outline"
-                        size={18}
-                        color={COLORS.info}
-                    />
-                    <Text style={styles.noteText}>
-                        Después podrás repartirlo entre grupos de inversión.
-                    </Text>
-                </View>
-            </View>
+            </>
         );
     };
 
@@ -794,7 +828,7 @@ export default function AdminWeeklyBudgetScreen() {
                         </View>
 
                         <Text style={styles.stepHint}>
-                            Elige un grupo existente o crea uno nuevo.
+                            Crea grupos nuevos o reutiliza grupos guardados de semanas anteriores.
                         </Text>
                     </View>
 
@@ -850,16 +884,134 @@ export default function AdminWeeklyBudgetScreen() {
                 <View style={styles.card}>
                     <View style={styles.titleRow}>
                         <View style={[styles.titleIconWrap, styles.titleIconWrapBlueSoft]}>
+                            <Ionicons name="archive-outline" size={16} color={COLORS.info} />
+                        </View>
+                        <Text style={styles.sectionTitle}>Grupos reutilizables</Text>
+                    </View>
+
+                    {templates.length === 0 ? (
+                        <View style={styles.emptyBox}>
+                            <Ionicons name="time-outline" size={20} color={COLORS.primarySoft} />
+                            <Text style={styles.emptyText}>
+                                Todavía no hay grupos guardados. Cuando finalices una semana, sus grupos quedarán aquí.
+                            </Text>
+                        </View>
+                    ) : (
+                        <View style={{ gap: 10 }}>
+                            {templates.map((tpl, idx) => {
+                                const names = tpl.userIds
+                                    .map(
+                                        (uid) =>
+                                            usersById.get(uid)?.name?.trim() ||
+                                            usersById.get(uid)?.email?.trim() ||
+                                            uid
+                                    )
+                                    .join(", ");
+
+                                const cardStyle =
+                                    idx % 3 === 0
+                                        ? styles.groupListCardCyan
+                                        : idx % 3 === 1
+                                            ? styles.groupListCardPurple
+                                            : styles.groupListCardGreen;
+
+                                const iconStyle =
+                                    idx % 3 === 0
+                                        ? styles.groupListIconWrapCyan
+                                        : idx % 3 === 1
+                                            ? styles.groupListIconWrapPurple
+                                            : styles.groupListIconWrapGreen;
+
+                                const iconColor =
+                                    idx % 3 === 0
+                                        ? COLORS.primaryBright
+                                        : idx % 3 === 1
+                                            ? COLORS.purple
+                                            : COLORS.ok;
+
+                                return (
+                                    <View
+                                        key={tpl.id}
+                                        style={[styles.groupListCard, cardStyle, styles.templateCard]}
+                                    >
+                                        <Pressable
+                                            onPress={() => applyTemplate(tpl)}
+                                            style={({ pressed }) => [
+                                                styles.templateMainPressable,
+                                                pressed && styles.pressed,
+                                            ]}
+                                        >
+                                            <View style={[styles.groupListIconWrap, iconStyle]}>
+                                                <Ionicons
+                                                    name="archive-outline"
+                                                    size={18}
+                                                    color={iconColor}
+                                                />
+                                            </View>
+
+                                            <View style={{ flex: 1, gap: 4 }}>
+                                                <Text style={styles.groupListTitle}>
+                                                    {tpl.name?.trim() || "Grupo"}
+                                                </Text>
+                                                <Text style={styles.groupListSub} numberOfLines={2}>
+                                                    {tpl.userIds.length} usuarios · R$ {money(tpl.defaultAmount)}
+                                                </Text>
+                                                <Text style={styles.templateNames} numberOfLines={2}>
+                                                    {names}
+                                                </Text>
+                                            </View>
+                                        </Pressable>
+
+                                        <View style={styles.templateActions}>
+                                            <Pressable
+                                                onPress={() => applyTemplate(tpl)}
+                                                style={({ pressed }) => [
+                                                    styles.templateActionBtn,
+                                                    pressed && styles.pressed,
+                                                ]}
+                                            >
+                                                <Ionicons
+                                                    name="arrow-down-circle-outline"
+                                                    size={16}
+                                                    color={COLORS.primaryBright}
+                                                />
+                                            </Pressable>
+
+                                            <Pressable
+                                                onPress={() => confirmDeleteTemplate(tpl)}
+                                                style={({ pressed }) => [
+                                                    styles.templateActionBtn,
+                                                    styles.templateActionBtnDanger,
+                                                    pressed && styles.pressed,
+                                                ]}
+                                            >
+                                                <Ionicons
+                                                    name="trash-outline"
+                                                    size={16}
+                                                    color={COLORS.bad}
+                                                />
+                                            </Pressable>
+                                        </View>
+                                    </View>
+                                );
+                            })}
+                        </View>
+                    )}
+                </View>
+
+                <View style={styles.card}>
+                    <View style={styles.titleRow}>
+                        <View style={[styles.titleIconWrap, styles.titleIconWrapBlueSoft]}>
                             <Ionicons name="albums-outline" size={16} color={COLORS.info} />
                         </View>
-                        <Text style={styles.sectionTitle}>Grupos guardados</Text>
+                        <Text style={styles.sectionTitle}>Grupos de esta semana</Text>
                     </View>
 
                     {groupDrafts.length === 0 ? (
                         <View style={styles.emptyBox}>
                             <Ionicons name="layers-outline" size={20} color={COLORS.primarySoft} />
                             <Text style={styles.emptyText}>
-                                No hay grupos aún. Crea uno nuevo para empezar.
+                                No hay grupos aún. Puedes crear uno nuevo o reutilizar uno guardado.
                             </Text>
                         </View>
                     ) : (
@@ -1008,6 +1160,17 @@ export default function AdminWeeklyBudgetScreen() {
                             <Text style={styles.miniResumeValue}>R$ {money(amountNum)}</Text>
                         </View>
                     </View>
+
+                    <View style={styles.noteCard}>
+                        <Ionicons
+                            name="archive-outline"
+                            size={18}
+                            color={COLORS.info}
+                        />
+                        <Text style={styles.noteText}>
+                            Cuando guardes la semana, este grupo quedará disponible para reutilizar en próximas semanas.
+                        </Text>
+                    </View>
                 </View>
 
                 <View style={styles.card}>
@@ -1088,6 +1251,56 @@ export default function AdminWeeklyBudgetScreen() {
         if (step === "groups") return renderGroupsStep();
         if (step === "groupEditor") return renderGroupEditor();
         return renderHome();
+    };
+
+    const renderBudgetStep = () => {
+        return (
+            <View style={[styles.card, styles.stepCard]}>
+                <View style={styles.stepHeader}>
+                    <View style={[styles.stepBadge, styles.stepBadgePrimary]}>
+                        <Ionicons name="wallet-outline" size={13} color={COLORS.primaryBright} />
+                        <Text style={styles.stepBadgeText}>Paso 1</Text>
+                    </View>
+
+                    <View style={styles.titleRow}>
+                        <View style={[styles.titleIconWrap, styles.titleIconWrapCyan]}>
+                            <Ionicons name="cash-outline" size={16} color={COLORS.primaryBright} />
+                        </View>
+                        <Text style={styles.sectionTitle}>Añadir presupuesto</Text>
+                    </View>
+
+                    <Text style={styles.stepHint}>
+                        Define cuánto vas a invertir esta semana.
+                    </Text>
+                </View>
+
+                <View style={styles.bigInputWrap}>
+                    <View style={styles.bigInputIconWrap}>
+                        <Ionicons name="logo-usd" size={18} color={COLORS.primaryBright} />
+                    </View>
+                    <Text style={styles.bigMoneyPrefix}>R$</Text>
+                    <TextInput
+                        value={budgetDraft}
+                        onChangeText={onChangeBudgetDraft}
+                        keyboardType="numeric"
+                        placeholder="0"
+                        placeholderTextColor="rgba(255,255,255,0.35)"
+                        style={styles.bigInput}
+                    />
+                </View>
+
+                <View style={styles.noteCard}>
+                    <Ionicons
+                        name="information-circle-outline"
+                        size={18}
+                        color={COLORS.info}
+                    />
+                    <Text style={styles.noteText}>
+                        Después podrás repartirlo entre grupos de inversión nuevos o reutilizados.
+                    </Text>
+                </View>
+            </View>
+        );
     };
 
     return (
@@ -1680,6 +1893,45 @@ const styles = StyleSheet.create({
         width: 30,
         alignItems: "flex-end",
         justifyContent: "center",
+    },
+
+    templateCard: {
+        alignItems: "stretch",
+    },
+    templateMainPressable: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+    templateActions: {
+        justifyContent: "center",
+        gap: 8,
+    },
+    templateActionBtn: {
+        width: 34,
+        height: 34,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: "rgba(90,200,250,0.16)",
+        backgroundColor: "rgba(90,200,250,0.08)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    templateActionBtnDanger: {
+        borderColor: "rgba(248,113,113,0.18)",
+        backgroundColor: "rgba(248,113,113,0.08)",
+    },
+    templateNames: {
+        color: COLORS.softText,
+        fontWeight: "700",
+        fontSize: 11,
+        opacity: 0.78,
+    },
+    templatesCountText: {
+        color: COLORS.softText,
+        fontWeight: "800",
+        fontSize: 12,
     },
 
     fieldBlock: {

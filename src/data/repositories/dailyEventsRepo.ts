@@ -25,6 +25,10 @@ export function dayKeyFromMs(ms: number): string {
 /**
  * Crear evento manual (normalmente no lo usas porque
  * updateClientStatus ya lo hace con batch).
+ *
+ * ✅ Ahora soporta snapshot contable opcional:
+ * - rateApplied
+ * - amount
  */
 export async function createDailyEvent(input: Omit<DailyEventDoc, "id">) {
     await addDoc(col.dailyEvents, input);
@@ -71,7 +75,6 @@ export function subscribeDailyEventsByDay(
         (err) => {
             console.log("[dailyEventsByDay] onSnapshot error:", err?.code, err?.message);
             onErr?.(err);
-            // ✅ NO limpies la lista aquí
         }
     );
 }
@@ -96,7 +99,7 @@ export function subscribeDailyEventsByRange(
 
     if (!start || !end) {
         console.log("[dailyEventsByRange] rango inválido");
-        cb([]); // intencional
+        cb([]);
         return () => { };
     }
 
@@ -120,7 +123,6 @@ export function subscribeDailyEventsByRange(
         (err) => {
             console.log("[dailyEventsByRange] onSnapshot error:", err?.code, err?.message);
             onErr?.(err);
-            // ✅ NO limpies la lista aquí
         }
     );
 }
@@ -128,13 +130,8 @@ export function subscribeDailyEventsByRange(
 /**
  * ✅ Suscripción por rango PERO filtrando por usuario (para pantalla USER).
  *
- * Esto es lo que evita:
- * permission-denied Missing or insufficient permissions
- * cuando el user intenta leer dailyEvents de otros usuarios.
- *
- * ⚠ Requiere índice compuesto (según tu Firestore):
+ * ⚠ Requiere índice compuesto:
  * userId ASC + dayKey ASC + createdAt ASC
- * (Firestore te dará el link exacto para crearlo si falta)
  */
 export function subscribeDailyEventsByRangeForUser(
     startDayKey: string,
@@ -149,7 +146,7 @@ export function subscribeDailyEventsByRangeForUser(
 
     if (!start || !end || !uid) {
         console.log("[dailyEventsByRangeForUser] rango inválido");
-        cb([]); // intencional
+        cb([]);
         return () => { };
     }
 
@@ -178,7 +175,6 @@ export function subscribeDailyEventsByRangeForUser(
                 err?.message
             );
             onErr?.(err);
-            // ✅ NO limpies la lista aquí
         }
     );
 }

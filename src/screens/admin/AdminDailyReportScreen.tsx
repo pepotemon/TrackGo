@@ -15,10 +15,18 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import AdminAssignModal from "../../components/admin/AdminAssignModal";
 import AdminBackground from "../../components/admin/AdminBackground";
 
-import { assignClient, subscribeAdminClients } from "../../data/repositories/clientsRepo";
+import {
+    assignClient,
+    subscribeUserClients,
+} from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
-import type { ClientDoc, DailyEventDoc, RejectedReason, UserDoc } from "../../types/models";
+import type {
+    ClientDoc,
+    DailyEventDoc,
+    RejectedReason,
+    UserDoc,
+} from "../../types/models";
 
 // ----------------------
 // DayKey helpers
@@ -29,6 +37,7 @@ function dayKeyFromDate(d: Date) {
     const day = String(d.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
 }
+
 function todayKey() {
     return dayKeyFromDate(new Date());
 }
@@ -66,6 +75,7 @@ function toMs(v: any): number {
 // ✅ dedupe: último evento por cliente (por createdAt)
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
+
     for (const e of events) {
         const cid = (e as any)?.clientId as string | undefined;
         const type = (e as any)?.type as string | undefined;
@@ -78,6 +88,7 @@ function latestEventByClient(events: DailyEventDoc[]) {
 
         if (!prev || eMs >= pMs) map.set(cid, e);
     }
+
     return map;
 }
 
@@ -187,15 +198,11 @@ type Row = {
     userId: string;
     name: string;
     email?: string;
-
     ratePerVisit: number;
-
     assignedToday: number;
     pending: number;
-
     visitedToday: number;
     rejectedToday: number;
-
     amountToday: number;
 };
 
@@ -211,12 +218,15 @@ type GroupSection = {
 export default function AdminDailyReportScreen() {
     const insets = useSafeAreaInsets();
 
-    const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
 
+    // ✅ fuente liviana: clientes por usuario
+    const [clientsByUser, setClientsByUser] = useState<Record<string, ClientDoc[]>>({});
+
+    // ✅ solo eventos de hoy
     const [todayEvents, setTodayEvents] = useState<DailyEventDoc[]>([]);
-    const [rangeEvents, setRangeEvents] = useState<DailyEventDoc[]>([]);
+
     const [q, setQ] = useState("");
 
     const [listOpen, setListOpen] = useState(false);
@@ -232,53 +242,57 @@ export default function AdminDailyReportScreen() {
 
     const tk = useMemo(() => todayKey(), []);
 
-    useEffect(() => {
-        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
-        return () => unsub();
-    }, []);
-
-    useEffect(() => {
-        const unsub = subscribeDailyEventsByRange(
-            tk,
-            tk,
-            (list) => setTodayEvents(list ?? []),
-            (err) => console.log("[AdminDailyReport] today events err:", err?.code, err?.message)
-        );
-        return () => unsub();
-    }, [tk]);
-
-    useEffect(() => {
-        const end = new Date();
-        end.setHours(0, 0, 0, 0);
-
-        const start = new Date(end);
-        start.setDate(start.getDate() - 180);
-
-        const startKey = dayKeyFromDate(start);
-        const endKey = dayKeyFromDate(end);
-
-        const unsub = subscribeDailyEventsByRange(
-            startKey,
-            endKey,
-            (list) => setRangeEvents(list ?? []),
-            (err) => console.log("[AdminDailyReport] range events err:", err?.code, err?.message)
-        );
-        return () => unsub();
-    }, []);
-
     const reloadUsers = async () => {
+        if (usersLoading) return;
         setUsersLoading(true);
         try {
             const u = await listUsers("user");
-            setUsers(u);
+            setUsers(Array.isArray(u) ? u : []);
         } finally {
             setUsersLoading(false);
         }
     };
 
     useEffect(() => {
-        reloadUsers();
+        void reloadUsers();
     }, []);
+
+    // ✅ suscripción por usuario en vez de subscribeAdminClients global
+    useEffect(() => {
+        const cleanUsers = users.filter((u) => String(u.id ?? "").trim().length > 0);
+        const unsubscribers: Array<() => void> = [];
+
+        setClientsByUser({});
+
+        for (const u of cleanUsers) {
+            const uid = String(u.id).trim();
+            const unsub = subscribeUserClients(uid, (list) => {
+                setClientsByUser((prev) => ({
+                    ...prev,
+                    [uid]: Array.isArray(list) ? list : [],
+                }));
+            });
+            unsubscribers.push(unsub);
+        }
+
+        return () => {
+            unsubscribers.forEach((fn) => {
+                try {
+                    fn();
+                } catch { }
+            });
+        };
+    }, [users]);
+
+    useEffect(() => {
+        const unsub = subscribeDailyEventsByRange(
+            tk,
+            tk,
+            (list) => setTodayEvents(Array.isArray(list) ? list : []),
+            (err) => console.log("[AdminDailyReport] today events err:", err?.code, err?.message)
+        );
+        return () => unsub();
+    }, [tk]);
 
     const usersById = useMemo(() => {
         const m = new Map<string, UserDoc>();
@@ -286,29 +300,38 @@ export default function AdminDailyReportScreen() {
         return m;
     }, [users]);
 
+    const allClients = useMemo(() => {
+        const byId = new Map<string, ClientDoc>();
+
+        for (const list of Object.values(clientsByUser)) {
+            for (const c of list ?? []) {
+                if (!c?.id) continue;
+                byId.set(c.id, c);
+            }
+        }
+
+        return Array.from(byId.values());
+    }, [clientsByUser]);
+
     const clientsById = useMemo(() => {
         const m = new Map<string, ClientDoc>();
-        for (const c of clients) m.set(c.id, c);
+        for (const c of allClients) m.set(c.id, c);
         return m;
-    }, [clients]);
+    }, [allClients]);
 
     const lastEventTodayByClient = useMemo(() => {
         return latestEventByClient(todayEvents);
     }, [todayEvents]);
 
-    const lastEventRangeByClient = useMemo(() => {
-        return latestEventByClient(rangeEvents);
-    }, [rangeEvents]);
-
     const rejectedReasonByClientId = useMemo(() => {
         const m = new Map<string, RejectedReason>();
 
-        for (const c of clients) {
+        for (const c of allClients) {
             const fromClient = extractRejectReasonFromClient(c);
             if (fromClient) m.set(c.id, fromClient);
         }
 
-        for (const [cid, ev] of lastEventRangeByClient.entries()) {
+        for (const [cid, ev] of lastEventTodayByClient.entries()) {
             const anyEv: any = ev as any;
             if (anyEv?.type !== "rejected") continue;
 
@@ -323,13 +346,12 @@ export default function AdminDailyReportScreen() {
         }
 
         return m;
-    }, [clients, lastEventRangeByClient]);
+    }, [allClients, lastEventTodayByClient]);
 
     /**
-     * ✅ MISMA LÓGICA DEL HOME ADMIN
-     * Solo cuenta el evento si:
-     * 1) el cliente todavía existe
-     * 2) el status actual del cliente coincide con el type del evento
+     * ✅ Solo cuenta evento si:
+     * 1) cliente existe
+     * 2) su status actual coincide con el evento
      */
     const shouldCountEvent = useCallback(
         (e: DailyEventDoc) => {
@@ -362,9 +384,11 @@ export default function AdminDailyReportScreen() {
             };
         }
 
-        // ✅ asignados hoy + pendientes actuales
-        for (const c of clients) {
-            const uid = c.assignedTo;
+        // ✅ clientes actuales por usuario:
+        // - assignedToday = assignedDayKey === hoy
+        // - pending = estado actual pending, aunque venga de días pasados
+        for (const c of allClients) {
+            const uid = String(c.assignedTo ?? "").trim();
             if (!uid) continue;
 
             if (!byUser[uid]) {
@@ -388,11 +412,11 @@ export default function AdminDailyReportScreen() {
             if ((c as any).status === "pending") row.pending += 1;
         }
 
-        // ✅ visitados / rechazados de hoy con filtro anti-inflado
+        // ✅ visitados / rechazados solo de hoy
         for (const ev of lastEventTodayByClient.values()) {
             if (!shouldCountEvent(ev)) continue;
 
-            const uid = (ev as any)?.userId as string | undefined;
+            const uid = String((ev as any)?.userId ?? "").trim();
             if (!uid) continue;
 
             if (!byUser[uid]) {
@@ -430,7 +454,7 @@ export default function AdminDailyReportScreen() {
         return filtered.sort(
             (a, b) => b.visitedToday + b.rejectedToday - (a.visitedToday + a.rejectedToday)
         );
-    }, [clients, users, lastEventTodayByClient, q, shouldCountEvent, tk]);
+    }, [allClients, users, lastEventTodayByClient, q, shouldCountEvent, tk]);
 
     const totals = useMemo(() => {
         return rows.reduce(
@@ -543,52 +567,59 @@ export default function AdminDailyReportScreen() {
 
     const visitedIdsByUser = useMemo(() => {
         const m = new Map<string, Set<string>>();
+
         for (const ev of lastEventTodayByClient.values()) {
             if ((ev as any)?.type !== "visited") continue;
             if (!shouldCountEvent(ev)) continue;
 
-            const uid = (ev as any)?.userId as string | undefined;
-            const cid = (ev as any)?.clientId as string | undefined;
+            const uid = String((ev as any)?.userId ?? "").trim();
+            const cid = String((ev as any)?.clientId ?? "").trim();
             if (!uid || !cid) continue;
 
             if (!m.has(uid)) m.set(uid, new Set<string>());
             m.get(uid)!.add(cid);
         }
+
         return m;
     }, [lastEventTodayByClient, shouldCountEvent]);
 
     const rejectedByAssignedTo = useMemo(() => {
         const m = new Map<string, ClientDoc[]>();
+
         for (const ev of lastEventTodayByClient.values()) {
             if ((ev as any)?.type !== "rejected") continue;
             if (!shouldCountEvent(ev)) continue;
 
-            const cid = (ev as any)?.clientId as string | undefined;
+            const cid = String((ev as any)?.clientId ?? "").trim();
             if (!cid) continue;
 
             const c = clientsById.get(cid);
             if (!c) continue;
 
-            const uid = c.assignedTo;
+            const uid = String(c.assignedTo ?? "").trim();
             if (!uid) continue;
 
             if (!m.has(uid)) m.set(uid, []);
             m.get(uid)!.push(c);
         }
+
         return m;
     }, [lastEventTodayByClient, clientsById, shouldCountEvent]);
 
     const pendingByUser = useMemo(() => {
         const m = new Map<string, ClientDoc[]>();
-        for (const c of clients) {
+
+        for (const c of allClients) {
             if ((c as any).status !== "pending") continue;
-            const uid = c.assignedTo;
+            const uid = String(c.assignedTo ?? "").trim();
             if (!uid) continue;
+
             if (!m.has(uid)) m.set(uid, []);
             m.get(uid)!.push(c);
         }
+
         return m;
-    }, [clients]);
+    }, [allClients]);
 
     const filterClientByListQ = (c: ClientDoc) => {
         const qt2 = listQ.trim().toLowerCase();
@@ -645,15 +676,10 @@ export default function AdminDailyReportScreen() {
         return out;
     };
 
-    const modalSections = useMemo(() => buildSections(listMode), [
-        listMode,
-        rows,
-        visitedIdsByUser,
-        rejectedByAssignedTo,
-        pendingByUser,
-        clientsById,
-        listQ,
-    ]);
+    const modalSections = useMemo(
+        () => buildSections(listMode),
+        [listMode, rows, visitedIdsByUser, rejectedByAssignedTo, pendingByUser, clientsById, listQ]
+    );
 
     const openList = (mode: ListMode) => {
         setListMode(mode);
@@ -708,7 +734,6 @@ export default function AdminDailyReportScreen() {
         const phone = (c.phone ?? "").trim();
         const assignedLabel = findAssignedName(c.assignedTo);
         const busy = busyClientId === c.id;
-
         const rejectReason = rejectedReasonByClientId.get(c.id);
 
         return (
@@ -871,7 +896,10 @@ export default function AdminDailyReportScreen() {
                     renderItem={({ item }) => {
                         const done = item.visitedToday + item.rejectedToday;
                         const total = item.assignedToday;
-                        const pct = total <= 0 ? 0 : Math.round((Math.min(done, total) / total) * 100);
+                        const pct =
+                            total <= 0
+                                ? 0
+                                : Math.round((Math.min(done, total) / total) * 100);
 
                         return (
                             <View style={styles.card}>
@@ -919,7 +947,12 @@ export default function AdminDailyReportScreen() {
                                             size={12}
                                             color={COLORS.visitedSoft}
                                         />
-                                        <Text style={[styles.miniText, { color: COLORS.visitedSoft }]}>
+                                        <Text
+                                            style={[
+                                                styles.miniText,
+                                                { color: COLORS.visitedSoft },
+                                            ]}
+                                        >
                                             {item.visitedToday}
                                         </Text>
                                     </View>
@@ -930,7 +963,12 @@ export default function AdminDailyReportScreen() {
                                             size={12}
                                             color={COLORS.rejectedSoft}
                                         />
-                                        <Text style={[styles.miniText, { color: COLORS.rejectedSoft }]}>
+                                        <Text
+                                            style={[
+                                                styles.miniText,
+                                                { color: COLORS.rejectedSoft },
+                                            ]}
+                                        >
                                             {item.rejectedToday}
                                         </Text>
                                     </View>
@@ -941,7 +979,12 @@ export default function AdminDailyReportScreen() {
                                             size={12}
                                             color={COLORS.pendingSoft}
                                         />
-                                        <Text style={[styles.miniText, { color: COLORS.pendingSoft }]}>
+                                        <Text
+                                            style={[
+                                                styles.miniText,
+                                                { color: COLORS.pendingSoft },
+                                            ]}
+                                        >
                                             {item.pending}
                                         </Text>
                                     </View>
@@ -956,8 +999,14 @@ export default function AdminDailyReportScreen() {
 
                                 <View style={styles.actionsRow}>
                                     <View style={styles.rateChip}>
-                                        <Ionicons name="cash-outline" size={12} color={COLORS.muted} />
-                                        <Text style={styles.rateText}>R$ {money(item.ratePerVisit)}</Text>
+                                        <Ionicons
+                                            name="cash-outline"
+                                            size={12}
+                                            color={COLORS.muted}
+                                        />
+                                        <Text style={styles.rateText}>
+                                            R$ {money(item.ratePerVisit)}
+                                        </Text>
                                         <Text style={styles.rateTextMuted}>/visita</Text>
                                     </View>
 
@@ -984,7 +1033,12 @@ export default function AdminDailyReportScreen() {
                 <Modal visible={listOpen} transparent animationType="fade" onRequestClose={closeList}>
                     <Pressable style={styles.modalBackdrop} onPress={closeList} />
 
-                    <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                    <View
+                        style={[
+                            styles.modalCard,
+                            { paddingBottom: Math.max(12, insets.bottom + 10) },
+                        ]}
+                    >
                         <View style={styles.modalHeader}>
                             <View style={{ flex: 1, gap: 2 }}>
                                 <Text style={styles.modalTitle}>
@@ -995,8 +1049,15 @@ export default function AdminDailyReportScreen() {
                                             : "Rechazados (hoy)"}
                                 </Text>
                                 <Text style={styles.modalSub}>
-                                    {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0)} cliente
-                                    {modalSections.reduce((a, s) => a + (s.data?.length ?? 0), 0) === 1
+                                    {modalSections.reduce(
+                                        (a, s) => a + (s.data?.length ?? 0),
+                                        0
+                                    )}{" "}
+                                    cliente
+                                    {modalSections.reduce(
+                                        (a, s) => a + (s.data?.length ?? 0),
+                                        0
+                                    ) === 1
                                         ? ""
                                         : "s"}
                                 </Text>
@@ -1023,7 +1084,10 @@ export default function AdminDailyReportScreen() {
                                 style={styles.modalSearchInput}
                             />
                             {!!listQ ? (
-                                <Pressable onPress={() => setListQ("")} style={styles.modalSearchClear}>
+                                <Pressable
+                                    onPress={() => setListQ("")}
+                                    style={styles.modalSearchClear}
+                                >
                                     <Ionicons name="close" size={16} color={COLORS.text} />
                                 </Pressable>
                             ) : null}
@@ -1032,7 +1096,11 @@ export default function AdminDailyReportScreen() {
                         <FlatList
                             data={modalSections}
                             keyExtractor={(s) => s.userId}
-                            contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                            contentContainerStyle={{
+                                paddingTop: 4,
+                                paddingBottom: 8,
+                                gap: 8,
+                            }}
                             showsVerticalScrollIndicator={false}
                             renderItem={({ item: section }) => {
                                 const expanded = !!expandedUserIds[section.userId];
@@ -1043,20 +1111,31 @@ export default function AdminDailyReportScreen() {
                                             onPress={() => toggleUserSection(section.userId)}
                                             style={({ pressed }) => [
                                                 styles.modalSectionHeaderPressable,
-                                                pressed && styles.modalSectionHeaderPressablePressed,
+                                                pressed &&
+                                                styles.modalSectionHeaderPressablePressed,
                                             ]}
                                         >
                                             <View style={styles.modalSectionHeaderLeft}>
                                                 <View style={styles.modalSectionAvatar}>
-                                                    <Ionicons name="person-outline" size={14} color={COLORS.text} />
+                                                    <Ionicons
+                                                        name="person-outline"
+                                                        size={14}
+                                                        color={COLORS.text}
+                                                    />
                                                 </View>
 
                                                 <View style={{ flex: 1, gap: 1 }}>
-                                                    <Text style={styles.modalSectionTitle} numberOfLines={1}>
+                                                    <Text
+                                                        style={styles.modalSectionTitle}
+                                                        numberOfLines={1}
+                                                    >
                                                         {section.title}
                                                     </Text>
                                                     {section.subtitle ? (
-                                                        <Text style={styles.modalSectionSub} numberOfLines={1}>
+                                                        <Text
+                                                            style={styles.modalSectionSub}
+                                                            numberOfLines={1}
+                                                        >
                                                             {section.subtitle}
                                                         </Text>
                                                     ) : null}
@@ -1065,7 +1144,9 @@ export default function AdminDailyReportScreen() {
 
                                             <View style={styles.modalSectionHeaderRight}>
                                                 <View style={styles.modalCountPill}>
-                                                    <Text style={styles.modalCountText}>{section.data.length}</Text>
+                                                    <Text style={styles.modalCountText}>
+                                                        {section.data.length}
+                                                    </Text>
                                                 </View>
 
                                                 <View style={styles.expandBtn}>
@@ -1084,7 +1165,10 @@ export default function AdminDailyReportScreen() {
                                                     <ClientRowModal
                                                         key={c.id}
                                                         c={c}
-                                                        allowReassign={listMode === "pending" || listMode === "rejected"}
+                                                        allowReassign={
+                                                            listMode === "pending" ||
+                                                            listMode === "rejected"
+                                                        }
                                                     />
                                                 ))}
                                             </View>
@@ -1094,8 +1178,14 @@ export default function AdminDailyReportScreen() {
                             }}
                             ListEmptyComponent={
                                 <View style={styles.modalEmpty}>
-                                    <Ionicons name="people-outline" size={20} color={COLORS.muted} />
-                                    <Text style={styles.modalEmptyText}>No hay clientes aquí.</Text>
+                                    <Ionicons
+                                        name="people-outline"
+                                        size={20}
+                                        color={COLORS.muted}
+                                    />
+                                    <Text style={styles.modalEmptyText}>
+                                        No hay clientes aquí.
+                                    </Text>
                                 </View>
                             }
                         />
@@ -1117,14 +1207,16 @@ export default function AdminDailyReportScreen() {
                     }
                     entitySubtitle={
                         assignClientId
-                            ? (clientsById.get(assignClientId)?.address ??
-                                clientsById.get(assignClientId)?.phone ??
-                                "")
+                            ? clientsById.get(assignClientId)?.address ??
+                            clientsById.get(assignClientId)?.phone ??
+                            ""
                             : ""
                     }
                     users={users}
                     currentAssignedUserId={
-                        assignClientId ? clientsById.get(assignClientId)?.assignedTo ?? null : null
+                        assignClientId
+                            ? clientsById.get(assignClientId)?.assignedTo ?? null
+                            : null
                     }
                     loadingUsers={usersLoading}
                     busy={busyClientId === assignClientId}
@@ -1132,16 +1224,31 @@ export default function AdminDailyReportScreen() {
                         try {
                             setBusyClientId(entityId);
 
-                            setClients((prev) =>
-                                prev.map((c) => {
-                                    if (c.id !== entityId) return c;
-                                    return {
-                                        ...(c as any),
-                                        assignedTo: userId,
-                                        status: "pending",
-                                    } as ClientDoc;
-                                })
-                            );
+                            // ✅ optimista: mover cliente al nuevo usuario y resetear status a pending
+                            setClientsByUser((prev) => {
+                                let movingClient: ClientDoc | null = null;
+                                const next: Record<string, ClientDoc[]> = {};
+
+                                for (const [uid, list] of Object.entries(prev)) {
+                                    const filtered = (list ?? []).filter((c) => {
+                                        if (c.id !== entityId) return true;
+                                        movingClient = {
+                                            ...(c as any),
+                                            assignedTo: userId,
+                                            status: "pending",
+                                        } as ClientDoc;
+                                        return false;
+                                    });
+                                    next[uid] = filtered;
+                                }
+
+                                const targetUid = String(userId ?? "").trim();
+                                if (movingClient && targetUid) {
+                                    next[targetUid] = [movingClient, ...(next[targetUid] ?? [])];
+                                }
+
+                                return next;
+                            });
 
                             await assignClient(entityId, userId as any);
                         } finally {
@@ -1150,15 +1257,30 @@ export default function AdminDailyReportScreen() {
                     }}
                 />
 
-                <Modal visible={moneyOpen} transparent animationType="fade" onRequestClose={() => setMoneyOpen(false)}>
-                    <Pressable style={styles.modalBackdrop} onPress={() => setMoneyOpen(false)} />
+                <Modal
+                    visible={moneyOpen}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={() => setMoneyOpen(false)}
+                >
+                    <Pressable
+                        style={styles.modalBackdrop}
+                        onPress={() => setMoneyOpen(false)}
+                    />
 
-                    <View style={[styles.modalCard, { paddingBottom: Math.max(12, insets.bottom + 10) }]}>
+                    <View
+                        style={[
+                            styles.modalCard,
+                            { paddingBottom: Math.max(12, insets.bottom + 10) },
+                        ]}
+                    >
                         <View style={styles.modalHeader}>
                             <View style={{ flex: 1, gap: 2 }}>
                                 <Text style={styles.modalTitle}>Visitados e ingresos</Text>
                                 <Text style={styles.modalSub}>
-                                    {totals.visitedToday} visitado{totals.visitedToday === 1 ? "" : "s"} · R$ {money(totals.amountToday)}
+                                    {totals.visitedToday} visitado
+                                    {totals.visitedToday === 1 ? "" : "s"} · R${" "}
+                                    {money(totals.amountToday)}
                                 </Text>
                             </View>
 
@@ -1176,7 +1298,11 @@ export default function AdminDailyReportScreen() {
                         <FlatList
                             data={earningRows}
                             keyExtractor={(r) => `money-${r.userId}`}
-                            contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
+                            contentContainerStyle={{
+                                paddingTop: 4,
+                                paddingBottom: 8,
+                                gap: 8,
+                            }}
                             showsVerticalScrollIndicator={false}
                             renderItem={({ item }) => (
                                 <View style={styles.moneyRowCard}>
@@ -1185,18 +1311,28 @@ export default function AdminDailyReportScreen() {
                                             {item.name}
                                         </Text>
                                         <Text style={styles.moneyRowMeta} numberOfLines={1}>
-                                            {item.visitedToday} visitado{item.visitedToday === 1 ? "" : "s"} · R$ {money(item.ratePerVisit)}/visita
+                                            {item.visitedToday} visitado
+                                            {item.visitedToday === 1 ? "" : "s"} · R${" "}
+                                            {money(item.ratePerVisit)}/visita
                                         </Text>
                                     </View>
 
                                     <View style={styles.moneyRowRight}>
                                         <View style={styles.moneyVisitsPill}>
-                                            <Ionicons name="checkmark" size={11} color={COLORS.visitedSoft} />
-                                            <Text style={styles.moneyVisitsText}>{item.visitedToday}</Text>
+                                            <Ionicons
+                                                name="checkmark"
+                                                size={11}
+                                                color={COLORS.visitedSoft}
+                                            />
+                                            <Text style={styles.moneyVisitsText}>
+                                                {item.visitedToday}
+                                            </Text>
                                         </View>
 
                                         <View style={styles.moneyAmountPill}>
-                                            <Text style={styles.moneyAmountText}>R$ {money(item.amountToday)}</Text>
+                                            <Text style={styles.moneyAmountText}>
+                                                R$ {money(item.amountToday)}
+                                            </Text>
                                         </View>
                                     </View>
                                 </View>
@@ -1204,7 +1340,9 @@ export default function AdminDailyReportScreen() {
                             ListEmptyComponent={
                                 <View style={styles.modalEmpty}>
                                     <Ionicons name="cash-outline" size={20} color={COLORS.muted} />
-                                    <Text style={styles.modalEmptyText}>Aún no hay ingresos hoy.</Text>
+                                    <Text style={styles.modalEmptyText}>
+                                        Aún no hay ingresos hoy.
+                                    </Text>
                                 </View>
                             }
                         />

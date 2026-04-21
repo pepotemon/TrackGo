@@ -61,12 +61,8 @@ function buildCoverageKey({
     const state = sn(stateNormalized);
     const country = sn(countryNormalized || "brasil");
 
-    if (matchType === "city") {
+    if (matchType === "city" || matchType === "hub_city") {
         return `city:${city}:${state || "na"}:${country || "brasil"}`;
-    }
-
-    if (matchType === "hub_city") {
-        return `hub:${city}`;
     }
 
     if (matchType === "state") {
@@ -89,6 +85,14 @@ function matchCoverageItemToLead(item, lead) {
             item.cityNormalized &&
             geo.adminCity === item.cityNormalized
         ) {
+            if (
+                item.stateNormalized &&
+                geo.adminState &&
+                item.stateNormalized !== geo.adminState
+            ) {
+                return { match: false };
+            }
+
             return {
                 match: true,
                 matchType: "city",
@@ -100,7 +104,8 @@ function matchCoverageItemToLead(item, lead) {
                 }),
                 matchedCityNormalized: geo.adminCity,
                 matchedStateNormalized: geo.adminState || item.stateNormalized || "",
-                matchedCountryNormalized: geo.adminCountry || item.countryNormalized || "brasil",
+                matchedCountryNormalized:
+                    geo.adminCountry || item.countryNormalized || "brasil",
             };
         }
 
@@ -115,10 +120,13 @@ function matchCoverageItemToLead(item, lead) {
                 coverageKey: buildCoverageKey({
                     matchType: "hub_city",
                     cityNormalized: geo.hubCity,
+                    stateNormalized: geo.adminState || item.stateNormalized,
+                    countryNormalized: geo.adminCountry || item.countryNormalized,
                 }),
                 matchedCityNormalized: geo.hubCity,
                 matchedStateNormalized: geo.adminState || item.stateNormalized || "",
-                matchedCountryNormalized: geo.adminCountry || item.countryNormalized || "brasil",
+                matchedCountryNormalized:
+                    geo.adminCountry || item.countryNormalized || "brasil",
             };
         }
 
@@ -141,7 +149,8 @@ function matchCoverageItemToLead(item, lead) {
                 }),
                 matchedCityNormalized: geo.adminCity || geo.hubCity || "",
                 matchedStateNormalized: geo.adminState,
-                matchedCountryNormalized: geo.adminCountry || item.countryNormalized || "brasil",
+                matchedCountryNormalized:
+                    geo.adminCountry || item.countryNormalized || "brasil",
             };
         }
 

@@ -1,21 +1,21 @@
 // src/screens/admin/AdminHomeScreen.tsx
-// ✅ OPTIMIZADO:
-// - reduce trabajo repetido en render con useMemo
-// - indexa clients/users una sola vez
-// - evita recomputar filtros pesados múltiples veces
-// - mantiene daily/week stats correctos sin inflar
-// - Meta Leads ahora tiene filtro Semana / Mes
-// - weekly/monthly Meta Leads usa timestamps del estado real:
-//   * verified -> verifiedAt / verificationStatusChangedAt / updatedAt
-//   * pending_review / incomplete / not_suitable -> verificationStatusChangedAt / updatedAt
-// - pending de cobranza sigue contando SOLO clientes pending asignados
-// - sin romper UX actual
+// ✅ MÁS FLUIDO:
+// - difiere updates pesados con InteractionManager
+// - prefetch de rutas para entrada más rápida a pantallas hijas
+// - centraliza cálculos en menos useMemo
+// - evita recorrer clients/events varias veces innecesariamente
+// - mantiene lógica correcta:
+//   * pendientes = status actual pending + assignedTo
+//   * visitados/rechazados = último evento válido + status actual del cliente
+//   * meta leads = mismo cálculo real por rango
+// - sin romper UX visual
 
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
     ImageBackground,
+    InteractionManager,
     Pressable,
     RefreshControl,
     ScrollView,
@@ -67,8 +67,9 @@ function todayKey() {
 function weekRangeKeys(base = new Date()) {
     const d = new Date(base);
     d.setHours(0, 0, 0, 0);
-    const jsDay = d.getDay(); // 0=Dom..6=Sáb
+    const jsDay = d.getDay();
     const diffToMonday = jsDay === 0 ? 6 : jsDay - 1;
+
     const start = new Date(d);
     start.setDate(d.getDate() - diffToMonday);
 
@@ -79,7 +80,15 @@ function weekRangeKeys(base = new Date()) {
         startKey: dayKeyFromDate(start),
         endKey: dayKeyFromDate(end),
         startMs: start.getTime(),
-        endMs: new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59, 999).getTime(),
+        endMs: new Date(
+            end.getFullYear(),
+            end.getMonth(),
+            end.getDate(),
+            23,
+            59,
+            59,
+            999
+        ).getTime(),
     };
 }
 
@@ -110,7 +119,6 @@ function toMs(v: any): number {
 
 /**
  * Último evento por clientId dentro del rango.
- * Luego filtramos por status actual del client para no inflar.
  */
 function latestEventByClient(events: DailyEventDoc[]) {
     const map = new Map<string, DailyEventDoc>();
@@ -146,7 +154,9 @@ function isMetaUnassignedLead(c: ClientDoc) {
 }
 
 function getDerivedLeadQueueStatus(c: ClientDoc): LeadDerivedStatus {
-    const verificationStatus = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
+    const verificationStatus = String((c as any)?.verificationStatus ?? "")
+        .trim()
+        .toLowerCase();
     const leadQuality = String((c as any)?.leadQuality ?? "").trim().toLowerCase();
     const parseStatus = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
 
@@ -183,11 +193,7 @@ function isWithinRange(ms: number, startMs: number, endMs: number) {
     return ms >= startMs && ms <= endMs;
 }
 
-function buildLeadStatsForRange(
-    clients: ClientDoc[],
-    startMs: number,
-    endMs: number
-) {
+function buildLeadStatsForRange(clients: ClientDoc[], startMs: number, endMs: number) {
     let verified = 0;
     let pendingReview = 0;
     let incomplete = 0;
@@ -292,11 +298,7 @@ const BottomNavItem = React.memo(function BottomNavItem({
             ]}
         >
             <View style={[styles.bottomNavIconWrap, active && styles.bottomNavIconWrapActive]}>
-                <Ionicons
-                    name={icon}
-                    size={18}
-                    color={active ? COLORS.primaryBright : COLORS.primaryBright}
-                />
+                <Ionicons name={icon} size={18} color={COLORS.primaryBright} />
             </View>
             <Text style={styles.bottomNavText}>{title}</Text>
         </Pressable>
@@ -374,9 +376,39 @@ export default function AdminHomeScreen() {
     const weekRange = useMemo(() => weekRangeKeys(new Date()), []);
     const monthRange = useMemo(() => monthRangeKeys(new Date()), []);
 
+    const goToDailyReport = useCallback(() => {
+        router.push({ pathname: "/admin/report" as any });
+    }, [router]);
+
+    const goToWeeklyReport = useCallback(() => {
+        router.push({ pathname: "/admin/history" as any });
+    }, [router]);
+
+    const goToLeads = useCallback(() => {
+        router.push({ pathname: "/admin/leads" as any });
+    }, [router]);
+
+    const goToAutoAssignHistory = useCallback(() => {
+        router.push({ pathname: "/admin/auto-assign-history" as any });
+    }, [router]);
+
+    useEffect(() => {
+        try {
+            router.prefetch?.("/admin/report");
+            router.prefetch?.("/admin/history");
+            router.prefetch?.("/admin/leads");
+            router.prefetch?.("/admin/users");
+            router.prefetch?.("/admin/clients");
+            router.prefetch?.("/admin/accounting");
+            router.prefetch?.("/admin/auto-assign-history");
+        } catch {
+            // noop
+        }
+    }, [router]);
+
     const reloadUsers = useCallback(async () => {
         const u = await listUsers("user");
-        setUsers(u ?? []);
+        setUsers(Array.isArray(u) ? u : []);
     }, []);
 
     useEffect(() => {
@@ -384,29 +416,71 @@ export default function AdminHomeScreen() {
     }, [reloadUsers]);
 
     useEffect(() => {
-        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
-        return () => unsub();
+        let cancelled = false;
+
+        const unsub = subscribeAdminClients(
+            (list) => {
+                const task = InteractionManager.runAfterInteractions(() => {
+                    if (cancelled) return;
+                    setClients(Array.isArray(list) ? list : []);
+                });
+
+                return () => task.cancel();
+            },
+            { limitCount: 1200 }
+        );
+
+        return () => {
+            cancelled = true;
+            unsub();
+        };
     }, []);
 
     useEffect(() => {
+        let cancelled = false;
         const tk = todayKey();
+
         const unsub = subscribeDailyEventsByRange(
             tk,
             tk,
-            (list) => setTodayEvents(list ?? []),
+            (list) => {
+                const task = InteractionManager.runAfterInteractions(() => {
+                    if (cancelled) return;
+                    setTodayEvents(Array.isArray(list) ? list : []);
+                });
+
+                return () => task.cancel();
+            },
             (err) => console.log("[AdminHome] today events err:", err?.code, err?.message)
         );
-        return () => unsub();
+
+        return () => {
+            cancelled = true;
+            unsub();
+        };
     }, [refreshTick]);
 
     useEffect(() => {
+        let cancelled = false;
+
         const unsub = subscribeDailyEventsByRange(
             weekRange.startKey,
             weekRange.endKey,
-            (list) => setWeekEvents(list ?? []),
+            (list) => {
+                const task = InteractionManager.runAfterInteractions(() => {
+                    if (cancelled) return;
+                    setWeekEvents(Array.isArray(list) ? list : []);
+                });
+
+                return () => task.cancel();
+            },
             (err) => console.log("[AdminHome] week events err:", err?.code, err?.message)
         );
-        return () => unsub();
+
+        return () => {
+            cancelled = true;
+            unsub();
+        };
     }, [refreshTick, weekRange.startKey, weekRange.endKey]);
 
     const userById = useMemo(() => {
@@ -425,15 +499,17 @@ export default function AdminHomeScreen() {
         return map;
     }, [clients]);
 
-    const pendingNow = useMemo(() => {
-        let count = 0;
-        for (const c of clients) {
-            if (c.status !== "pending") continue;
-            if (!String(c.assignedTo ?? "").trim()) continue;
-            count += 1;
-        }
-        return count;
+    const latestTodayEvents = useMemo(() => latestEventByClient(todayEvents), [todayEvents]);
+    const latestWeekEvents = useMemo(() => latestEventByClient(weekEvents), [weekEvents]);
+
+    const pendingAssignedClients = useMemo(() => {
+        return clients.filter((c) => {
+            const assignedTo = String(c.assignedTo ?? "").trim();
+            return c.status === "pending" && assignedTo.length > 0;
+        });
     }, [clients]);
+
+    const pendingNow = pendingAssignedClients.length;
 
     const shouldCountEvent = useCallback(
         (e: DailyEventDoc) => {
@@ -448,97 +524,95 @@ export default function AdminHomeScreen() {
         [clientById]
     );
 
-    const todayStats = useMemo(() => {
-        const latest = latestEventByClient(todayEvents);
+    const dashboardStats = useMemo(() => {
+        let todayVisited = 0;
+        let todayRejected = 0;
+        let weekVisited = 0;
+        let weekRejected = 0;
 
-        let visited = 0;
-        let rejected = 0;
-        const perUserVisits: Record<string, number> = {};
-        const perUserAmount: Record<string, number> = {};
+        const todayPerUserVisits: Record<string, number> = {};
+        const weekPerUserVisits: Record<string, number> = {};
 
-        for (const e of latest.values()) {
+        for (const e of latestTodayEvents.values()) {
             if (!shouldCountEvent(e)) continue;
 
             if (e.type === "visited") {
-                visited += 1;
-                perUserVisits[e.userId] = (perUserVisits[e.userId] ?? 0) + 1;
+                todayVisited += 1;
+                todayPerUserVisits[e.userId] = (todayPerUserVisits[e.userId] ?? 0) + 1;
             } else if (e.type === "rejected") {
-                rejected += 1;
+                todayRejected += 1;
             }
         }
 
-        for (const [uid, cnt] of Object.entries(perUserVisits)) {
-            perUserAmount[uid] = cnt * getRatePerVisit(userById.get(uid));
+        for (const e of latestWeekEvents.values()) {
+            if (!shouldCountEvent(e)) continue;
+
+            if (e.type === "visited") {
+                weekVisited += 1;
+                weekPerUserVisits[e.userId] = (weekPerUserVisits[e.userId] ?? 0) + 1;
+            } else if (e.type === "rejected") {
+                weekRejected += 1;
+            }
         }
 
-        const amountTotal = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
+        let todayAmountTotal = 0;
+        let weekAmountTotal = 0;
 
         let topUid: string | null = null;
         let topAmount = 0;
-        for (const [uid, amt] of Object.entries(perUserAmount)) {
-            if (amt > topAmount) {
-                topAmount = amt;
+
+        for (const [uid, cnt] of Object.entries(todayPerUserVisits)) {
+            const amount = cnt * getRatePerVisit(userById.get(uid));
+            todayAmountTotal += amount;
+
+            if (amount > topAmount) {
+                topAmount = amount;
                 topUid = uid;
             }
         }
 
-        return {
-            visited,
-            rejected,
-            amountTotal,
-            topUid,
-            topAmount,
-        };
-    }, [todayEvents, shouldCountEvent, userById]);
-
-    const weekStats = useMemo(() => {
-        const latest = latestEventByClient(weekEvents);
-
-        let visited = 0;
-        let rejected = 0;
-        const perUserVisits: Record<string, number> = {};
-        const perUserAmount: Record<string, number> = {};
-
-        for (const e of latest.values()) {
-            if (!shouldCountEvent(e)) continue;
-
-            if (e.type === "visited") {
-                visited += 1;
-                perUserVisits[e.userId] = (perUserVisits[e.userId] ?? 0) + 1;
-            } else if (e.type === "rejected") {
-                rejected += 1;
-            }
+        for (const [uid, cnt] of Object.entries(weekPerUserVisits)) {
+            weekAmountTotal += cnt * getRatePerVisit(userById.get(uid));
         }
 
-        for (const [uid, cnt] of Object.entries(perUserVisits)) {
-            perUserAmount[uid] = cnt * getRatePerVisit(userById.get(uid));
-        }
-
-        const amountTotal = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
-
         return {
-            visited,
-            rejected,
-            amountTotal,
+            today: {
+                visited: todayVisited,
+                rejected: todayRejected,
+                amountTotal: todayAmountTotal,
+                topUid,
+                topAmount,
+            },
+            week: {
+                visited: weekVisited,
+                rejected: weekRejected,
+                amountTotal: weekAmountTotal,
+            },
         };
-    }, [weekEvents, shouldCountEvent, userById]);
+    }, [latestTodayEvents, latestWeekEvents, shouldCountEvent, userById]);
 
     const topUserLabel = useMemo(() => {
-        if (!todayStats.topUid) return "—";
-        const user = userById.get(todayStats.topUid);
+        if (!dashboardStats.today.topUid) return "—";
+        const user = userById.get(dashboardStats.today.topUid);
         const name = user?.name?.trim() || "Usuario";
-        return `${name} · R$ ${todayStats.topAmount.toFixed(2)}`;
-    }, [todayStats.topUid, todayStats.topAmount, userById]);
+        return `${name} · R$ ${dashboardStats.today.topAmount.toFixed(2)}`;
+    }, [dashboardStats.today.topUid, dashboardStats.today.topAmount, userById]);
 
-    const weeklyLeadStats = useMemo(() => {
-        return buildLeadStatsForRange(clients, weekRange.startMs, weekRange.endMs);
-    }, [clients, weekRange.startMs, weekRange.endMs]);
+    const leadStats = useMemo(() => {
+        return {
+            week: buildLeadStatsForRange(clients, weekRange.startMs, weekRange.endMs),
+            month: buildLeadStatsForRange(clients, monthRange.startMs, monthRange.endMs),
+        };
+    }, [
+        clients,
+        weekRange.startMs,
+        weekRange.endMs,
+        monthRange.startMs,
+        monthRange.endMs,
+    ]);
 
-    const monthlyLeadStats = useMemo(() => {
-        return buildLeadStatsForRange(clients, monthRange.startMs, monthRange.endMs);
-    }, [clients, monthRange.startMs, monthRange.endMs]);
-
-    const visibleLeadStats = leadsRangeMode === "week" ? weeklyLeadStats : monthlyLeadStats;
+    const visibleLeadStats =
+        leadsRangeMode === "week" ? leadStats.week : leadStats.month;
 
     const onRefresh = useCallback(async () => {
         setRefreshing(true);
@@ -578,7 +652,10 @@ export default function AdminHomeScreen() {
                                 <View style={styles.headerLeft}>
                                     <Text style={styles.hTitle}>Admin</Text>
                                     <Text style={styles.hSub} numberOfLines={1}>
-                                        Hola, <Text style={styles.hSubStrong}>{profile?.name ?? "—"}</Text>
+                                        Hola,{" "}
+                                        <Text style={styles.hSubStrong}>
+                                            {profile?.name ?? "—"}
+                                        </Text>
                                     </Text>
                                 </View>
 
@@ -599,7 +676,7 @@ export default function AdminHomeScreen() {
 
                             <View style={styles.quickRow}>
                                 <Pressable
-                                    onPress={() => router.push({ pathname: "/admin/report" as any })}
+                                    onPress={goToDailyReport}
                                     style={({ pressed }) => [
                                         styles.quickCard,
                                         pressed && styles.pressed,
@@ -623,20 +700,20 @@ export default function AdminHomeScreen() {
 
                                     <Text style={styles.quickTitle}>Cobranza de hoy</Text>
                                     <Text style={styles.quickMoney} numberOfLines={1}>
-                                        R$ {todayStats.amountTotal.toFixed(2)}
+                                        R$ {dashboardStats.today.amountTotal.toFixed(2)}
                                     </Text>
 
                                     <View style={styles.tinyRow}>
                                         <TinyStat
                                             icon="checkmark-circle-outline"
                                             color={COLORS.ok}
-                                            value={todayStats.visited}
+                                            value={dashboardStats.today.visited}
                                             label="Visitados"
                                         />
                                         <TinyStat
                                             icon="close-circle-outline"
                                             color={COLORS.bad}
-                                            value={todayStats.rejected}
+                                            value={dashboardStats.today.rejected}
                                             label="Rechazados"
                                         />
                                         <TinyStat
@@ -653,7 +730,7 @@ export default function AdminHomeScreen() {
                                 </Pressable>
 
                                 <Pressable
-                                    onPress={() => router.push({ pathname: "/admin/history" as any })}
+                                    onPress={goToWeeklyReport}
                                     style={({ pressed }) => [
                                         styles.quickCard,
                                         pressed && styles.pressed,
@@ -669,7 +746,9 @@ export default function AdminHomeScreen() {
                                         </View>
 
                                         <View style={[styles.badge, styles.badgePrimary]}>
-                                            <Text style={[styles.badgeText, styles.badgeTextPrimary]}>
+                                            <Text
+                                                style={[styles.badgeText, styles.badgeTextPrimary]}
+                                            >
                                                 SEMANA
                                             </Text>
                                         </View>
@@ -677,20 +756,20 @@ export default function AdminHomeScreen() {
 
                                     <Text style={styles.quickTitle}>Cierre semanal</Text>
                                     <Text style={styles.quickMoney} numberOfLines={1}>
-                                        R$ {weekStats.amountTotal.toFixed(2)}
+                                        R$ {dashboardStats.week.amountTotal.toFixed(2)}
                                     </Text>
 
                                     <View style={styles.tinyRow}>
                                         <TinyStat
                                             icon="checkmark-circle-outline"
                                             color={COLORS.ok}
-                                            value={weekStats.visited}
+                                            value={dashboardStats.week.visited}
                                             label="Visitados"
                                         />
                                         <TinyStat
                                             icon="close-circle-outline"
                                             color={COLORS.bad}
-                                            value={weekStats.rejected}
+                                            value={dashboardStats.week.rejected}
                                             label="Rechazados"
                                         />
                                         <TinyStat
@@ -708,7 +787,7 @@ export default function AdminHomeScreen() {
                             </View>
 
                             <Pressable
-                                onPress={() => router.push({ pathname: "/admin/leads" as any })}
+                                onPress={goToLeads}
                                 style={({ pressed }) => [
                                     styles.leadsBanner,
                                     pressed && styles.pressed,
@@ -778,15 +857,16 @@ export default function AdminHomeScreen() {
                                 </View>
 
                                 <Text style={styles.quickSubMuted} numberOfLines={1}>
-                                    {leadsRangeMode === "week" ? "Semana actual" : "Mes actual"} · Cola activa:{" "}
-                                    {visibleLeadStats.activeQueue} · Total: {visibleLeadStats.total}
+                                    {leadsRangeMode === "week" ? "Semana actual" : "Mes actual"} ·
+                                    Cola activa: {visibleLeadStats.activeQueue} · Total:{" "}
+                                    {visibleLeadStats.total}
                                 </Text>
 
                                 <View style={styles.leadsFooterActions}>
                                     <Pressable
                                         onPress={(e) => {
                                             e.stopPropagation();
-                                            router.push({ pathname: "/admin/auto-assign-history" as any });
+                                            goToAutoAssignHistory();
                                         }}
                                         style={({ pressed }) => [
                                             styles.secondaryActionBtn,
@@ -820,7 +900,7 @@ export default function AdminHomeScreen() {
                                     title={a.title}
                                     icon={a.icon}
                                     onPress={() => router.push({ pathname: a.route as any })}
-                                    active={a.route === "/admin/leads" ? false : false}
+                                    active={false}
                                 />
                             ))}
                         </View>

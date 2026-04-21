@@ -512,6 +512,14 @@ export type DailyEventDoc = {
     address?: string;
 
     /**
+     * ✅ Snapshot contable congelado
+     * Se guarda al momento de marcar "visited"
+     * para que el histórico NO cambie si luego cambia la tarifa del usuario.
+     */
+    rateApplied?: number | null;
+    amount?: number | null;
+
+    /**
      * ✅ Compat (legacy): motivo como texto libre
      */
     note?: string | null;

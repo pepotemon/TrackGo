@@ -2,6 +2,7 @@ import {
     addDoc,
     deleteDoc,
     doc,
+    getDoc,
     getDocs,
     limit,
     onSnapshot,
@@ -229,7 +230,10 @@ function clampPositiveInt(value: unknown, fallback: number, max: number) {
     if (!Number.isFinite(n) || n <= 0) return fallback;
     return Math.min(Math.floor(n), max);
 }
-
+function getUserRatePerVisitFromDoc(data: any): number {
+    const n = Number(data?.ratePerVisit ?? data?.visitFee ?? 0);
+    return Number.isFinite(n) ? n : 0;
+}
 function toMs(v: any): number {
     if (!v) return 0;
     if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -249,16 +253,36 @@ export type SubscribeAdminClientsOptions = {
     limitCount?: number;
     onlyMetaUnassigned?: boolean;
     verificationStatuses?: ClientVerificationStatus[];
+
+    // ✅ NUEVO
+    startAtMs?: number;
+    endAtMs?: number;
 };
 
 export type SubscribeAdminLeadQueueOptions = {
     limitCount?: number;
     verificationStatuses?: Array<"pending_review" | "incomplete" | "not_suitable">;
+
+    // ✅ NUEVO
+    startAtMs?: number;
+    endAtMs?: number;
 };
 
 export type SubscribeAdminLeadHistoryOptions = {
     limitCount?: number;
     verificationStatuses?: Array<"incomplete" | "not_suitable">;
+
+    // ✅ NUEVO
+    startAtMs?: number;
+    endAtMs?: number;
+};
+
+export type SubscribeUserClientsOptions = {
+    limitCount?: number;
+
+    // ✅ NUEVO
+    startAtMs?: number;
+    endAtMs?: number;
 };
 
 export type AdminLeadsPageCursor = QueryDocumentSnapshot<DocumentData> | null;
@@ -273,12 +297,20 @@ export type GetAdminLeadHistoryPageOptions = {
     pageSize?: number;
     cursor?: AdminLeadsPageCursor;
     verificationStatuses?: Array<"incomplete" | "not_suitable">;
+
+    // ✅ NUEVO
+    startAtMs?: number;
+    endAtMs?: number;
 };
 
 export type GetAdminLeadQueuePageOptions = {
     pageSize?: number;
     cursor?: AdminLeadsPageCursor;
     verificationStatuses?: Array<"pending_review" | "incomplete" | "not_suitable">;
+
+    // ✅ NUEVO
+    startAtMs?: number;
+    endAtMs?: number;
 };
 
 /**
@@ -478,6 +510,18 @@ export async function updateClientStatus(
                 : (extra?.note ?? "").trim() || null
             : null;
 
+    // ✅ NUEVO: congelar tarifa/monto en el momento exacto del visitado
+    let rateApplied: number | null = null;
+    let amount: number | null = null;
+
+    if (status === "visited") {
+        const actorSnap = await getDoc(docRef.user(actorId));
+        const actorData = actorSnap.exists() ? actorSnap.data() : null;
+
+        rateApplied = getUserRatePerVisitFromDoc(actorData);
+        amount = rateApplied;
+    }
+
     const batch = writeBatch(db);
 
     const clientPatch: Partial<ClientDoc> =
@@ -525,6 +569,10 @@ export async function updateClientStatus(
         name: snapshot?.name,
         business: snapshot?.business,
         address: snapshot?.address,
+
+        // ✅ snapshot contable congelado
+        rateApplied: status === "visited" ? rateApplied : null,
+        amount: status === "visited" ? amount : null,
 
         rejectedReason: status === "rejected" ? normalizedRejectedReason : null,
         rejectedReasonText:
@@ -589,35 +637,30 @@ export function subscribeAdminClients(
         options?.verificationStatuses
     );
 
-    let qRef;
+    const constraints: any[] = [];
 
-    if (onlyMetaUnassigned && verificationStatuses.length > 0) {
-        qRef = query(
-            col.clients,
-            where("source", "==", "whatsapp_meta"),
-            where("assignedTo", "==", ""),
-            where("verificationStatus", "in", verificationStatuses),
-            orderBy("updatedAt", "desc"),
-            limit(finalLimit)
-        );
-    } else if (onlyMetaUnassigned) {
-        qRef = query(
-            col.clients,
-            where("source", "==", "whatsapp_meta"),
-            where("assignedTo", "==", ""),
-            orderBy("updatedAt", "desc"),
-            limit(finalLimit)
-        );
-    } else if (verificationStatuses.length > 0) {
-        qRef = query(
-            col.clients,
-            where("verificationStatus", "in", verificationStatuses),
-            orderBy("updatedAt", "desc"),
-            limit(finalLimit)
-        );
-    } else {
-        qRef = query(col.clients, orderBy("updatedAt", "desc"), limit(finalLimit));
+    if (onlyMetaUnassigned) {
+        constraints.push(where("source", "==", "whatsapp_meta"));
+        constraints.push(where("assignedTo", "==", ""));
     }
+
+    if (verificationStatuses.length > 0) {
+        constraints.push(where("verificationStatus", "in", verificationStatuses));
+    }
+
+    // ✅ NUEVO: filtro por rango de fecha
+    if (options?.startAtMs != null) {
+        constraints.push(where("updatedAt", ">=", options.startAtMs));
+    }
+
+    if (options?.endAtMs != null) {
+        constraints.push(where("updatedAt", "<=", options.endAtMs));
+    }
+
+    constraints.push(orderBy("updatedAt", "desc"));
+    constraints.push(limit(finalLimit));
+
+    const qRef = query(col.clients, ...constraints);
 
     return onSnapshot(
         qRef,
@@ -657,14 +700,25 @@ export function subscribeAdminLeadQueue(
         options?.verificationStatuses ?? ["pending_review", "incomplete", "not_suitable"]
     );
 
-    const qRef = query(
-        col.clients,
+    const constraints: any[] = [
         where("source", "==", "whatsapp_meta"),
         where("assignedTo", "==", ""),
         where("verificationStatus", "in", statuses),
-        orderBy("updatedAt", "desc"),
-        limit(finalLimit)
-    );
+    ];
+
+    // ✅ FILTRO POR FECHA REAL (Firestore)
+    if (options?.startAtMs != null) {
+        constraints.push(where("updatedAt", ">=", options.startAtMs));
+    }
+
+    if (options?.endAtMs != null) {
+        constraints.push(where("updatedAt", "<=", options.endAtMs));
+    }
+
+    constraints.push(orderBy("updatedAt", "desc"));
+    constraints.push(limit(finalLimit));
+
+    const qRef = query(col.clients, ...constraints);
 
     return onSnapshot(
         qRef,
@@ -703,14 +757,25 @@ export function subscribeAdminLeadHistory(
         options?.verificationStatuses ?? ["incomplete", "not_suitable"]
     );
 
-    const qRef = query(
-        col.clients,
+    const constraints: any[] = [
         where("source", "==", "whatsapp_meta"),
         where("assignedTo", "==", ""),
         where("verificationStatus", "in", statuses),
-        orderBy("updatedAt", "desc"),
-        limit(finalLimit)
-    );
+    ];
+
+    // ✅ FILTRO POR FECHA REAL
+    if (options?.startAtMs != null) {
+        constraints.push(where("updatedAt", ">=", options.startAtMs));
+    }
+
+    if (options?.endAtMs != null) {
+        constraints.push(where("updatedAt", "<=", options.endAtMs));
+    }
+
+    constraints.push(orderBy("updatedAt", "desc"));
+    constraints.push(limit(finalLimit));
+
+    const qRef = query(col.clients, ...constraints);
 
     return onSnapshot(
         qRef,
@@ -745,13 +810,24 @@ export async function getAdminLeadQueuePage(
         where("source", "==", "whatsapp_meta"),
         where("assignedTo", "==", ""),
         where("verificationStatus", "in", statuses),
-        orderBy("updatedAt", "desc"),
-        limit(pageSize),
     ];
 
-    if (options?.cursor) {
-        constraints.splice(constraints.length - 1, 0, startAfter(options.cursor));
+    // ✅ NUEVO
+    if (options?.startAtMs != null) {
+        constraints.push(where("updatedAt", ">=", options.startAtMs));
     }
+
+    if (options?.endAtMs != null) {
+        constraints.push(where("updatedAt", "<=", options.endAtMs));
+    }
+
+    constraints.push(orderBy("updatedAt", "desc"));
+
+    if (options?.cursor) {
+        constraints.push(startAfter(options.cursor));
+    }
+
+    constraints.push(limit(pageSize));
 
     const qRef = query(col.clients, ...constraints);
     const snap = await getDocs(qRef);
@@ -787,13 +863,24 @@ export async function getAdminLeadHistoryPage(
         where("source", "==", "whatsapp_meta"),
         where("assignedTo", "==", ""),
         where("verificationStatus", "in", statuses),
-        orderBy("updatedAt", "desc"),
-        limit(pageSize),
     ];
 
-    if (options?.cursor) {
-        constraints.splice(constraints.length - 1, 0, startAfter(options.cursor));
+    // ✅ NUEVO
+    if (options?.startAtMs != null) {
+        constraints.push(where("updatedAt", ">=", options.startAtMs));
     }
+
+    if (options?.endAtMs != null) {
+        constraints.push(where("updatedAt", "<=", options.endAtMs));
+    }
+
+    constraints.push(orderBy("updatedAt", "desc"));
+
+    if (options?.cursor) {
+        constraints.push(startAfter(options.cursor));
+    }
+
+    constraints.push(limit(pageSize));
 
     const qRef = query(col.clients, ...constraints);
     const snap = await getDocs(qRef);
@@ -1077,14 +1164,26 @@ export async function deleteClient(clientId: string) {
  */
 export function subscribeUserClients(
     userId: string,
-    callback: (clients: ClientDoc[]) => void
+    callback: (clients: ClientDoc[]) => void,
+    options?: SubscribeUserClientsOptions
 ): Unsubscribe {
-    const qRef = query(
-        col.clients,
-        where("assignedTo", "==", userId),
-        orderBy("updatedAt", "desc"),
-        limit(200)
-    );
+    const finalLimit = clampPositiveInt(options?.limitCount, 200, 1000);
+
+    const constraints: any[] = [where("assignedTo", "==", userId)];
+
+    // ✅ NUEVO: filtro real por fecha
+    if (options?.startAtMs != null) {
+        constraints.push(where("updatedAt", ">=", options.startAtMs));
+    }
+
+    if (options?.endAtMs != null) {
+        constraints.push(where("updatedAt", "<=", options.endAtMs));
+    }
+
+    constraints.push(orderBy("updatedAt", "desc"));
+    constraints.push(limit(finalLimit));
+
+    const qRef = query(col.clients, ...constraints);
 
     return onSnapshot(
         qRef,

@@ -24,7 +24,6 @@ import {
     createClient,
     deleteClient,
     subscribeAdminClients,
-    subscribeUserClients,
     updateClientFields,
 } from "../../data/repositories/clientsRepo";
 import { dayKeyFromMs } from "../../data/repositories/dailyEventsRepo";
@@ -32,6 +31,20 @@ import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, UserDoc } from "../../types/models";
 
 import { useShareText } from "../../share/receiveShareText";
+
+const COLORS = {
+    bg: "#0B1220",
+    card: "#111827",
+    border: "#1F2937",
+    text: "#F9FAFB",
+    muted: "#9CA3AF",
+
+    visited: "#22C55E",
+    rejected: "#F87171",
+    pending: "#FBBF24",
+    primary: "#2563EB",
+    info: "#60A5FA",
+};
 
 function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
@@ -42,8 +55,8 @@ function looksLikeMapsUrl(url: string) {
     return u.includes("maps") || u.includes("goo.gl") || u.includes("google.com");
 }
 
-function safeText(x?: string) {
-    return (x ?? "").toLowerCase();
+function safeText(x?: string | null) {
+    return String(x ?? "").toLowerCase();
 }
 
 function safeNumber(v: any): number | null {
@@ -126,6 +139,63 @@ function cleanUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
     return out;
 }
 
+function useDebouncedValue<T>(value: T, delay = 250) {
+    const [debounced, setDebounced] = useState(value);
+
+    useEffect(() => {
+        const t = setTimeout(() => setDebounced(value), delay);
+        return () => clearTimeout(t);
+    }, [value, delay]);
+
+    return debounced;
+}
+
+function pad2(n: number) {
+    return String(n).padStart(2, "0");
+}
+
+function formatInputDate(ms: number) {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function parseInputDateToStartMs(value: string) {
+    const v = String(value ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+    const [y, m, d] = v.split("-").map(Number);
+    return new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+}
+
+function parseInputDateToEndMs(value: string) {
+    const v = String(value ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+    const [y, m, d] = v.split("-").map(Number);
+    return new Date(y, m - 1, d, 23, 59, 59, 999).getTime();
+}
+
+function getDefaultWeekRange() {
+    const now = new Date();
+
+    const end = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        23,
+        59,
+        59,
+        999
+    ).getTime();
+
+    const startDate = new Date(end);
+    startDate.setDate(startDate.getDate() - 6);
+    startDate.setHours(0, 0, 0, 0);
+
+    return {
+        start: startDate.getTime(),
+        end,
+    };
+}
+
 type PickerMode = "create" | "assignExisting" | "edit";
 
 type Section = {
@@ -166,12 +236,23 @@ export default function AdminUploadClientsScreen() {
     const [users, setUsers] = useState<UserDoc[]>([]);
     const [usersLoading, setUsersLoading] = useState(false);
 
-    // fuente correcta por usuario (igual que userhistory)
-    const [clientsByUser, setClientsByUser] = useState<Record<string, ClientDoc[]>>({});
-    // fuente correcta para sin asignar
-    const [unassignedClients, setUnassignedClients] = useState<ClientDoc[]>([]);
+    const [clients, setClients] = useState<ClientDoc[]>([]);
 
     const [q, setQ] = useState("");
+    const debouncedQ = useDebouncedValue(q, 280);
+
+    const initialRange = useMemo(() => getDefaultWeekRange(), []);
+    const [dateFrom, setDateFrom] = useState(formatInputDate(initialRange.start));
+    const [dateTo, setDateTo] = useState(formatInputDate(initialRange.end));
+
+    const dateFromMs = useMemo(() => parseInputDateToStartMs(dateFrom), [dateFrom]);
+    const dateToMs = useMemo(() => parseInputDateToEndMs(dateTo), [dateTo]);
+
+    const rangeIsValid =
+        typeof dateFromMs === "number" &&
+        typeof dateToMs === "number" &&
+        dateFromMs <= dateToMs;
+
     const [busyId, setBusyId] = useState<string | null>(null);
 
     const [createOpen, setCreateOpen] = useState(false);
@@ -246,6 +327,7 @@ export default function AdminUploadClientsScreen() {
             const u = await listUsers("user");
             const list = u ?? [];
             setUsers(list);
+
             if (!cAssigneeId && list[0]) setCAssigneeId(list[0].id);
             if (!eAssigneeId && list[0]) setEAssigneeId(list[0].id);
         } finally {
@@ -254,7 +336,7 @@ export default function AdminUploadClientsScreen() {
     };
 
     useEffect(() => {
-        reloadUsers();
+        void reloadUsers();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -263,70 +345,25 @@ export default function AdminUploadClientsScreen() {
         await reloadUsers();
     };
 
-    /**
-     * IMPORTANTE:
-     * esta es la corrección real.
-     * Para que coincida con UserHistory / RejectedHistory / VisitedHistory:
-     * - por cada usuario: subscribeUserClients(userId)
-     * - sin asignar: subscribeAdminClients filtrando assignedTo vacío
-     */
     useEffect(() => {
-        const cleanUsers = users.filter((u) => String(u.id ?? "").trim().length > 0);
-
-        const unsubscribers: Array<() => void> = [];
-
-        // reset inicial al cambiar listado de usuarios
-        setClientsByUser({});
-
-        for (const u of cleanUsers) {
-            const uid = String(u.id).trim();
-            const unsub = subscribeUserClients(uid, (list) => {
-                setClientsByUser((prev) => ({
-                    ...prev,
-                    [uid]: Array.isArray(list) ? list : [],
-                }));
-            });
-            unsubscribers.push(unsub);
+        if (!rangeIsValid) {
+            setClients([]);
+            return;
         }
 
-        const unsubAdmin = subscribeAdminClients((list) => {
-            const all = Array.isArray(list) ? list : [];
-            setUnassignedClients(
-                all.filter((c) => String((c.assignedTo ?? "") as any).trim().length === 0)
-            );
-        });
-        unsubscribers.push(unsubAdmin);
-
-        return () => {
-            unsubscribers.forEach((fn) => {
-                try {
-                    fn();
-                } catch { }
-            });
-        };
-    }, [users]);
-
-    /**
-     * unión de todas las fuentes correctas.
-     * dedupe por id para evitar dobles conteos durante transiciones de asignación.
-     */
-    const clients = useMemo(() => {
-        const byId = new Map<string, ClientDoc>();
-
-        for (const list of Object.values(clientsByUser)) {
-            for (const c of list ?? []) {
-                if (!c?.id) continue;
-                byId.set(c.id, c);
+        const unsub = subscribeAdminClients(
+            (list) => {
+                setClients(Array.isArray(list) ? list : []);
+            },
+            {
+                limitCount: 1200,
+                startAtMs: dateFromMs ?? undefined,
+                endAtMs: dateToMs ?? undefined,
             }
-        }
+        );
 
-        for (const c of unassignedClients) {
-            if (!c?.id) continue;
-            byId.set(c.id, c);
-        }
-
-        return Array.from(byId.values());
-    }, [clientsByUser, unassignedClients]);
+        return () => unsub();
+    }, [rangeIsValid, dateFromMs, dateToMs]);
 
     const userById = useMemo(() => {
         const m = new Map<string, UserDoc>();
@@ -364,22 +401,37 @@ export default function AdminUploadClientsScreen() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [params?.mapsUrl, params?.maps]);
 
+    const clientsByAssignedKey = useMemo(() => {
+        const grouped: Record<string, ClientDoc[]> = {};
+
+        for (const c of clients) {
+            const key = getAssignedKey(c);
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(c);
+        }
+
+        return grouped;
+    }, [clients]);
+
+    const unassignedClients = useMemo(() => {
+        return clientsByAssignedKey.UNASSIGNED ?? [];
+    }, [clientsByAssignedKey]);
+
     const pendingByUser = useMemo(() => {
         const m = new Map<string, number>();
 
-        // usuarios: contar desde subscribeUserClients
         for (const u of users) {
             const uid = String(u.id ?? "").trim();
             if (!uid) continue;
-            const totals = countStatuses(clientsByUser[uid] ?? []);
+
+            const totals = countStatuses(clientsByAssignedKey[uid] ?? []);
             m.set(uid, totals.pending);
         }
 
-        // unassigned: contar desde admin filtrado vacío
         m.set("UNASSIGNED", countStatuses(unassignedClients).pending);
 
         return m;
-    }, [users, clientsByUser, unassignedClients]);
+    }, [users, clientsByAssignedKey, unassignedClients]);
 
     const countsWithSource = useMemo(() => {
         const base = countStatuses(clients);
@@ -397,8 +449,8 @@ export default function AdminUploadClientsScreen() {
     }, [clients]);
 
     const filteredClients = useMemo(() => {
-        const qtText = q.trim().toLowerCase();
-        const qtDigits = normalizePhone(q);
+        const qtText = debouncedQ.trim().toLowerCase();
+        const qtDigits = normalizePhone(debouncedQ);
 
         if (!qtText && !qtDigits) return clients;
 
@@ -412,7 +464,10 @@ export default function AdminUploadClientsScreen() {
 
         return clients.filter((c) => {
             const assignedKey = getAssignedKey(c);
-            if (assignedKey !== "UNASSIGNED" && matchedUserIds.has(assignedKey)) return true;
+
+            if (assignedKey !== "UNASSIGNED" && matchedUserIds.has(assignedKey)) {
+                return true;
+            }
 
             if (qtDigits) {
                 const phoneDigits = normalizePhone(c.phone ?? "");
@@ -435,20 +490,27 @@ export default function AdminUploadClientsScreen() {
 
             return false;
         });
-    }, [clients, q, users, userLabelById]);
+    }, [clients, debouncedQ, users, userLabelById]);
 
     const sections: Section[] = useMemo(() => {
+        const filteredByAssigned = new Map<string, ClientDoc[]>();
+
+        for (const c of filteredClients) {
+            const key = getAssignedKey(c);
+            const prev = filteredByAssigned.get(key) ?? [];
+            prev.push(c);
+            filteredByAssigned.set(key, prev);
+        }
+
         const keys = [
             "UNASSIGNED",
-            ...users
-                .map((u) => String(u.id ?? "").trim())
-                .filter(Boolean),
+            ...users.map((u) => String(u.id ?? "").trim()).filter(Boolean),
         ];
 
         const makeTitle = (key: string) => {
             if (key === "UNASSIGNED") return "Sin asignar";
             const u = userById.get(key);
-            if (!u) return "Asignado (cargando…)";
+            if (!u) return "Asignado";
             const name = (u.name ?? "").trim();
             const email = (u.email ?? "").trim();
             return name && email ? name : name ? name : email ? email : "Usuario";
@@ -465,7 +527,7 @@ export default function AdminUploadClientsScreen() {
         const out: Section[] = [];
 
         for (const key of keys) {
-            const group = filteredClients.filter((c) => getAssignedKey(c) === key);
+            const group = filteredByAssigned.get(key) ?? [];
             if (!group.length) continue;
 
             const totals = countStatuses(group);
@@ -712,7 +774,7 @@ export default function AdminUploadClientsScreen() {
     const AssigneeRowValue = (userId: string | null) => {
         if (!userId) return "Sin asignar";
         const u = userById.get(userId);
-        if (!u) return "Asignado (cargando…)";
+        if (!u) return "Asignado";
 
         const name = (u.name ?? "").trim();
         const email = (u.email ?? "").trim();
@@ -784,7 +846,8 @@ export default function AdminUploadClientsScreen() {
     };
 
     const goUserClients = (key: string) => {
-        router.push({ pathname: "/admin/user-clients" as any, params: { userId: key } });
+        if (key === "UNASSIGNED") return; // 🚫 no abrir pantalla
+        router.push({ pathname: "/admin/user-clients", params: { userId: key } });
     };
 
     return (
@@ -825,6 +888,41 @@ export default function AdminUploadClientsScreen() {
                         />
                     </Pressable>
                 </View>
+
+                <View style={styles.rangeWrap}>
+                    <View style={styles.rangeField}>
+                        <Text style={styles.rangeLabel}>Inicio</Text>
+                        <TextInput
+                            value={dateFrom}
+                            onChangeText={setDateFrom}
+                            placeholder="YYYY-MM-DD"
+                            placeholderTextColor={COLORS.muted}
+                            autoCapitalize="none"
+                            style={styles.rangeInput}
+                        />
+                    </View>
+
+                    <View style={styles.rangeField}>
+                        <Text style={styles.rangeLabel}>Fin</Text>
+                        <TextInput
+                            value={dateTo}
+                            onChangeText={setDateTo}
+                            placeholder="YYYY-MM-DD"
+                            placeholderTextColor={COLORS.muted}
+                            autoCapitalize="none"
+                            style={styles.rangeInput}
+                        />
+                    </View>
+                </View>
+
+                {!rangeIsValid ? (
+                    <View style={styles.rangeErrorBox}>
+                        <Ionicons name="alert-circle-outline" size={16} color={COLORS.rejected} />
+                        <Text style={styles.rangeErrorText}>
+                            Rango inválido. Usa formato YYYY-MM-DD y asegúrate de que inicio no sea mayor que fin.
+                        </Text>
+                    </View>
+                ) : null}
 
                 <View style={styles.searchWrap}>
                     <Ionicons name="search-outline" size={18} color={COLORS.muted} />
@@ -913,7 +1011,11 @@ export default function AdminUploadClientsScreen() {
                         <View style={styles.empty}>
                             <Ionicons name="people-outline" size={24} color={COLORS.muted} />
                             <Text style={styles.emptyText}>
-                                {q.trim() ? "No hay resultados." : "Aún no hay clientes."}
+                                {!rangeIsValid
+                                    ? "Corrige el rango de fechas."
+                                    : debouncedQ.trim()
+                                        ? "No hay resultados."
+                                        : "No hay clientes en este rango."}
                             </Text>
                         </View>
                     }
@@ -1287,20 +1389,6 @@ export default function AdminUploadClientsScreen() {
     );
 }
 
-const COLORS = {
-    bg: "#0B1220",
-    card: "#111827",
-    border: "#1F2937",
-    text: "#F9FAFB",
-    muted: "#9CA3AF",
-
-    visited: "#22C55E",
-    rejected: "#F87171",
-    pending: "#FBBF24",
-    primary: "#2563EB",
-    info: "#60A5FA",
-};
-
 const styles = StyleSheet.create({
     safe: { flex: 1, backgroundColor: COLORS.bg },
 
@@ -1330,6 +1418,51 @@ const styles = StyleSheet.create({
     headerBadgeDisabled: { opacity: 0.55 },
 
     pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
+
+    rangeWrap: {
+        marginHorizontal: 16,
+        marginBottom: 10,
+        flexDirection: "row",
+        gap: 10,
+    },
+    rangeField: {
+        flex: 1,
+        gap: 6,
+    },
+    rangeLabel: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    rangeInput: {
+        height: 46,
+        borderRadius: 14,
+        paddingHorizontal: 14,
+        backgroundColor: "#0F172A",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "700",
+    },
+    rangeErrorBox: {
+        marginHorizontal: 16,
+        marginBottom: 10,
+        flexDirection: "row",
+        gap: 8,
+        alignItems: "center",
+        padding: 10,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: "rgba(248,113,113,0.4)",
+        backgroundColor: "rgba(248,113,113,0.10)",
+    },
+    rangeErrorText: {
+        color: COLORS.rejected,
+        fontSize: 12,
+        fontWeight: "900",
+        flex: 1,
+    },
 
     searchWrap: {
         marginHorizontal: 16,

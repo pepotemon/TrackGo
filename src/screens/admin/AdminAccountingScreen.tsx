@@ -3,13 +3,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+    InteractionManager,
     Pressable,
     ScrollView,
     StatusBar,
     StyleSheet,
     Text,
     View,
-    type LayoutChangeEvent,
+    type LayoutChangeEvent
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AdminBackground from "../../components/admin/AdminBackground";
@@ -112,15 +113,30 @@ function latestEventByClient(events: DailyEventDoc[]) {
     return map;
 }
 
-function safeNumber(n: any): number {
+function safeNumber(n: any, fallback = 0): number {
     const v = Number(n);
-    return Number.isFinite(v) ? v : 0;
+    return Number.isFinite(v) ? v : fallback;
 }
 
 function getRatePerVisit(u?: UserDoc | null) {
     const anyU: any = u as any;
     const n = anyU?.ratePerVisit ?? anyU?.visitFee ?? 0;
     return typeof n === "number" && Number.isFinite(n) ? n : 0;
+}
+
+function getFrozenAmountFromEvent(
+    event: DailyEventDoc,
+    user?: UserDoc | null
+) {
+    const anyE: any = event as any;
+
+    const amount = safeNumber(anyE?.amount, NaN);
+    if (Number.isFinite(amount)) return amount;
+
+    const rateApplied = safeNumber(anyE?.rateApplied, NaN);
+    if (Number.isFinite(rateApplied)) return rateApplied;
+
+    return getRatePerVisit(user);
 }
 
 function clamp2(n: number) {
@@ -631,7 +647,7 @@ export default function AdminAccountingScreen() {
     const [allocations, setAllocations] = useState<WeeklyInvestmentAllocations>({});
 
     // historial semanas
-    const HISTORY_WEEKS = 24;
+    const [weeksRange, setWeeksRange] = useState(1); // empieza solo con semana actual
     const [historyEventsByWeek, setHistoryEventsByWeek] = useState<Record<string, DailyEventDoc[]>>({});
     const [historyInvByWeek, setHistoryInvByWeek] = useState<Record<string, number>>({});
     const [historyErr, setHistoryErr] = useState<string | null>(null);
@@ -715,9 +731,11 @@ export default function AdminAccountingScreen() {
         baseMonday.setHours(0, 0, 0, 0);
 
         const arr: { startKey: string; endKey: string; startDate: Date; endDate: Date }[] = [];
-        for (let i = HISTORY_WEEKS - 1; i >= 0; i--) {
+
+        for (let i = weeksRange - 1; i >= 0; i--) {
             const monday = addDays(baseMonday, -7 * i);
             const r = weekRangeFromMondayStartMonToSat(monday);
+
             arr.push({
                 startKey: r.startKey,
                 endKey: r.endKey,
@@ -725,8 +743,9 @@ export default function AdminAccountingScreen() {
                 endDate: r.endDate,
             });
         }
+
         return arr; // oldest -> newest
-    }, [startDate]);
+    }, [startDate, weeksRange]);
 
     useEffect(() => {
         setHistoryErr(null);
@@ -737,7 +756,12 @@ export default function AdminAccountingScreen() {
                 w.startKey,
                 w.endKey,
                 (list) => {
-                    setHistoryEventsByWeek((prev) => ({ ...prev, [w.startKey]: list ?? [] }));
+                    InteractionManager.runAfterInteractions(() => {
+                        setHistoryEventsByWeek((prev) => ({
+                            ...prev,
+                            [w.startKey]: list ?? [],
+                        }));
+                    });
                 },
                 (err) => {
                     const msg = `${err?.code ?? "error"}: ${err?.message ?? ""}`.trim();
@@ -750,10 +774,16 @@ export default function AdminAccountingScreen() {
                 w.startKey,
                 (doc) => {
                     const amt = clamp2(safeNumber((doc as any)?.amount ?? 0));
-                    setHistoryInvByWeek((prev) => ({ ...prev, [w.startKey]: amt }));
+                    setHistoryInvByWeek((prev) => ({
+                        ...prev,
+                        [w.startKey]: amt,
+                    }));
                 },
                 () => {
-                    setHistoryInvByWeek((prev) => ({ ...prev, [w.startKey]: 0 }));
+                    setHistoryInvByWeek((prev) => ({
+                        ...prev,
+                        [w.startKey]: 0,
+                    }));
                 }
             );
             unsubs.push(() => u2?.());
@@ -796,9 +826,13 @@ export default function AdminAccountingScreen() {
             }
         }
 
-        for (const [uid, cnt] of Object.entries(perUserVisits)) {
-            const rate = getRatePerVisit(userById.get(uid));
-            perUserAmount[uid] = cnt * rate;
+        for (const e of latest.values()) {
+            if (!shouldCountEventCurrentWeek(e)) continue;
+            if (e.type !== "visited") continue;
+
+            const uid = e.userId;
+            const amount = getFrozenAmountFromEvent(e, userById.get(uid));
+            perUserAmount[uid] = clamp2((perUserAmount[uid] ?? 0) + amount);
         }
 
         const gross = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
@@ -846,8 +880,7 @@ export default function AdminAccountingScreen() {
 
             if (e.type === "visited") {
                 byDay[dk].visited += 1;
-                const rate = getRatePerVisit(userById.get(e.userId));
-                byDay[dk].gross += rate;
+                byDay[dk].gross += getFrozenAmountFromEvent(e, userById.get(e.userId));
             }
         }
 
@@ -896,9 +929,12 @@ export default function AdminAccountingScreen() {
                 }
             }
 
-            for (const [uid, cnt] of Object.entries(perUserVisits)) {
-                const rate = getRatePerVisit(userById.get(uid));
-                perUserAmount[uid] = cnt * rate;
+            for (const e of latest.values()) {
+                if (e.type !== "visited") continue;
+
+                const uid = e.userId;
+                const amount = getFrozenAmountFromEvent(e, userById.get(uid));
+                perUserAmount[uid] = clamp2((perUserAmount[uid] ?? 0) + amount);
             }
 
             const gross = clamp2(Object.values(perUserAmount).reduce((a, b) => a + b, 0));
@@ -1224,17 +1260,40 @@ export default function AdminAccountingScreen() {
                                 <Text style={styles.cardSub}>
                                     Meses activos con desglose semanal al tocar
                                 </Text>
+
+                                <View style={styles.rangeControls}>
+                                    <Pressable
+                                        onPress={() => setWeeksRange(1)}
+                                        style={({ pressed }) => [styles.rangeBtn, pressed && styles.pressed]}
+                                    >
+                                        <Text style={styles.rangeBtnText}>Actual</Text>
+                                    </Pressable>
+
+                                    <Pressable
+                                        onPress={() => setWeeksRange((prev) => prev + 4)}
+                                        style={({ pressed }) => [styles.rangeBtn, pressed && styles.pressed]}
+                                    >
+                                        <Text style={styles.rangeBtnText}>+4 sem</Text>
+                                    </Pressable>
+
+                                    <Pressable
+                                        onPress={() => setWeeksRange((prev) => prev + 12)}
+                                        style={({ pressed }) => [styles.rangeBtn, pressed && styles.pressed]}
+                                    >
+                                        <Text style={styles.rangeBtnText}>+12 sem</Text>
+                                    </Pressable>
+                                </View>
+
                                 {historyErr ? <Text style={styles.errText}>Historial: {historyErr}</Text> : null}
                             </View>
 
                             <View style={styles.historyRight}>
                                 <View style={styles.weekPill}>
                                     <Ionicons name="time-outline" size={14} color={COLORS.muted} />
-                                    <Text style={styles.weekPillText}>{activeMonths.length}m</Text>
+                                    <Text style={styles.weekPillText}>{weeksRange} sem</Text>
                                 </View>
                             </View>
                         </View>
-
                         <View style={styles.chartBlock}>
                             <Text style={styles.cardSub}>Ganancia real por mes activo</Text>
                             <View style={styles.svgCard}>
@@ -1650,4 +1709,27 @@ const styles = StyleSheet.create({
     },
 
     pressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
+    rangeControls: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+        marginTop: 6,
+    },
+
+    rangeBtn: {
+        height: 30,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+
+    rangeBtnText: {
+        color: COLORS.text,
+        fontSize: 11,
+        fontWeight: "900",
+    },
 });

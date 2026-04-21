@@ -1,3 +1,4 @@
+// src/data/repositories/earningsRepo.ts
 import {
     limit,
     onSnapshot,
@@ -6,7 +7,7 @@ import {
     where,
     type Unsubscribe,
 } from "firebase/firestore";
-import type { ClientDoc, UserDoc } from "../../types/models";
+import type { DailyEventDoc, UserDoc } from "../../types/models";
 import { col } from "../firestore";
 
 export type EarningsRow = {
@@ -28,67 +29,89 @@ function safeNumber(n: any, fallback = 0) {
     return typeof n === "number" && isFinite(n) ? n : fallback;
 }
 
-/**
- * Convierte "YYYY-MM-DD" a ms (medianoche local).
- */
-function dayKeyToStartMs(dayKey: string): number {
-    const [y, m, d] = dayKey.trim().split("-").map((x) => parseInt(x, 10));
-    if (!y || !m || !d) return 0;
-    return new Date(y, m - 1, d, 0, 0, 0, 0).getTime(); // local
-}
-
-/**
- * Rango [start, end) en ms para un dayKey.
- */
-function dayKeyToRangeMs(dayKey: string): { startMs: number; endMs: number } {
-    const startMs = dayKeyToStartMs(dayKey);
-    const endMs = startMs + 24 * 60 * 60 * 1000;
-    return { startMs, endMs };
-}
-
-/**
- * Rango [start, end) para weekKey por dayKeys (inclusive ambos dayKeys).
- * Ej: startDayKey=Lunes, endDayKey=Domingo -> end = lunes siguiente 00:00
- */
-function rangeDayKeysToRangeMs(startDayKey: string, endDayKey: string): { startMs: number; endMs: number } {
-    const startMs = dayKeyToStartMs(startDayKey);
-    const endStart = dayKeyToStartMs(endDayKey);
-    const endMs = endStart + 24 * 60 * 60 * 1000; // exclusivo
-    return { startMs, endMs };
-}
-
-/**
- * Soporta ambos nombres de campo:
- * - ratePerVisit (tu modelo)
- * - visitFee (tu código anterior)
- */
-function getUserRatePerVisit(u: UserDoc): number {
+function getUserRatePerVisit(u?: UserDoc | null): number {
     const anyU: any = u as any;
-    return safeNumber(anyU.ratePerVisit ?? anyU.visitFee ?? anyU.visitFeePerVisit, 0);
+    return safeNumber(anyU?.ratePerVisit ?? anyU?.visitFee ?? anyU?.visitFeePerVisit, 0);
 }
 
-function buildSummaryFromClients(clients: ClientDoc[], users: UserDoc[]): EarningsSummary {
-    const visitedByUser = new Map<string, number>();
+function toMs(v: any): number {
+    if (!v) return 0;
+    if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+    if (v instanceof Date) return v.getTime();
+    if (typeof v?.toMillis === "function") return v.toMillis();
+    if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+    }
+    return 0;
+}
 
-    for (const c of clients) {
-        if (c.status !== "visited") continue;
-        const uid = (c as any).statusBy as string | undefined;
+function latestEventByClient(events: DailyEventDoc[]) {
+    const map = new Map<string, DailyEventDoc>();
+
+    for (const e of events) {
+        const cid = (e as any)?.clientId;
+        if (!cid) continue;
+
+        const prev = map.get(cid);
+        const eMs = toMs((e as any)?.createdAt);
+        const pMs = prev ? toMs((prev as any)?.createdAt) : 0;
+
+        if (!prev || eMs >= pMs) map.set(cid, e);
+    }
+
+    return map;
+}
+
+function getFrozenAmountFromEvent(
+    event: DailyEventDoc,
+    user?: UserDoc | null
+): number {
+    const anyE: any = event as any;
+
+    const amount = safeNumber(anyE?.amount, NaN);
+    if (Number.isFinite(amount)) return amount;
+
+    const rateApplied = safeNumber(anyE?.rateApplied, NaN);
+    if (Number.isFinite(rateApplied)) return rateApplied;
+
+    return getUserRatePerVisit(user);
+}
+
+function buildSummaryFromEvents(events: DailyEventDoc[], users: UserDoc[]): EarningsSummary {
+    const usersById = new Map<string, UserDoc>();
+    for (const u of users) usersById.set(u.id, u);
+
+    const latest = latestEventByClient(events);
+    const visitedByUser = new Map<string, number>();
+    const amountByUser = new Map<string, number>();
+
+    for (const e of latest.values()) {
+        if ((e as any)?.type !== "visited") continue;
+
+        const uid = String((e as any)?.userId ?? "").trim();
         if (!uid) continue;
+
         visitedByUser.set(uid, (visitedByUser.get(uid) ?? 0) + 1);
+
+        const amount = getFrozenAmountFromEvent(e, usersById.get(uid));
+        amountByUser.set(uid, (amountByUser.get(uid) ?? 0) + amount);
     }
 
     const rows: EarningsRow[] = users
         .filter((u) => u.role === "user")
         .map((u) => {
             const visited = visitedByUser.get(u.id) ?? 0;
+            const amount = amountByUser.get(u.id) ?? 0;
             const rate = getUserRatePerVisit(u);
+
             return {
                 userId: u.id,
                 name: u.name ?? "Usuario",
                 email: u.email,
-                ratePerVisit: rate,
+                ratePerVisit: rate, // solo informativo
                 visited,
-                amount: visited * rate,
+                amount,
             };
         })
         .sort((a, b) => b.amount - a.amount);
@@ -100,14 +123,8 @@ function buildSummaryFromClients(clients: ClientDoc[], users: UserDoc[]): Earnin
 }
 
 /**
- * ✅ Ganancias por 1 día (dayKey) usando clients.status + statusAt
- *
- * Query:
- * - status == "visited"
- * - statusAt >= startOfDay
- * - statusAt < endOfDay
- *
- * Nota: Firestore probablemente te pedirá un índice compuesto (status + statusAt).
+ * ✅ Ganancias por 1 día usando dailyEvents.
+ * Cuenta solo el último evento por cliente dentro del día.
  */
 export function subscribeEarningsByDay(
     dayKey: string,
@@ -116,22 +133,19 @@ export function subscribeEarningsByDay(
     onErr?: (err: any) => void
 ): Unsubscribe {
     const dk = dayKey.trim();
-    const { startMs, endMs } = dayKeyToRangeMs(dk);
 
     const q = query(
-        col.clients,
-        where("status", "==", "visited"),
-        where("statusAt", ">=", startMs),
-        where("statusAt", "<", endMs),
-        orderBy("statusAt", "desc"),
-        limit(10000)
+        col.dailyEvents,
+        where("dayKey", "==", dk),
+        orderBy("createdAt", "desc"),
+        limit(5000)
     );
 
     return onSnapshot(
         q,
         (snap) => {
-            const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ClientDoc[];
-            cb(buildSummaryFromClients(list, users));
+            const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as DailyEventDoc[];
+            cb(buildSummaryFromEvents(list, users));
         },
         (err) => {
             console.log("[subscribeEarningsByDay] error:", err?.code, err?.message);
@@ -141,9 +155,8 @@ export function subscribeEarningsByDay(
 }
 
 /**
- * ✅ Ganancias por rango de dayKeys (startDayKey..endDayKey) usando clients.status + statusAt
- *
- * Ideal para cierre semanal (Lun..Dom).
+ * ✅ Ganancias por rango usando dailyEvents.
+ * Ideal para semana o histórico.
  */
 export function subscribeEarningsByRange(
     startDayKey: string,
@@ -152,22 +165,23 @@ export function subscribeEarningsByRange(
     cb: (summary: EarningsSummary) => void,
     onErr?: (err: any) => void
 ): Unsubscribe {
-    const { startMs, endMs } = rangeDayKeysToRangeMs(startDayKey.trim(), endDayKey.trim());
+    const start = startDayKey.trim();
+    const end = endDayKey.trim();
 
     const q = query(
-        col.clients,
-        where("status", "==", "visited"),
-        where("statusAt", ">=", startMs),
-        where("statusAt", "<", endMs),
-        orderBy("statusAt", "asc"),
+        col.dailyEvents,
+        where("dayKey", ">=", start),
+        where("dayKey", "<=", end),
+        orderBy("dayKey", "asc"),
+        orderBy("createdAt", "asc"),
         limit(20000)
     );
 
     return onSnapshot(
         q,
         (snap) => {
-            const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ClientDoc[];
-            cb(buildSummaryFromClients(list, users));
+            const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as DailyEventDoc[];
+            cb(buildSummaryFromEvents(list, users));
         },
         (err) => {
             console.log("[subscribeEarningsByRange] error:", err?.code, err?.message);

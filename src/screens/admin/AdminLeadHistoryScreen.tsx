@@ -185,6 +185,90 @@ function formatDateLabel(ms?: number) {
     return `${day} ${month} ${year}`;
 }
 
+function formatShortDateInput(ms?: number) {
+    if (!ms || !Number.isFinite(ms)) return "";
+    const d = new Date(ms);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
+function startOfDay(ms: number) {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+}
+
+function endOfDay(ms: number) {
+    const d = new Date(ms);
+    d.setHours(23, 59, 59, 999);
+    return d.getTime();
+}
+
+function parseDateInputToStartMs(value: string): number | null {
+    const v = String(value ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+
+    const [yy, mm, dd] = v.split("-").map(Number);
+    const d = new Date(yy, mm - 1, dd, 0, 0, 0, 0);
+
+    if (
+        d.getFullYear() !== yy ||
+        d.getMonth() !== mm - 1 ||
+        d.getDate() !== dd
+    ) {
+        return null;
+    }
+
+    return d.getTime();
+}
+
+function parseDateInputToEndMs(value: string): number | null {
+    const startMs = parseDateInputToStartMs(value);
+    if (startMs == null) return null;
+    return endOfDay(startMs);
+}
+
+function buildLastNDaysRange(days: number) {
+    const now = Date.now();
+    const endAtMs = endOfDay(now);
+    const startAtMs = startOfDay(now - (days - 1) * 24 * 60 * 60 * 1000);
+
+    return {
+        startAtMs,
+        endAtMs,
+        startText: formatShortDateInput(startAtMs),
+        endText: formatShortDateInput(endAtMs),
+    };
+}
+
+function buildTodayRange() {
+    const now = Date.now();
+    const startAtMs = startOfDay(now);
+    const endAtMs = endOfDay(now);
+
+    return {
+        startAtMs,
+        endAtMs,
+        startText: formatShortDateInput(startAtMs),
+        endText: formatShortDateInput(endAtMs),
+    };
+}
+
+function buildLastYearRange() {
+    const now = Date.now();
+    const endAtMs = endOfDay(now);
+    const startAtMs = startOfDay(now - 364 * 24 * 60 * 60 * 1000);
+
+    return {
+        startAtMs,
+        endAtMs,
+        startText: formatShortDateInput(startAtMs),
+        endText: formatShortDateInput(endAtMs),
+    };
+}
+
 function getClientParseStatus(c: ClientDoc): "ready" | "partial" | "empty" {
     const raw = String((c as any)?.parseStatus ?? "").trim().toLowerCase();
     if (raw === "ready") return "ready";
@@ -358,6 +442,20 @@ const FilterPill = memo(function FilterPill({
             <Text style={[styles.filterPillCount, active && styles.filterPillCountActive]}>
                 {value}
             </Text>
+        </Pressable>
+    );
+});
+
+const RangeQuickPill = memo(function RangeQuickPill({
+    label,
+    onPress,
+}: {
+    label: string;
+    onPress: () => void;
+}) {
+    return (
+        <Pressable onPress={onPress} style={({ pressed }) => [styles.rangeQuickPill, pressed && styles.pressed]}>
+            <Text style={styles.rangeQuickPillText}>{label}</Text>
         </Pressable>
     );
 });
@@ -545,6 +643,13 @@ export default function AdminLeadHistoryScreen() {
     const [filter, setFilter] = useState<HistoryFilterKey>("all");
     const [busyId, setBusyId] = useState<string | null>(null);
 
+    const initialRange = useMemo(() => buildLastNDaysRange(90), []);
+    const [dateStartText, setDateStartText] = useState(initialRange.startText);
+    const [dateEndText, setDateEndText] = useState(initialRange.endText);
+
+    const debouncedDateStartText = useDebouncedValue(dateStartText, 250);
+    const debouncedDateEndText = useDebouncedValue(dateEndText, 250);
+
     const [actionSheet, setActionSheet] = useState<ActionSheetState>({
         open: false,
         clientId: null,
@@ -566,13 +671,39 @@ export default function AdminLeadHistoryScreen() {
 
     const listRef = useRef<any>(null);
 
+    const startAtMs = useMemo(() => {
+        const parsed = parseDateInputToStartMs(debouncedDateStartText);
+        return parsed;
+    }, [debouncedDateStartText]);
+
+    const endAtMs = useMemo(() => {
+        const parsed = parseDateInputToEndMs(debouncedDateEndText);
+        return parsed;
+    }, [debouncedDateEndText]);
+
+    const hasValidDateRange = useMemo(() => {
+        return (
+            startAtMs != null &&
+            endAtMs != null &&
+            startAtMs <= endAtMs
+        );
+    }, [startAtMs, endAtMs]);
+
     useEffect(() => {
+        if (!hasValidDateRange) {
+            setClients([]);
+            return;
+        }
+
         const unsub = subscribeAdminLeadHistory((list) => setClients(list ?? []), {
             limitCount: 1200,
             verificationStatuses: ["incomplete", "not_suitable"],
+            startAtMs: startAtMs ?? undefined,
+            endAtMs: endAtMs ?? undefined,
         });
+
         return () => unsub();
-    }, []);
+    }, [hasValidDateRange, startAtMs, endAtMs]);
 
     const reloadUsers = useCallback(async () => {
         if (usersLoading) return;
@@ -595,7 +726,7 @@ export default function AdminLeadHistoryScreen() {
 
     useEffect(() => {
         closeActionSheet();
-    }, [filter, debouncedQ, closeActionSheet]);
+    }, [filter, debouncedQ, debouncedDateStartText, debouncedDateEndText, closeActionSheet]);
 
     const now = Date.now();
 
@@ -960,6 +1091,96 @@ export default function AdminLeadHistoryScreen() {
                         </Pressable>
                     </View>
 
+                    <View style={styles.dateRangeWrap}>
+                        <View style={styles.dateRangeHeader}>
+                            <Ionicons name="calendar-outline" size={15} color={COLORS.primarySoft} />
+                            <Text style={styles.dateRangeTitle}>Rango de carga</Text>
+                        </View>
+
+                        <View style={styles.dateInputsRow}>
+                            <View style={[styles.dateField, { flex: 1 }]}>
+                                <Text style={styles.dateLabel}>Inicio</Text>
+                                <TextInput
+                                    value={dateStartText}
+                                    onChangeText={setDateStartText}
+                                    placeholder="2026-01-01"
+                                    placeholderTextColor={COLORS.muted}
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    style={[
+                                        styles.dateInput,
+                                        debouncedDateStartText.length > 0 &&
+                                        startAtMs == null &&
+                                        styles.dateInputError,
+                                    ]}
+                                />
+                            </View>
+
+                            <View style={[styles.dateField, { flex: 1 }]}>
+                                <Text style={styles.dateLabel}>Fin</Text>
+                                <TextInput
+                                    value={dateEndText}
+                                    onChangeText={setDateEndText}
+                                    placeholder="2026-12-31"
+                                    placeholderTextColor={COLORS.muted}
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    style={[
+                                        styles.dateInput,
+                                        debouncedDateEndText.length > 0 &&
+                                        endAtMs == null &&
+                                        styles.dateInputError,
+                                    ]}
+                                />
+                            </View>
+                        </View>
+
+                        <View style={styles.rangeQuickRow}>
+                            <RangeQuickPill
+                                label="Hoy"
+                                onPress={() => {
+                                    const range = buildTodayRange();
+                                    setDateStartText(range.startText);
+                                    setDateEndText(range.endText);
+                                }}
+                            />
+                            <RangeQuickPill
+                                label="30 días"
+                                onPress={() => {
+                                    const range = buildLastNDaysRange(30);
+                                    setDateStartText(range.startText);
+                                    setDateEndText(range.endText);
+                                }}
+                            />
+                            <RangeQuickPill
+                                label="90 días"
+                                onPress={() => {
+                                    const range = buildLastNDaysRange(90);
+                                    setDateStartText(range.startText);
+                                    setDateEndText(range.endText);
+                                }}
+                            />
+                            <RangeQuickPill
+                                label="1 año"
+                                onPress={() => {
+                                    const range = buildLastYearRange();
+                                    setDateStartText(range.startText);
+                                    setDateEndText(range.endText);
+                                }}
+                            />
+                        </View>
+
+                        {!hasValidDateRange ? (
+                            <Text style={styles.dateRangeErrorText}>
+                                Revisa el rango. Usa formato YYYY-MM-DD y asegúrate de que inicio no sea mayor que fin.
+                            </Text>
+                        ) : (
+                            <Text style={styles.dateRangeHint}>
+                                Cargando desde {formatDateLabel(startAtMs ?? 0)} hasta {formatDateLabel(endAtMs ?? 0)}
+                            </Text>
+                        )}
+                    </View>
+
                     <View style={styles.filtersWrap}>
                         <FilterPill
                             label="Todos"
@@ -1019,9 +1240,11 @@ export default function AdminLeadHistoryScreen() {
                                 <View style={styles.empty}>
                                     <Ionicons name="archive-outline" size={22} color={COLORS.muted} />
                                     <Text style={styles.emptyText}>
-                                        {debouncedQ.trim()
-                                            ? "No hay resultados."
-                                            : "No hay leads archivados en historial."}
+                                        {!hasValidDateRange
+                                            ? "Corrige el rango de fechas para cargar resultados."
+                                            : debouncedQ.trim()
+                                                ? "No hay resultados."
+                                                : "No hay leads archivados en historial para ese rango."}
                                     </Text>
                                 </View>
                             }
@@ -1354,6 +1577,84 @@ const styles = StyleSheet.create({
         justifyContent: "center",
     },
     headerBadgeDisabled: { opacity: 0.55 },
+
+    dateRangeWrap: {
+        marginHorizontal: 16,
+        marginBottom: 8,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "#0F172A",
+        padding: 12,
+        gap: 10,
+    },
+    dateRangeHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    dateRangeTitle: {
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    dateInputsRow: {
+        flexDirection: "row",
+        gap: 10,
+    },
+    dateField: {
+        gap: 6,
+    },
+    dateLabel: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    dateInput: {
+        height: 44,
+        borderRadius: 12,
+        paddingHorizontal: 12,
+        backgroundColor: "#111827",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        color: COLORS.text,
+        fontSize: 13,
+        fontWeight: "800",
+    },
+    dateInputError: {
+        borderColor: "rgba(248,113,113,0.70)",
+        backgroundColor: "rgba(248,113,113,0.06)",
+    },
+    rangeQuickRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+    },
+    rangeQuickPill: {
+        minHeight: 30,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        backgroundColor: "rgba(255,255,255,0.04)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    rangeQuickPillText: {
+        color: COLORS.soft,
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    dateRangeHint: {
+        color: COLORS.muted,
+        fontSize: 11,
+        fontWeight: "800",
+    },
+    dateRangeErrorText: {
+        color: "#FCA5A5",
+        fontSize: 11,
+        fontWeight: "800",
+    },
 
     filtersWrap: {
         flexDirection: "row",

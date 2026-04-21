@@ -23,11 +23,19 @@ function sleep(ms) {
 function pickInboundOriginalMapsUrl({ textBody, locationData }) {
     const textMapsUrl = extractGoogleMapsUrlFromText(textBody);
 
-    if (textMapsUrl && looksLikeMapsUrl(textMapsUrl) && !isGoogleMapsStaticAssetUrl(textMapsUrl)) {
+    if (
+        textMapsUrl &&
+        looksLikeMapsUrl(textMapsUrl) &&
+        !isGoogleMapsStaticAssetUrl(textMapsUrl)
+    ) {
         return textMapsUrl;
     }
 
-    if (locationData?.mapsUrl && looksLikeMapsUrl(locationData.mapsUrl) && !isGoogleMapsStaticAssetUrl(locationData.mapsUrl)) {
+    if (
+        locationData?.mapsUrl &&
+        looksLikeMapsUrl(locationData.mapsUrl) &&
+        !isGoogleMapsStaticAssetUrl(locationData.mapsUrl)
+    ) {
         return locationData.mapsUrl;
     }
 
@@ -36,6 +44,42 @@ function pickInboundOriginalMapsUrl({ textBody, locationData }) {
     }
 
     return "";
+}
+
+async function tryAutoAssignClientById(clientId, attempt = 1) {
+    if (!clientId) return;
+
+    const clientRef = db.collection("clients").doc(clientId);
+    const snap = await clientRef.get();
+    if (!snap.exists) return;
+
+    const client = snap.data() || {};
+
+    if (safeString(client.assignedTo)) {
+        console.log("[AUTO ASSIGN] skipped already assigned:", {
+            clientId,
+            assignedTo: safeString(client.assignedTo),
+            attempt,
+        });
+        return;
+    }
+
+    console.log("[AUTO ASSIGN] candidate:", {
+        clientId,
+        attempt,
+        parseStatus: safeString(client.parseStatus || ""),
+        verificationStatus: safeString(client.verificationStatus || ""),
+        geoAdminCityLabel: safeString(client.geoAdminCityLabel || ""),
+        geoAdminCityNormalized: safeString(client.geoAdminCityNormalized || ""),
+        geoCityLabel: safeString(client.geoCityLabel || ""),
+        geoCityNormalized: safeString(client.geoCityNormalized || ""),
+        geoNearestHubLabel: safeString(client.geoNearestHubLabel || ""),
+    });
+
+    await autoAssignLead({
+        id: clientId,
+        ...client,
+    });
 }
 
 function createProcessIncomingWhatsappMessage({
@@ -217,12 +261,30 @@ function createProcessIncomingWhatsappMessage({
                     });
                 }
 
-                if (result?.clientId && result?.mergedClient) {
+                if (result?.clientId) {
                     try {
-                        await autoAssignLead({
-                            id: result.clientId,
-                            ...result.mergedClient,
-                        });
+                        await tryAutoAssignClientById(result.clientId, 1);
+
+                        const clientSnapAfterFirstTry = await db
+                            .collection("clients")
+                            .doc(result.clientId)
+                            .get();
+
+                        const clientAfterFirstTry = clientSnapAfterFirstTry.exists
+                            ? clientSnapAfterFirstTry.data() || {}
+                            : {};
+
+                        const stillUnassigned = !safeString(clientAfterFirstTry.assignedTo || "");
+                        const looksReadyNow =
+                            safeString(clientAfterFirstTry.parseStatus || "") === "ready" &&
+                            ["pending_review", "verified"].includes(
+                                safeString(clientAfterFirstTry.verificationStatus || "")
+                            );
+
+                        if (stillUnassigned && looksReadyNow) {
+                            await sleep(350);
+                            await tryAutoAssignClientById(result.clientId, 2);
+                        }
                     } catch (autoAssignError) {
                         console.error("[AUTO ASSIGN] error:", autoAssignError);
                     }
@@ -266,10 +328,16 @@ function createProcessIncomingWhatsappMessage({
                         ),
 
                         mapsUrl: safeString(result?.mergedClient?.mapsUrl || ""),
-                        originalMapsUrl: safeString(result?.mergedClient?.originalMapsUrl || originalMapsUrl || ""),
+                        originalMapsUrl: safeString(
+                            result?.mergedClient?.originalMapsUrl || originalMapsUrl || ""
+                        ),
                         resolvedMapsUrl: safeString(result?.mergedClient?.resolvedMapsUrl || ""),
-                        mapsResolveSource: safeString(result?.mergedClient?.mapsResolveSource || ""),
-                        mapsResolveQuery: safeString(result?.mergedClient?.mapsResolveQuery || ""),
+                        mapsResolveSource: safeString(
+                            result?.mergedClient?.mapsResolveSource || ""
+                        ),
+                        mapsResolveQuery: safeString(
+                            result?.mergedClient?.mapsResolveQuery || ""
+                        ),
 
                         lat: result?.mergedClient?.lat ?? null,
                         lng: result?.mergedClient?.lng ?? null,

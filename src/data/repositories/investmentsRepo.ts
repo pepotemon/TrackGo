@@ -1,9 +1,14 @@
 // src/data/repositories/investmentsRepo.ts
 import {
+    collection,
+    deleteDoc,
     doc,
+    getDocs,
     onSnapshot,
+    orderBy,
+    query,
     runTransaction,
-    type Unsubscribe,
+    type Unsubscribe
 } from "firebase/firestore";
 import { db } from "../../config/firebase";
 
@@ -32,6 +37,17 @@ export type WeeklyInvestmentDoc = {
 
     createdAt: number | any;
     updatedAt: number | any;
+};
+
+export type WeeklyInvestmentGroupTemplate = {
+    id: string;
+    name: string;
+    defaultAmount: number;
+    userIds: string[];
+    createdAt: number | any;
+    updatedAt: number | any;
+    lastUsedAt?: number | any;
+    lastUsedWeekStartKey?: string;
 };
 
 function safeNum(n: any) {
@@ -97,6 +113,38 @@ function cleanGroups(groups: any): WeeklyInvestmentGroup[] {
     }
 
     return out;
+}
+
+function cleanTemplate(raw: any, fallbackId: string): WeeklyInvestmentGroupTemplate | null {
+    const id = String(raw?.id ?? fallbackId ?? "").trim() || fallbackId;
+    const name = String(raw?.name ?? "").trim() || "Grupo";
+    const defaultAmount = clamp2(safeNum(raw?.defaultAmount));
+    const userIds = uniqueStrings(Array.isArray(raw?.userIds) ? raw.userIds : []);
+
+    if (!id) return null;
+    if (!userIds.length) return null;
+
+    return {
+        id,
+        name,
+        defaultAmount,
+        userIds,
+        createdAt: raw?.createdAt ?? 0,
+        updatedAt: raw?.updatedAt ?? 0,
+        lastUsedAt: raw?.lastUsedAt ?? 0,
+        lastUsedWeekStartKey: String(raw?.lastUsedWeekStartKey ?? "").trim(),
+    };
+}
+
+function buildTemplateId(group: Pick<WeeklyInvestmentGroup, "name" | "userIds">) {
+    const safeName = String(group.name ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_")
+        .replace(/[^\w\-]/g, "");
+
+    const members = uniqueStrings(group.userIds).sort().join("__");
+    return `${safeName || "grupo"}__${members || "sin_usuarios"}`;
 }
 
 export function subscribeWeeklyInvestment(
@@ -188,4 +236,148 @@ export async function upsertWeeklyInvestment(
         // si existe, NO tocamos createdAt
         tx.set(ref, payload, { merge: true });
     });
+}
+
+/**
+ * =========================
+ * BIBLIOTECA DE GRUPOS
+ * =========================
+ */
+
+export function subscribeWeeklyInvestmentGroupTemplates(
+    cb: (items: WeeklyInvestmentGroupTemplate[]) => void
+): Unsubscribe {
+    const q = query(
+        collection(db, "weeklyInvestmentGroupTemplates"),
+        orderBy("updatedAt", "desc")
+    );
+
+    return onSnapshot(
+        q,
+        (snap) => {
+            const out: WeeklyInvestmentGroupTemplate[] = [];
+
+            for (const d of snap.docs) {
+                const parsed = cleanTemplate(
+                    {
+                        id: d.id,
+                        ...(d.data() as any),
+                    },
+                    d.id
+                );
+
+                if (parsed) out.push(parsed);
+            }
+
+            cb(out);
+        },
+        (err) => {
+            console.log(
+                "[weeklyInvestmentGroupTemplates] onSnapshot error:",
+                err?.code,
+                err?.message
+            );
+            cb([]);
+        }
+    );
+}
+
+export async function upsertWeeklyInvestmentGroupTemplate(
+    input: {
+        id?: string;
+        name: string;
+        defaultAmount: number;
+        userIds: string[];
+        lastUsedWeekStartKey?: string;
+    }
+) {
+    const name = String(input?.name ?? "").trim() || "Grupo";
+    const defaultAmount = clamp2(safeNum(input?.defaultAmount));
+    const userIds = uniqueStrings(Array.isArray(input?.userIds) ? input.userIds : []);
+
+    if (!userIds.length) {
+        throw new Error("El grupo debe tener al menos un usuario.");
+    }
+
+    const id =
+        String(input?.id ?? "").trim() ||
+        buildTemplateId({
+            name,
+            userIds,
+        });
+
+    const ref = doc(db, "weeklyInvestmentGroupTemplates", id);
+    const now = Date.now();
+
+    await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+
+        const payload: any = {
+            id,
+            name,
+            defaultAmount,
+            userIds,
+            updatedAt: now,
+            lastUsedAt: now,
+            lastUsedWeekStartKey: String(input?.lastUsedWeekStartKey ?? "").trim(),
+        };
+
+        if (!snap.exists()) {
+            payload.createdAt = now;
+        }
+
+        tx.set(ref, payload, { merge: true });
+    });
+}
+
+export async function syncWeeklyGroupsToTemplates(
+    groups?: WeeklyInvestmentGroup[],
+    weekStartKey?: string
+) {
+    const cleanedGroups = cleanGroups(groups);
+    if (!cleanedGroups.length) return;
+
+    for (const group of cleanedGroups) {
+        await upsertWeeklyInvestmentGroupTemplate({
+            name: group.name,
+            defaultAmount: group.amount,
+            userIds: group.userIds,
+            lastUsedWeekStartKey: (weekStartKey ?? "").trim(),
+        });
+    }
+}
+
+export async function deleteWeeklyInvestmentGroupTemplate(templateId: string) {
+    const id = String(templateId ?? "").trim();
+    if (!id) throw new Error("templateId inválido");
+
+    await deleteDoc(doc(db, "weeklyInvestmentGroupTemplates", id));
+}
+
+/**
+ * Opcional por si más adelante quieres cargar manualmente
+ * la biblioteca una sola vez sin suscripción.
+ */
+export async function listWeeklyInvestmentGroupTemplates() {
+    const q = query(
+        collection(db, "weeklyInvestmentGroupTemplates"),
+        orderBy("updatedAt", "desc")
+    );
+
+    const snap = await getDocs(q);
+    const out: WeeklyInvestmentGroupTemplate[] = [];
+
+    for (const d of snap.docs) {
+        const parsed = cleanTemplate(
+            {
+                id: d.id,
+                ...(d.data() as any),
+            },
+            d.id
+        );
+
+        if (parsed) out.push(parsed);
+    }
+
+    return out;
 }

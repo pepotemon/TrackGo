@@ -29,6 +29,19 @@ import { dayKeyFromMs } from "../../data/repositories/dailyEventsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, UserDoc } from "../../types/models";
 
+const COLORS = {
+    bg: "#0B1220",
+    card: "#111827",
+    border: "#1F2937",
+    text: "#F9FAFB",
+    muted: "#9CA3AF",
+
+    visited: "#22C55E",
+    rejected: "#F87171",
+    pending: "#FBBF24",
+    primary: "#2563EB",
+};
+
 type VerificationStatus =
     | "verified"
     | "pending_review"
@@ -39,8 +52,8 @@ function normalizePhone(raw: string) {
     return (raw ?? "").replace(/\D+/g, "");
 }
 
-function safeText(x?: string) {
-    return (x ?? "").toLowerCase();
+function safeText(x?: string | null) {
+    return String(x ?? "").toLowerCase();
 }
 
 function safeNumber(v: any): number | null {
@@ -54,7 +67,9 @@ function roundCoord(v: any): number | null {
     return Math.round(n * 1000000) / 1000000;
 }
 
-function extractLatLngFromMapsUrl(url: string): { lat: number | null; lng: number | null } {
+function extractLatLngFromMapsUrl(
+    url: string
+): { lat: number | null; lng: number | null } {
     const raw = (url ?? "").trim();
     if (!raw) return { lat: null, lng: null };
 
@@ -138,16 +153,24 @@ function formatStatusDateLabel(ms?: number) {
     if (targetStart.getTime() === yesterdayStart.getTime()) return "Ayer";
 
     const day = String(d.getDate()).padStart(2, "0");
-    const months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+    const months = [
+        "ene",
+        "feb",
+        "mar",
+        "abr",
+        "may",
+        "jun",
+        "jul",
+        "ago",
+        "sep",
+        "oct",
+        "nov",
+        "dic",
+    ];
     const month = months[d.getMonth()];
     const year = d.getFullYear();
 
     return `${day} ${month} ${year}`;
-}
-
-function isUnassignedClient(c: ClientDoc) {
-    const assigned = ((c.assignedTo ?? "") as any).toString().trim();
-    return assigned.length === 0;
 }
 
 function getClientSourceLabel(c: ClientDoc) {
@@ -171,7 +194,9 @@ function getClientParseStatusLabel(c: ClientDoc) {
 }
 
 function getVerificationStatus(c: ClientDoc): VerificationStatus {
-    const raw = String((c as any)?.verificationStatus ?? "").trim().toLowerCase();
+    const raw = String((c as any)?.verificationStatus ?? "")
+        .trim()
+        .toLowerCase();
 
     if (raw === "verified") return "verified";
     if (raw === "not_suitable") return "not_suitable";
@@ -199,8 +224,7 @@ export default function AdminUserClientsScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
     const params = useLocalSearchParams<{ userId?: string }>();
-    const userId = (params?.userId ?? "").toString().trim();
-    const isUnassignedView = userId === "UNASSIGNED";
+    const userId = String(params?.userId ?? "").trim();
 
     const [clients, setClients] = useState<ClientDoc[]>([]);
     const [users, setUsers] = useState<UserDoc[]>([]);
@@ -217,7 +241,8 @@ export default function AdminUserClientsScreen() {
     const [ePhone, setEPhone] = useState("");
     const [eMapsUrl, setEMapsUrl] = useState("");
     const [eAddress, setEAddress] = useState("");
-    const [eVerificationStatus, setEVerificationStatus] = useState<VerificationStatus>("pending_review");
+    const [eVerificationStatus, setEVerificationStatus] =
+        useState<VerificationStatus>("pending_review");
     const [eNotSuitableReason, setENotSuitableReason] = useState("");
     const [eAssigneeId, setEAssigneeId] = useState<string | null>(null);
     const [eSaving, setESaving] = useState(false);
@@ -245,8 +270,7 @@ export default function AdminUserClientsScreen() {
     };
 
     useEffect(() => {
-        reloadUsers();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        void reloadUsers();
     }, []);
 
     const userById = useMemo(() => {
@@ -256,20 +280,15 @@ export default function AdminUserClientsScreen() {
     }, [users]);
 
     const user = useMemo(() => {
-        if (isUnassignedView) return null;
         return users.find((u) => u.id === userId) ?? null;
-    }, [users, userId, isUnassignedView]);
-
-    const belongsToThisView = (c: ClientDoc) => {
-        const assignedTo = String((c.assignedTo ?? "") as any).trim();
-
-        if (isUnassignedView) return assignedTo.length === 0;
-        return assignedTo === userId;
-    };
+    }, [users, userId]);
 
     const assignedClients = useMemo(() => {
-        return clients.filter(belongsToThisView);
-    }, [clients, userId, isUnassignedView]);
+        return clients.filter((c) => {
+            const assignedTo = String((c.assignedTo ?? "") as any).trim();
+            return assignedTo === userId;
+        });
+    }, [clients, userId]);
 
     const pendingClients = useMemo(() => {
         return assignedClients.filter((c) => c.status === "pending");
@@ -335,10 +354,8 @@ export default function AdminUserClientsScreen() {
         return clients.find((c) => c.id === assignClientId) ?? null;
     }, [clients, assignClientId]);
 
-    const title = isUnassignedView ? "Pendientes sin asignar" : user?.name?.trim() || "Usuario";
-    const subtitle = isUnassignedView
-        ? `Clientes pendientes · ${pendingNowCount}`
-        : `${user?.email?.trim() || "—"} · Pendientes ${pendingNowCount}`;
+    const title = user?.name?.trim() || "Usuario";
+    const subtitle = `${user?.email?.trim() || "—"} · Pendientes ${pendingNowCount}`;
 
     const modalBottomPad = Math.max(10, insets.bottom + 10);
 
@@ -466,7 +483,10 @@ export default function AdminUserClientsScreen() {
             return;
         }
         if (phoneExists(cleanPhone, editingId)) {
-            Alert.alert("Duplicado", "Ese teléfono ya existe. No se puede guardar duplicado.");
+            Alert.alert(
+                "Duplicado",
+                "Ese teléfono ya existe. No se puede guardar duplicado."
+            );
             return;
         }
         if (!cleanMaps) {
@@ -495,13 +515,20 @@ export default function AdminUserClientsScreen() {
                 updatedAt: now,
                 name: cleanName ? cleanName : "",
                 business: cleanBusiness ? cleanBusiness : "",
-                businessRaw: cleanBusinessRaw ? cleanBusinessRaw : cleanBusiness ? cleanBusiness : "",
+                businessRaw: cleanBusinessRaw
+                    ? cleanBusinessRaw
+                    : cleanBusiness
+                        ? cleanBusiness
+                        : "",
                 address: cleanAddress ? cleanAddress : "",
                 waId: cleanPhone,
                 lat,
                 lng,
                 verificationStatus: eVerificationStatus,
-                notSuitableReason: eVerificationStatus === "not_suitable" ? cleanNotSuitableReason : "",
+                notSuitableReason:
+                    eVerificationStatus === "not_suitable"
+                        ? cleanNotSuitableReason
+                        : "",
                 leadQuality:
                     eVerificationStatus === "verified"
                         ? "valid"
@@ -510,7 +537,11 @@ export default function AdminUserClientsScreen() {
                             : "review",
                 profileType:
                     eVerificationStatus === "not_suitable"
-                        ? (((clients.find((x) => x.id === editingId) as any)?.profileType ?? "business").toString() || "business")
+                        ? (
+                            ((clients.find((x) => x.id === editingId) as any)
+                                ?.profileType ?? "business"
+                            ).toString() || "business"
+                        )
                         : "business",
                 currentLeadMapsConfirmedAt: now,
                 parseStatus: cleanBusiness && cleanMaps ? "ready" : "partial",
@@ -572,10 +603,17 @@ export default function AdminUserClientsScreen() {
                                 params: { userId },
                             })
                         }
-                        style={({ pressed }) => [styles.headerBadge, pressed && styles.pressed]}
+                        style={({ pressed }) => [
+                            styles.headerBadge,
+                            pressed && styles.pressed,
+                        ]}
                         accessibilityLabel="Historial visitados"
                     >
-                        <Ionicons name="checkmark-done-outline" size={18} color={COLORS.text} />
+                        <Ionicons
+                            name="checkmark-done-outline"
+                            size={18}
+                            color={COLORS.text}
+                        />
                     </Pressable>
 
                     <Pressable
@@ -585,24 +623,43 @@ export default function AdminUserClientsScreen() {
                                 params: { userId },
                             })
                         }
-                        style={({ pressed }) => [styles.headerBadge, pressed && styles.pressed]}
+                        style={({ pressed }) => [
+                            styles.headerBadge,
+                            pressed && styles.pressed,
+                        ]}
                         accessibilityLabel="Historial rechazados"
                     >
-                        <Ionicons name="close-circle-outline" size={18} color={COLORS.text} />
+                        <Ionicons
+                            name="close-circle-outline"
+                            size={18}
+                            color={COLORS.text}
+                        />
                     </Pressable>
 
                     <Pressable
                         onPress={reloadUsers}
-                        style={({ pressed }) => [styles.headerBadge, pressed && styles.pressed, usersLoading && styles.headerBadgeDisabled]}
+                        style={({ pressed }) => [
+                            styles.headerBadge,
+                            pressed && styles.pressed,
+                            usersLoading && styles.headerBadgeDisabled,
+                        ]}
                         disabled={usersLoading}
                         accessibilityLabel="Refrescar usuarios"
                     >
-                        <Ionicons name={usersLoading ? "sync" : "people-outline"} size={18} color={COLORS.text} />
+                        <Ionicons
+                            name={usersLoading ? "sync" : "people-outline"}
+                            size={18}
+                            color={COLORS.text}
+                        />
                     </Pressable>
                 </View>
 
                 <View style={styles.searchWrap}>
-                    <Ionicons name="search-outline" size={18} color={COLORS.muted} />
+                    <Ionicons
+                        name="search-outline"
+                        size={18}
+                        color={COLORS.muted}
+                    />
                     <TextInput
                         value={q}
                         onChangeText={setQ}
@@ -612,7 +669,11 @@ export default function AdminUserClientsScreen() {
                     />
                     {!!q ? (
                         <Pressable onPress={() => setQ("")} style={styles.clearBtn}>
-                            <Ionicons name="close" size={18} color={COLORS.text} />
+                            <Ionicons
+                                name="close"
+                                size={18}
+                                color={COLORS.text}
+                            />
                         </Pressable>
                     ) : null}
                 </View>
@@ -624,7 +685,10 @@ export default function AdminUserClientsScreen() {
                     </Text>
                 </View>
 
-                <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+                <ScrollView
+                    contentContainerStyle={styles.listContent}
+                    showsVerticalScrollIndicator={false}
+                >
                     {userClients.map((c) => {
                         const name = ((c as any).name ?? "").trim();
                         const biz = ((c as any).business ?? "").trim();
@@ -632,11 +696,17 @@ export default function AdminUserClientsScreen() {
                         const isBusy = busyId === c.id;
 
                         const assignedLabel = (() => {
-                            const a = ((c.assignedTo ?? "") as any).toString().trim();
+                            const a = ((c.assignedTo ?? "") as any)
+                                .toString()
+                                .trim();
                             if (!a) return "Sin asignar";
                             const u = userById.get(a);
                             if (!u) return "Asignado";
-                            return (u.name ?? "").trim() || (u.email ?? "").trim() || "Usuario";
+                            return (
+                                (u.name ?? "").trim() ||
+                                (u.email ?? "").trim() ||
+                                "Usuario"
+                            );
                         })();
 
                         const statusDateLabel = formatStatusDateLabel(
@@ -650,8 +720,12 @@ export default function AdminUserClientsScreen() {
                         const verificationLabel = getVerificationStatusLabel(c);
                         const notSuitableReason = getNotSuitableReason(c);
 
-                        const lastInboundAt = toMs((c as any)?.lastInboundMessageAt);
-                        const lastInboundText = String((c as any)?.lastInboundText ?? "").trim();
+                        const lastInboundAt = toMs(
+                            (c as any)?.lastInboundMessageAt
+                        );
+                        const lastInboundText = String(
+                            (c as any)?.lastInboundText ?? ""
+                        ).trim();
 
                         const verificationStatus = getVerificationStatus(c);
                         const parseStatus = getClientParseStatus(c);
@@ -660,38 +734,72 @@ export default function AdminUserClientsScreen() {
                             <View key={c.id} style={styles.card}>
                                 <View style={styles.cardTop}>
                                     <View style={{ flex: 1, gap: 6 }}>
-                                        <Text style={styles.phone} numberOfLines={1}>
+                                        <Text
+                                            style={styles.phone}
+                                            numberOfLines={1}
+                                        >
                                             {name || c.phone}
                                         </Text>
 
                                         {!!name ? (
-                                            <Text style={styles.meta} numberOfLines={1}>
+                                            <Text
+                                                style={styles.meta}
+                                                numberOfLines={1}
+                                            >
                                                 {c.phone}
                                             </Text>
                                         ) : null}
 
                                         {!!biz ? (
-                                            <Text style={styles.meta} numberOfLines={1}>
+                                            <Text
+                                                style={styles.meta}
+                                                numberOfLines={1}
+                                            >
                                                 {biz}
                                             </Text>
                                         ) : null}
 
                                         {!!bizRaw && bizRaw !== biz ? (
-                                            <Text style={styles.metaSoft} numberOfLines={1}>
+                                            <Text
+                                                style={styles.metaSoft}
+                                                numberOfLines={1}
+                                            >
                                                 Original: {bizRaw}
                                             </Text>
                                         ) : null}
 
                                         <View style={styles.topBadgesRow}>
-                                            <View style={[styles.pill, styles.pillPending]}>
-                                                <Text style={[styles.pillText, styles.pillTextPending]} numberOfLines={1}>
+                                            <View
+                                                style={[
+                                                    styles.pill,
+                                                    styles.pillPending,
+                                                ]}
+                                            >
+                                                <Text
+                                                    style={[
+                                                        styles.pillText,
+                                                        styles.pillTextPending,
+                                                    ]}
+                                                    numberOfLines={1}
+                                                >
                                                     pendiente
                                                 </Text>
                                             </View>
 
                                             {statusDateLabel ? (
-                                                <View style={[styles.datePill, styles.datePillPending]}>
-                                                    <Text style={[styles.datePillText, styles.datePillTextPending]} numberOfLines={1}>
+                                                <View
+                                                    style={[
+                                                        styles.datePill,
+                                                        styles.datePillPending,
+                                                    ]}
+                                                >
+                                                    <Text
+                                                        style={[
+                                                            styles.datePillText,
+                                                            styles.datePillTextPending,
+                                                        ]}
+                                                        numberOfLines={1}
+                                                    >
                                                         {statusDateLabel}
                                                     </Text>
                                                 </View>
@@ -702,21 +810,32 @@ export default function AdminUserClientsScreen() {
                                             <View
                                                 style={[
                                                     styles.infoBadge,
-                                                    String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
+                                                    String(
+                                                        (c as any)?.source ?? ""
+                                                    ).toLowerCase() ===
+                                                        "whatsapp_meta"
                                                         ? styles.infoBadgeBlue
                                                         : styles.infoBadgeNeutral,
                                                 ]}
                                             >
                                                 <Ionicons
                                                     name={
-                                                        String((c as any)?.source ?? "").toLowerCase() === "whatsapp_meta"
+                                                        String(
+                                                            (c as any)?.source ??
+                                                            ""
+                                                        ).toLowerCase() ===
+                                                            "whatsapp_meta"
                                                             ? "logo-whatsapp"
                                                             : "create-outline"
                                                     }
                                                     size={12}
                                                     color={COLORS.text}
                                                 />
-                                                <Text style={styles.infoBadgeText}>{sourceLabel}</Text>
+                                                <Text
+                                                    style={styles.infoBadgeText}
+                                                >
+                                                    {sourceLabel}
+                                                </Text>
                                             </View>
 
                                             <View
@@ -724,49 +843,78 @@ export default function AdminUserClientsScreen() {
                                                     styles.infoBadge,
                                                     parseStatus === "ready"
                                                         ? styles.infoBadgeGreen
-                                                        : parseStatus === "partial"
+                                                        : parseStatus ===
+                                                            "partial"
                                                             ? styles.infoBadgeYellow
                                                             : styles.infoBadgeNeutral,
                                                 ]}
                                             >
-                                                <Ionicons name="document-text-outline" size={12} color={COLORS.text} />
-                                                <Text style={styles.infoBadgeText}>{parseLabel}</Text>
+                                                <Ionicons
+                                                    name="document-text-outline"
+                                                    size={12}
+                                                    color={COLORS.text}
+                                                />
+                                                <Text
+                                                    style={styles.infoBadgeText}
+                                                >
+                                                    {parseLabel}
+                                                </Text>
                                             </View>
 
                                             <View
                                                 style={[
                                                     styles.infoBadge,
-                                                    verificationStatus === "verified"
+                                                    verificationStatus ===
+                                                        "verified"
                                                         ? styles.infoBadgeGreen
-                                                        : verificationStatus === "pending_review"
+                                                        : verificationStatus ===
+                                                            "pending_review"
                                                             ? styles.infoBadgeBlue
-                                                            : verificationStatus === "not_suitable"
+                                                            : verificationStatus ===
+                                                                "not_suitable"
                                                                 ? styles.infoBadgeRed
                                                                 : styles.infoBadgeYellow,
                                                 ]}
                                             >
                                                 <Ionicons
                                                     name={
-                                                        verificationStatus === "verified"
+                                                        verificationStatus ===
+                                                            "verified"
                                                             ? "checkmark-done-outline"
-                                                            : verificationStatus === "not_suitable"
+                                                            : verificationStatus ===
+                                                                "not_suitable"
                                                                 ? "close-circle-outline"
-                                                                : verificationStatus === "pending_review"
+                                                                : verificationStatus ===
+                                                                    "pending_review"
                                                                     ? "shield-checkmark-outline"
                                                                     : "alert-circle-outline"
                                                     }
                                                     size={12}
                                                     color={COLORS.text}
                                                 />
-                                                <Text style={styles.infoBadgeText}>{verificationLabel}</Text>
+                                                <Text
+                                                    style={styles.infoBadgeText}
+                                                >
+                                                    {verificationLabel}
+                                                </Text>
                                             </View>
                                         </View>
 
-                                        {verificationStatus === "not_suitable" ? (
+                                        {verificationStatus ===
+                                            "not_suitable" ? (
                                             <View style={styles.notSuitableTag}>
-                                                <Ionicons name="ban-outline" size={14} color={COLORS.rejected} />
-                                                <Text style={styles.notSuitableTagText}>
-                                                    {notSuitableReason || "Perfil no apto"}
+                                                <Ionicons
+                                                    name="ban-outline"
+                                                    size={14}
+                                                    color={COLORS.rejected}
+                                                />
+                                                <Text
+                                                    style={
+                                                        styles.notSuitableTagText
+                                                    }
+                                                >
+                                                    {notSuitableReason ||
+                                                        "Perfil no apto"}
                                                 </Text>
                                             </View>
                                         ) : null}
@@ -775,16 +923,32 @@ export default function AdminUserClientsScreen() {
                                     <Pressable
                                         onPress={() => openMenu(c.id)}
                                         disabled={isBusy}
-                                        style={({ pressed }) => [styles.menuBtn, pressed && styles.pressed, isBusy && styles.iconBtnDisabled]}
+                                        style={({ pressed }) => [
+                                            styles.menuBtn,
+                                            pressed && styles.pressed,
+                                            isBusy &&
+                                            styles.iconBtnDisabled,
+                                        ]}
                                     >
-                                        <Ionicons name="ellipsis-horizontal" size={16} color={COLORS.text} />
+                                        <Ionicons
+                                            name="ellipsis-horizontal"
+                                            size={16}
+                                            color={COLORS.text}
+                                        />
                                     </Pressable>
                                 </View>
 
                                 {!!c.address ? (
                                     <View style={styles.infoRow}>
-                                        <Ionicons name="location-outline" size={16} color={COLORS.muted} />
-                                        <Text style={styles.infoText} numberOfLines={2}>
+                                        <Ionicons
+                                            name="location-outline"
+                                            size={16}
+                                            color={COLORS.muted}
+                                        />
+                                        <Text
+                                            style={styles.infoText}
+                                            numberOfLines={2}
+                                        >
                                             {c.address}
                                         </Text>
                                     </View>
@@ -792,11 +956,14 @@ export default function AdminUserClientsScreen() {
 
                                 <View style={styles.assignedRow}>
                                     <Ionicons
-                                        name={isUnassignedClient(c) ? "person-remove-outline" : "person-outline"}
+                                        name="person-outline"
                                         size={16}
                                         color={COLORS.muted}
                                     />
-                                    <Text style={styles.assignedText} numberOfLines={1}>
+                                    <Text
+                                        style={styles.assignedText}
+                                        numberOfLines={1}
+                                    >
                                         {assignedLabel}
                                     </Text>
                                 </View>
@@ -804,18 +971,32 @@ export default function AdminUserClientsScreen() {
                                 {lastInboundAt > 0 ? (
                                     <View style={styles.inboundBox}>
                                         <View style={styles.inboundHeader}>
-                                            <Ionicons name="chatbubble-ellipses-outline" size={14} color={COLORS.muted} />
-                                            <Text style={styles.inboundTitle}>
-                                                Última entrada automática · {formatStatusDateLabel(lastInboundAt) ?? "—"}
+                                            <Ionicons
+                                                name="chatbubble-ellipses-outline"
+                                                size={14}
+                                                color={COLORS.muted}
+                                            />
+                                            <Text
+                                                style={styles.inboundTitle}
+                                            >
+                                                Última entrada automática ·{" "}
+                                                {formatStatusDateLabel(
+                                                    lastInboundAt
+                                                ) ?? "—"}
                                             </Text>
                                         </View>
 
                                         {!!lastInboundText ? (
-                                            <Text style={styles.inboundText} numberOfLines={3}>
+                                            <Text
+                                                style={styles.inboundText}
+                                                numberOfLines={3}
+                                            >
                                                 {lastInboundText}
                                             </Text>
                                         ) : (
-                                            <Text style={styles.inboundTextMuted}>
+                                            <Text
+                                                style={styles.inboundTextMuted}
+                                            >
                                                 Sin texto guardado.
                                             </Text>
                                         )}
@@ -825,51 +1006,94 @@ export default function AdminUserClientsScreen() {
                                 <View style={styles.actionsRow}>
                                     <Pressable
                                         onPress={() => openMaps(c.mapsUrl)}
-                                        style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+                                        style={({ pressed }) => [
+                                            styles.iconBtn,
+                                            pressed &&
+                                            styles.iconBtnPressed,
+                                        ]}
                                     >
-                                        <Ionicons name="map-outline" size={18} color={COLORS.text} />
+                                        <Ionicons
+                                            name="map-outline"
+                                            size={18}
+                                            color={COLORS.text}
+                                        />
                                     </Pressable>
 
                                     <Pressable
-                                        onPress={() => openWsp((c as any).waId || c.phone)}
-                                        style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+                                        onPress={() =>
+                                            openWsp((c as any).waId || c.phone)
+                                        }
+                                        style={({ pressed }) => [
+                                            styles.iconBtn,
+                                            pressed &&
+                                            styles.iconBtnPressed,
+                                        ]}
                                     >
-                                        <Ionicons name="logo-whatsapp" size={18} color={COLORS.text} />
+                                        <Ionicons
+                                            name="logo-whatsapp"
+                                            size={18}
+                                            color={COLORS.text}
+                                        />
                                     </Pressable>
                                 </View>
 
-                                {isBusy ? <Text style={styles.busyText}>Procesando…</Text> : null}
+                                {isBusy ? (
+                                    <Text style={styles.busyText}>
+                                        Procesando…
+                                    </Text>
+                                ) : null}
                             </View>
                         );
                     })}
 
                     {!userClients.length ? (
                         <View style={styles.empty}>
-                            <Ionicons name="time-outline" size={24} color={COLORS.muted} />
+                            <Ionicons
+                                name="time-outline"
+                                size={24}
+                                color={COLORS.muted}
+                            />
                             <Text style={styles.emptyText}>
                                 {q.trim()
                                     ? "No hay resultados."
-                                    : isUnassignedView
-                                        ? "No hay clientes pendientes sin asignar."
-                                        : "Este usuario no tiene clientes pendientes."}
+                                    : "Este usuario no tiene clientes pendientes."}
                             </Text>
                         </View>
                     ) : null}
                 </ScrollView>
 
-                <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={closeMenu}>
+                <Modal
+                    visible={menuOpen}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={closeMenu}
+                >
                     <View style={styles.sheetOverlay}>
-                        <Pressable style={StyleSheet.absoluteFillObject} onPress={closeMenu} />
+                        <Pressable
+                            style={StyleSheet.absoluteFillObject}
+                            onPress={closeMenu}
+                        />
                         <View style={styles.sheetWrap}>
                             <View style={styles.sheetHandle} />
 
                             <Text style={styles.sheetTitle}>
-                                {((menuClient as any)?.name ?? "").toString().trim() || menuClient?.phone || "Opciones"}
+                                {((menuClient as any)?.name ?? "")
+                                    .toString()
+                                    .trim() ||
+                                    menuClient?.phone ||
+                                    "Opciones"}
                             </Text>
 
-                            {!!((menuClient as any)?.business ?? "").toString().trim() ? (
-                                <Text style={styles.sheetSubtitle} numberOfLines={1}>
-                                    {((menuClient as any)?.business ?? "").toString().trim()}
+                            {!!((menuClient as any)?.business ?? "")
+                                .toString()
+                                .trim() ? (
+                                <Text
+                                    style={styles.sheetSubtitle}
+                                    numberOfLines={1}
+                                >
+                                    {((menuClient as any)?.business ?? "")
+                                        .toString()
+                                        .trim()}
                                 </Text>
                             ) : null}
 
@@ -885,8 +1109,14 @@ export default function AdminUserClientsScreen() {
                                     pressed && styles.pressed,
                                 ]}
                             >
-                                <Ionicons name="person-add-outline" size={17} color={COLORS.text} />
-                                <Text style={styles.sheetItemText}>Reasignar</Text>
+                                <Ionicons
+                                    name="person-add-outline"
+                                    size={17}
+                                    color={COLORS.text}
+                                />
+                                <Text style={styles.sheetItemText}>
+                                    Reasignar
+                                </Text>
                             </Pressable>
 
                             <Pressable
@@ -901,8 +1131,14 @@ export default function AdminUserClientsScreen() {
                                     pressed && styles.pressed,
                                 ]}
                             >
-                                <Ionicons name="create-outline" size={17} color={COLORS.text} />
-                                <Text style={styles.sheetItemText}>Editar cliente</Text>
+                                <Ionicons
+                                    name="create-outline"
+                                    size={17}
+                                    color={COLORS.text}
+                                />
+                                <Text style={styles.sheetItemText}>
+                                    Editar cliente
+                                </Text>
                             </Pressable>
 
                             <Pressable
@@ -917,8 +1153,14 @@ export default function AdminUserClientsScreen() {
                                     pressed && styles.pressed,
                                 ]}
                             >
-                                <Ionicons name="remove-circle-outline" size={17} color={COLORS.text} />
-                                <Text style={styles.sheetItemText}>Quitar asignación</Text>
+                                <Ionicons
+                                    name="remove-circle-outline"
+                                    size={17}
+                                    color={COLORS.text}
+                                />
+                                <Text style={styles.sheetItemText}>
+                                    Quitar asignación
+                                </Text>
                             </Pressable>
 
                             <Pressable
@@ -933,8 +1175,17 @@ export default function AdminUserClientsScreen() {
                                     pressed && styles.pressed,
                                 ]}
                             >
-                                <Ionicons name="trash-outline" size={17} color={COLORS.rejected} />
-                                <Text style={[styles.sheetItemText, { color: "#FCA5A5" }]}>
+                                <Ionicons
+                                    name="trash-outline"
+                                    size={17}
+                                    color={COLORS.rejected}
+                                />
+                                <Text
+                                    style={[
+                                        styles.sheetItemText,
+                                        { color: "#FCA5A5" },
+                                    ]}
+                                >
                                     Eliminar cliente
                                 </Text>
                             </Pressable>
@@ -942,44 +1193,94 @@ export default function AdminUserClientsScreen() {
                     </View>
                 </Modal>
 
-                <Modal visible={editOpen} transparent animationType="fade" onRequestClose={cancelEdit}>
+                <Modal
+                    visible={editOpen}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={cancelEdit}
+                >
                     <View style={styles.modalOverlay}>
-                        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalWrap}>
-                            <View style={[styles.modalCardBig, { paddingBottom: 14 + modalBottomPad }]}>
+                        <KeyboardAvoidingView
+                            behavior={
+                                Platform.OS === "ios" ? "padding" : undefined
+                            }
+                            style={styles.modalWrap}
+                        >
+                            <View
+                                style={[
+                                    styles.modalCardBig,
+                                    { paddingBottom: 14 + modalBottomPad },
+                                ]}
+                            >
                                 <View style={styles.modalHeader}>
-                                    <Text style={styles.modalTitle}>Editar</Text>
-                                    <Pressable onPress={cancelEdit} style={styles.modalClose}>
-                                        <Ionicons name="close" size={18} color={COLORS.text} />
+                                    <Text style={styles.modalTitle}>
+                                        Editar
+                                    </Text>
+                                    <Pressable
+                                        onPress={cancelEdit}
+                                        style={styles.modalClose}
+                                    >
+                                        <Ionicons
+                                            name="close"
+                                            size={18}
+                                            color={COLORS.text}
+                                        />
                                     </Pressable>
                                 </View>
 
-                                <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+                                <ScrollView
+                                    contentContainerStyle={{
+                                        gap: 10,
+                                        paddingBottom: 6,
+                                    }}
+                                    showsVerticalScrollIndicator={false}
+                                >
                                     <View style={styles.grid2}>
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Nombre</Text>
+                                        <View
+                                            style={[
+                                                styles.field,
+                                                { flex: 1 },
+                                            ]}
+                                        >
+                                            <Text style={styles.label}>
+                                                Nombre
+                                            </Text>
                                             <TextInput
                                                 value={eName}
                                                 onChangeText={setEName}
                                                 placeholder="Opcional"
-                                                placeholderTextColor={COLORS.muted}
+                                                placeholderTextColor={
+                                                    COLORS.muted
+                                                }
                                                 style={styles.input}
                                             />
                                         </View>
 
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Negocio</Text>
+                                        <View
+                                            style={[
+                                                styles.field,
+                                                { flex: 1 },
+                                            ]}
+                                        >
+                                            <Text style={styles.label}>
+                                                Negocio
+                                            </Text>
                                             <TextInput
                                                 value={eBusiness}
                                                 onChangeText={setEBusiness}
                                                 placeholder="Opcional"
-                                                placeholderTextColor={COLORS.muted}
+                                                placeholderTextColor={
+                                                    COLORS.muted
+                                                }
                                                 style={styles.input}
                                             />
                                         </View>
                                     </View>
 
                                     <View style={styles.field}>
-                                        <Text style={styles.label}>Negocio original / bruto</Text>
+                                        <Text style={styles.label}>
+                                            Negocio original / bruto
+                                        </Text>
                                         <TextInput
                                             value={eBusinessRaw}
                                             onChangeText={setEBusinessRaw}
@@ -990,32 +1291,52 @@ export default function AdminUserClientsScreen() {
                                     </View>
 
                                     <View style={styles.grid2}>
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Teléfono *</Text>
+                                        <View
+                                            style={[
+                                                styles.field,
+                                                { flex: 1 },
+                                            ]}
+                                        >
+                                            <Text style={styles.label}>
+                                                Teléfono *
+                                            </Text>
                                             <TextInput
                                                 value={ePhone}
                                                 onChangeText={setEPhone}
                                                 keyboardType="phone-pad"
                                                 placeholder="+55 91 954 23 232"
-                                                placeholderTextColor={COLORS.muted}
+                                                placeholderTextColor={
+                                                    COLORS.muted
+                                                }
                                                 style={styles.input}
                                             />
                                         </View>
 
-                                        <View style={[styles.field, { flex: 1 }]}>
-                                            <Text style={styles.label}>Dirección</Text>
+                                        <View
+                                            style={[
+                                                styles.field,
+                                                { flex: 1 },
+                                            ]}
+                                        >
+                                            <Text style={styles.label}>
+                                                Dirección
+                                            </Text>
                                             <TextInput
                                                 value={eAddress}
                                                 onChangeText={setEAddress}
                                                 placeholder="Opcional"
-                                                placeholderTextColor={COLORS.muted}
+                                                placeholderTextColor={
+                                                    COLORS.muted
+                                                }
                                                 style={styles.input}
                                             />
                                         </View>
                                     </View>
 
                                     <View style={styles.field}>
-                                        <Text style={styles.label}>Google Maps *</Text>
+                                        <Text style={styles.label}>
+                                            Google Maps *
+                                        </Text>
                                         <TextInput
                                             value={eMapsUrl}
                                             onChangeText={setEMapsUrl}
@@ -1027,10 +1348,20 @@ export default function AdminUserClientsScreen() {
                                     </View>
 
                                     <View style={styles.field}>
-                                        <Text style={styles.label}>Clasificación manual</Text>
+                                        <Text style={styles.label}>
+                                            Clasificación manual
+                                        </Text>
                                         <View style={styles.segmentRow}>
-                                            {(["pending_review", "verified", "incomplete", "not_suitable"] as VerificationStatus[]).map((s) => {
-                                                const active = eVerificationStatus === s;
+                                            {(
+                                                [
+                                                    "pending_review",
+                                                    "verified",
+                                                    "incomplete",
+                                                    "not_suitable",
+                                                ] as VerificationStatus[]
+                                            ).map((s) => {
+                                                const active =
+                                                    eVerificationStatus === s;
                                                 const label =
                                                     s === "pending_review"
                                                         ? "Por revisar"
@@ -1043,14 +1374,28 @@ export default function AdminUserClientsScreen() {
                                                 return (
                                                     <Pressable
                                                         key={s}
-                                                        onPress={() => setEVerificationStatus(s)}
-                                                        style={({ pressed }) => [
-                                                            styles.segmentPill,
-                                                            active && styles.segmentPillActive,
-                                                            pressed && styles.pressed,
-                                                        ]}
+                                                        onPress={() =>
+                                                            setEVerificationStatus(
+                                                                s
+                                                            )
+                                                        }
+                                                        style={({
+                                                            pressed,
+                                                        }) => [
+                                                                styles.segmentPill,
+                                                                active &&
+                                                                styles.segmentPillActive,
+                                                                pressed &&
+                                                                styles.pressed,
+                                                            ]}
                                                     >
-                                                        <Text style={[styles.segmentPillText, active && styles.segmentPillTextActive]}>
+                                                        <Text
+                                                            style={[
+                                                                styles.segmentPillText,
+                                                                active &&
+                                                                styles.segmentPillTextActive,
+                                                            ]}
+                                                        >
                                                             {label}
                                                         </Text>
                                                     </Pressable>
@@ -1059,36 +1404,76 @@ export default function AdminUserClientsScreen() {
                                         </View>
                                     </View>
 
-                                    {eVerificationStatus === "not_suitable" ? (
+                                    {eVerificationStatus ===
+                                        "not_suitable" ? (
                                         <View style={styles.field}>
-                                            <Text style={styles.label}>Motivo no apto *</Text>
+                                            <Text style={styles.label}>
+                                                Motivo no apto *
+                                            </Text>
                                             <TextInput
                                                 value={eNotSuitableReason}
-                                                onChangeText={setENotSuitableReason}
+                                                onChangeText={
+                                                    setENotSuitableReason
+                                                }
                                                 placeholder="Ej: Motorista / trabalho de aplicativo"
-                                                placeholderTextColor={COLORS.muted}
+                                                placeholderTextColor={
+                                                    COLORS.muted
+                                                }
                                                 style={styles.input}
                                             />
                                         </View>
                                     ) : null}
 
-                                    <View style={{ flexDirection: "row", gap: 10 }}>
+                                    <View
+                                        style={{
+                                            flexDirection: "row",
+                                            gap: 10,
+                                        }}
+                                    >
                                         <Pressable
                                             onPress={cancelEdit}
-                                            style={({ pressed }) => [styles.ghostBtn, pressed && styles.btnPressed]}
+                                            style={({ pressed }) => [
+                                                styles.ghostBtn,
+                                                pressed &&
+                                                styles.btnPressed,
+                                            ]}
                                             disabled={eSaving}
                                         >
-                                            <Ionicons name="close-outline" size={18} color={COLORS.text} />
-                                            <Text style={styles.ghostBtnText}>Cancelar</Text>
+                                            <Ionicons
+                                                name="close-outline"
+                                                size={18}
+                                                color={COLORS.text}
+                                            />
+                                            <Text style={styles.ghostBtnText}>
+                                                Cancelar
+                                            </Text>
                                         </Pressable>
 
                                         <Pressable
                                             onPress={submitEdit}
-                                            style={({ pressed }) => [styles.primaryBtn, pressed && styles.btnPressed, eSaving && styles.btnDisabled]}
+                                            style={({ pressed }) => [
+                                                styles.primaryBtn,
+                                                pressed &&
+                                                styles.btnPressed,
+                                                eSaving &&
+                                                styles.btnDisabled,
+                                            ]}
                                             disabled={eSaving}
                                         >
-                                            <Ionicons name="save-outline" size={18} color="#fff" />
-                                            <Text style={styles.primaryBtnText}>{eSaving ? "Guardando..." : "Guardar"}</Text>
+                                            <Ionicons
+                                                name="save-outline"
+                                                size={18}
+                                                color="#fff"
+                                            />
+                                            <Text
+                                                style={
+                                                    styles.primaryBtnText
+                                                }
+                                            >
+                                                {eSaving
+                                                    ? "Guardando..."
+                                                    : "Guardar"}
+                                            </Text>
                                         </Pressable>
                                     </View>
                                 </ScrollView>
@@ -1112,11 +1497,7 @@ export default function AdminUserClientsScreen() {
                     }
                     entitySubtitle={
                         assignClientDoc
-                            ? (
-                                assignClientDoc.address ||
-                                assignClientDoc.phone ||
-                                ""
-                            )
+                            ? assignClientDoc.address || assignClientDoc.phone || ""
                             : ""
                     }
                     users={users}
@@ -1128,7 +1509,10 @@ export default function AdminUserClientsScreen() {
                             setBusyId(entityId);
                             await assignClient(entityId, toUserId);
                         } catch (e: any) {
-                            Alert.alert("Error", e?.message ?? "No se pudo reasignar");
+                            Alert.alert(
+                                "Error",
+                                e?.message ?? "No se pudo reasignar"
+                            );
                         } finally {
                             setBusyId(null);
                         }
@@ -1138,19 +1522,6 @@ export default function AdminUserClientsScreen() {
         </SafeAreaView>
     );
 }
-
-const COLORS = {
-    bg: "#0B1220",
-    card: "#111827",
-    border: "#1F2937",
-    text: "#F9FAFB",
-    muted: "#9CA3AF",
-
-    visited: "#22C55E",
-    rejected: "#F87171",
-    pending: "#FBBF24",
-    primary: "#2563EB",
-};
 
 const styles = StyleSheet.create({
     safe: { flex: 1, backgroundColor: COLORS.bg },
@@ -1193,7 +1564,12 @@ const styles = StyleSheet.create({
         paddingHorizontal: 12,
         height: 48,
     },
-    searchInput: { flex: 1, color: COLORS.text, fontSize: 14, fontWeight: "700" },
+    searchInput: {
+        flex: 1,
+        color: COLORS.text,
+        fontSize: 14,
+        fontWeight: "700",
+    },
     clearBtn: {
         width: 34,
         height: 34,
@@ -1318,8 +1694,15 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         maxWidth: 140,
     },
-    pillText: { fontSize: 12, fontWeight: "900", textTransform: "lowercase" },
-    pillPending: { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.35)" },
+    pillText: {
+        fontSize: 12,
+        fontWeight: "900",
+        textTransform: "lowercase",
+    },
+    pillPending: {
+        backgroundColor: "rgba(251,191,36,0.12)",
+        borderColor: "rgba(251,191,36,0.35)",
+    },
     pillTextPending: { color: "#FDE68A" },
 
     datePill: {
@@ -1362,10 +1745,26 @@ const styles = StyleSheet.create({
     },
 
     infoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-    infoText: { flex: 1, color: COLORS.text, opacity: 0.9, fontSize: 12, fontWeight: "700" },
+    infoText: {
+        flex: 1,
+        color: COLORS.text,
+        opacity: 0.9,
+        fontSize: 12,
+        fontWeight: "700",
+    },
 
-    assignedRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
-    assignedText: { flex: 1, color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+    assignedRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        marginTop: 2,
+    },
+    assignedText: {
+        flex: 1,
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "800",
+    },
 
     inboundBox: {
         padding: 10,
@@ -1419,8 +1818,18 @@ const styles = StyleSheet.create({
 
     busyText: { color: COLORS.muted, fontSize: 12, fontWeight: "900" },
 
-    empty: { marginTop: 40, alignItems: "center", gap: 10, paddingHorizontal: 16 },
-    emptyText: { color: COLORS.muted, fontSize: 13, fontWeight: "900", textAlign: "center" },
+    empty: {
+        marginTop: 40,
+        alignItems: "center",
+        gap: 10,
+        paddingHorizontal: 16,
+    },
+    emptyText: {
+        color: COLORS.muted,
+        fontSize: 13,
+        fontWeight: "900",
+        textAlign: "center",
+    },
 
     sheetOverlay: {
         flex: 1,
@@ -1474,7 +1883,12 @@ const styles = StyleSheet.create({
         fontWeight: "800",
     },
 
-    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 12, justifyContent: "center" },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(0,0,0,0.55)",
+        padding: 12,
+        justifyContent: "center",
+    },
     modalWrap: { width: "100%" },
     modalCardBig: {
         backgroundColor: COLORS.card,
@@ -1484,8 +1898,19 @@ const styles = StyleSheet.create({
         padding: 14,
         maxHeight: "92%",
     },
-    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 },
-    modalTitle: { color: COLORS.text, fontSize: 16, fontWeight: "900", flex: 1 },
+    modalHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 10,
+        gap: 10,
+    },
+    modalTitle: {
+        color: COLORS.text,
+        fontSize: 16,
+        fontWeight: "900",
+        flex: 1,
+    },
     modalClose: {
         width: 40,
         height: 40,
@@ -1553,7 +1978,11 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         gap: 10,
     },
-    ghostBtnText: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
+    ghostBtnText: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 14,
+    },
     primaryBtn: {
         flex: 1,
         height: 50,
@@ -1569,7 +1998,11 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 10 },
         elevation: 4,
     },
-    primaryBtnText: { color: "#fff", fontWeight: "900", fontSize: 14 },
+    primaryBtnText: {
+        color: "#fff",
+        fontWeight: "900",
+        fontSize: 14,
+    },
     btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
     btnDisabled: { opacity: 0.55 },
 });

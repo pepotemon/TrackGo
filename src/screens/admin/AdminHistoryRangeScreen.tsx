@@ -208,15 +208,11 @@ type Row = {
     userId: string;
     name: string;
     email?: string;
-
     ratePerVisit: number;
-
     assignedWeek: number;
     pendingWeek: number;
-
     visitedWeek: number;
     rejectedWeek: number;
-
     amountWeek: number;
 };
 
@@ -237,25 +233,27 @@ export default function AdminWeeklyReportScreen() {
     const [usersLoading, setUsersLoading] = useState(false);
 
     const [weekEvents, setWeekEvents] = useState<DailyEventDoc[]>([]);
-    const [rangeEvents, setRangeEvents] = useState<DailyEventDoc[]>([]);
     const [q, setQ] = useState("");
 
     const [listOpen, setListOpen] = useState(false);
     const [listMode, setListMode] = useState<ListMode>("visited");
     const [listQ, setListQ] = useState("");
+    const [expandedUserIds, setExpandedUserIds] = useState<Record<string, boolean>>({});
 
     const [assignOpen, setAssignOpen] = useState(false);
     const [assignClientId, setAssignClientId] = useState<string | null>(null);
-    const [assignSearch, setAssignSearch] = useState("");
     const [busyClientId, setBusyClientId] = useState<string | null>(null);
 
     const [earningsOpen, setEarningsOpen] = useState(false);
-    const [expandedUserIds, setExpandedUserIds] = useState<Record<string, boolean>>({});
+
     const weekStartKey = useMemo(() => dayKeyFromDate(startOfWeekMonday(new Date())), []);
     const weekEndKey = useMemo(() => dayKeyFromDate(endOfWeekSunday(new Date())), []);
 
     useEffect(() => {
-        const unsub = subscribeAdminClients((list) => setClients(list ?? []));
+        const unsub = subscribeAdminClients(
+            (list) => setClients(Array.isArray(list) ? list : []),
+            { limitCount: 1200 }
+        );
         return () => unsub();
     }, []);
 
@@ -263,36 +261,17 @@ export default function AdminWeeklyReportScreen() {
         const unsub = subscribeDailyEventsByRange(
             weekStartKey,
             weekEndKey,
-            (list) => setWeekEvents(list ?? []),
+            (list) => setWeekEvents(Array.isArray(list) ? list : []),
             (err) => console.log("[AdminWeeklyReport] week events err:", err?.code, err?.message)
         );
         return () => unsub();
     }, [weekStartKey, weekEndKey]);
 
-    useEffect(() => {
-        const end = new Date();
-        end.setHours(0, 0, 0, 0);
-
-        const start = new Date(end);
-        start.setDate(start.getDate() - 180);
-
-        const startKey = dayKeyFromDate(start);
-        const endKey = dayKeyFromDate(end);
-
-        const unsub = subscribeDailyEventsByRange(
-            startKey,
-            endKey,
-            (list) => setRangeEvents(list ?? []),
-            (err) => console.log("[AdminWeeklyReport] range events err:", err?.code, err?.message)
-        );
-        return () => unsub();
-    }, []);
-
     const reloadUsers = async () => {
         setUsersLoading(true);
         try {
             const u = await listUsers("user");
-            setUsers(u);
+            setUsers(Array.isArray(u) ? u : []);
         } finally {
             setUsersLoading(false);
         }
@@ -318,10 +297,6 @@ export default function AdminWeeklyReportScreen() {
         return latestEventByClient(weekEvents);
     }, [weekEvents]);
 
-    const lastEventRangeByClient = useMemo(() => {
-        return latestEventByClient(rangeEvents);
-    }, [rangeEvents]);
-
     const rejectedReasonByClientId = useMemo(() => {
         const m = new Map<string, RejectedReason>();
 
@@ -330,7 +305,7 @@ export default function AdminWeeklyReportScreen() {
             if (fromClient) m.set(c.id, fromClient);
         }
 
-        for (const [cid, ev] of lastEventRangeByClient.entries()) {
+        for (const [cid, ev] of lastEventWeekByClient.entries()) {
             const anyEv: any = ev as any;
             if (anyEv?.type !== "rejected") continue;
 
@@ -345,7 +320,7 @@ export default function AdminWeeklyReportScreen() {
         }
 
         return m;
-    }, [clients, lastEventRangeByClient]);
+    }, [clients, lastEventWeekByClient]);
 
     /**
      * ✅ MISMA LÓGICA DEL HOME ADMIN
@@ -366,14 +341,6 @@ export default function AdminWeeklyReportScreen() {
         [clientsById]
     );
 
-
-    const toggleUserSection = (userId: string) => {
-        setExpandedUserIds((prev) => {
-            const isOpen = !!prev[userId];
-            if (isOpen) return {};
-            return { [userId]: true };
-        });
-    };
     const rows: Row[] = useMemo(() => {
         const byUser: Record<string, Row> = {};
 
@@ -393,7 +360,7 @@ export default function AdminWeeklyReportScreen() {
         }
 
         // ✅ Asignados de la semana
-        // ✅ Pendientes SIEMPRE actuales, sin importar la fecha
+        // ✅ Pendientes actuales aunque vengan de días pasados
         for (const c of clients) {
             const uid = c.assignedTo;
             if (!uid) continue;
@@ -414,21 +381,17 @@ export default function AdminWeeklyReportScreen() {
 
             const row = byUser[uid];
             const assignedDayKey = String((c as any).assignedDayKey ?? "");
-            const assignedThisWeek = isDayKeyWithinRange(assignedDayKey, weekStartKey, weekEndKey);
 
-            if (assignedThisWeek) {
+            if (isDayKeyWithinRange(assignedDayKey, weekStartKey, weekEndKey)) {
                 row.assignedWeek += 1;
             }
 
-            // ✅ IMPORTANTE:
-            // Los pendientes no dependen del cierre semanal.
-            // Si siguen pending, deben seguir apareciendo.
             if ((c as any).status === "pending") {
                 row.pendingWeek += 1;
             }
         }
 
-        // ✅ Visitados / rechazados usando lógica anti-inflado
+        // ✅ Visitados / rechazados de la semana con filtro anti-inflado
         for (const ev of lastEventWeekByClient.values()) {
             if (!shouldCountWeekEvent(ev)) continue;
 
@@ -493,6 +456,12 @@ export default function AdminWeeklyReportScreen() {
     }, [rows]);
 
     const doneWeek = totals.visitedWeek + totals.rejectedWeek;
+
+    const earningRows = useMemo(() => {
+        return rows
+            .filter((r) => r.amountWeek > 0 || r.visitedWeek > 0)
+            .sort((a, b) => b.amountWeek - a.amountWeek);
+    }, [rows]);
 
     const copy = async (text: string) => {
         await Clipboard.setStringAsync(text);
@@ -633,74 +602,73 @@ export default function AdminWeeklyReportScreen() {
         return m;
     }, [clients]);
 
-    const filterClientByListQ = (c: ClientDoc) => {
-        const qt2 = listQ.trim().toLowerCase();
-        if (!qt2) return true;
+    const filterClientByListQ = useCallback(
+        (c: ClientDoc) => {
+            const qt2 = listQ.trim().toLowerCase();
+            if (!qt2) return true;
 
-        const name = safeText((c as any).name);
-        const business = safeText((c as any).business);
-        const hay =
-            safeText(c.phone) +
-            " " +
-            safeText(c.address) +
-            " " +
-            safeText(c.mapsUrl) +
-            " " +
-            name +
-            " " +
-            business;
+            const name = safeText((c as any).name);
+            const business = safeText((c as any).business);
+            const hay =
+                safeText(c.phone) +
+                " " +
+                safeText(c.address) +
+                " " +
+                safeText(c.mapsUrl) +
+                " " +
+                name +
+                " " +
+                business;
 
-        return hay.includes(qt2);
-    };
+            return hay.includes(qt2);
+        },
+        [listQ]
+    );
 
-    const buildSections = (mode: ListMode): GroupSection[] => {
-        const out: GroupSection[] = [];
+    const buildSections = useCallback(
+        (mode: ListMode): GroupSection[] => {
+            const out: GroupSection[] = [];
 
-        for (const r of rows) {
-            const uid = r.userId;
-            let list: ClientDoc[] = [];
+            for (const r of rows) {
+                const uid = r.userId;
+                let list: ClientDoc[] = [];
 
-            if (mode === "visited") {
-                const ids = visitedIdsByUser.get(uid);
-                if (ids && ids.size) {
-                    for (const id of ids) {
-                        const c = clientsById.get(id);
-                        if (c) list.push(c);
+                if (mode === "visited") {
+                    const ids = visitedIdsByUser.get(uid);
+                    if (ids && ids.size) {
+                        for (const id of ids) {
+                            const c = clientsById.get(id);
+                            if (c) list.push(c);
+                        }
                     }
+                } else if (mode === "rejected") {
+                    list = (rejectedByAssignedTo.get(uid) ?? []).slice();
+                } else if (mode === "pending") {
+                    list = (pendingByUser.get(uid) ?? []).slice();
                 }
-            } else if (mode === "rejected") {
-                list = (rejectedByAssignedTo.get(uid) ?? []).slice();
-            } else if (mode === "pending") {
-                list = (pendingByUser.get(uid) ?? []).slice();
+
+                list = list.filter(filterClientByListQ);
+                if (list.length === 0) continue;
+
+                out.push({
+                    userId: uid,
+                    title: r.name,
+                    subtitle: r.email ? r.email : undefined,
+                    data: list,
+                });
             }
 
-            list = list.filter(filterClientByListQ);
-            if (list.length === 0) continue;
+            return out;
+        },
+        [rows, visitedIdsByUser, rejectedByAssignedTo, pendingByUser, clientsById, filterClientByListQ]
+    );
 
-            out.push({
-                userId: uid,
-                title: r.name,
-                subtitle: r.email ? r.email : undefined,
-                data: list,
-            });
-        }
-
-        return out;
-    };
-
-    const modalSections = useMemo(() => buildSections(listMode), [
-        listMode,
-        rows,
-        visitedIdsByUser,
-        rejectedByAssignedTo,
-        pendingByUser,
-        clientsById,
-        listQ,
-    ]);
+    const modalSections = useMemo(() => buildSections(listMode), [listMode, buildSections]);
 
     const openList = (mode: ListMode) => {
         setListMode(mode);
         setListQ("");
+        setExpandedUserIds({});
         setListOpen(true);
     };
 
@@ -710,61 +678,23 @@ export default function AdminWeeklyReportScreen() {
         setExpandedUserIds({});
     };
 
+    const toggleUserSection = (userId: string) => {
+        setExpandedUserIds((prev) => {
+            const isOpen = !!prev[userId];
+            if (isOpen) return {};
+            return { [userId]: true };
+        });
+    };
+
     const openAssignForClient = (clientId: string) => {
         setAssignClientId(clientId);
-        setAssignSearch("");
         setAssignOpen(true);
     };
 
     const closeAssign = () => {
         setAssignOpen(false);
         setAssignClientId(null);
-        setAssignSearch("");
     };
-
-    const doAssign = async (toUserId: string) => {
-        const cid = assignClientId;
-        if (!cid) return;
-
-        try {
-            setBusyClientId(cid);
-
-            setClients((prev) =>
-                prev.map((c) => {
-                    if (c.id !== cid) return c;
-                    return {
-                        ...(c as any),
-                        assignedTo: toUserId,
-                        status: "pending",
-                    } as ClientDoc;
-                })
-            );
-
-            await assignClient(cid, toUserId as any);
-
-            closeAssign();
-            if (listOpen) {
-                setListOpen(false);
-                setTimeout(() => {
-                    setListOpen(true);
-                }, 0);
-            }
-        } catch (e: any) {
-            console.log("[assignClient] error:", e?.message ?? e);
-        } finally {
-            setBusyClientId(null);
-        }
-    };
-
-    const filteredUsersForAssign = useMemo(() => {
-        const qt2 = assignSearch.trim().toLowerCase();
-        const base = users.slice().sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
-        if (!qt2) return base;
-        return base.filter((u) => {
-            const hay = `${safeText(u.name)} ${safeText(u.email)}`;
-            return hay.includes(qt2);
-        });
-    }, [users, assignSearch]);
 
     const findAssignedName = (uid?: string) => {
         if (!uid) return "—";
@@ -1049,7 +979,6 @@ export default function AdminWeeklyReportScreen() {
                     }
                 />
 
-
                 <Modal visible={listOpen} transparent animationType="fade" onRequestClose={closeList}>
                     <Pressable style={styles.modalBackdrop} onPress={closeList} />
 
@@ -1169,8 +1098,6 @@ export default function AdminWeeklyReportScreen() {
                     </View>
                 </Modal>
 
-
-
                 <AdminAssignModal
                     visible={assignOpen}
                     onClose={closeAssign}
@@ -1246,7 +1173,7 @@ export default function AdminWeeklyReportScreen() {
                         </View>
 
                         <FlatList
-                            data={rows.filter((r) => r.amountWeek > 0 || r.visitedWeek > 0)}
+                            data={earningRows}
                             keyExtractor={(r) => `earn-${r.userId}`}
                             contentContainerStyle={{ paddingTop: 4, paddingBottom: 8, gap: 8 }}
                             showsVerticalScrollIndicator={false}

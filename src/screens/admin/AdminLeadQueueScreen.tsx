@@ -49,7 +49,7 @@ type VerificationStatus =
     | "incomplete"
     | "not_suitable";
 
-type QueueScope = "today" | "all";
+type DateRangeKey = "this_week" | "today" | "last_7_days" | "this_month";
 
 type ActionSheetState = {
     open: boolean;
@@ -80,6 +80,12 @@ type LeadRowVM = {
     cityLabel: string;
     cityNormalized: string;
     isOutOfCoverage: boolean;
+};
+
+type DateRangeState = {
+    key: DateRangeKey;
+    startAtMs: number;
+    endAtMs: number;
 };
 
 const localSeenInboundMap: Record<string, number> = {};
@@ -123,7 +129,9 @@ function roundCoord(v: any): number | null {
     return Math.round(n * 1000000) / 1000000;
 }
 
-function extractLatLngFromMapsUrl(url: string): { lat: number | null; lng: number | null } {
+function extractLatLngFromMapsUrl(
+    url: string
+): { lat: number | null; lng: number | null } {
     const raw = (url ?? "").trim();
     if (!raw) return { lat: null, lng: null };
 
@@ -205,11 +213,117 @@ function formatDateLabel(ms?: number) {
 
     const d = new Date(ms);
     const day = String(d.getDate()).padStart(2, "0");
-    const months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+    const months = [
+        "ene",
+        "feb",
+        "mar",
+        "abr",
+        "may",
+        "jun",
+        "jul",
+        "ago",
+        "sep",
+        "oct",
+        "nov",
+        "dic",
+    ];
     const month = months[d.getMonth()];
     const year = d.getFullYear();
 
     return `${day} ${month} ${year}`;
+}
+
+function formatDateShort(ms?: number) {
+    if (!ms || !Number.isFinite(ms)) return "—";
+    const d = new Date(ms);
+    const day = String(d.getDate()).padStart(2, "0");
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    return `${day}/${month}`;
+}
+
+function startOfLocalDay(ms = Date.now()) {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+}
+
+function endOfLocalDay(ms = Date.now()) {
+    const d = new Date(ms);
+    d.setHours(23, 59, 59, 999);
+    return d.getTime();
+}
+
+function getStartOfWeekMonday(ms = Date.now()) {
+    const d = new Date(ms);
+    const day = d.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+}
+
+function getEndOfWeekSunday(ms = Date.now()) {
+    const start = new Date(getStartOfWeekMonday(ms));
+    start.setDate(start.getDate() + 6);
+    start.setHours(23, 59, 59, 999);
+    return start.getTime();
+}
+
+function getStartOfMonth(ms = Date.now()) {
+    const d = new Date(ms);
+    d.setDate(1);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+}
+
+function getEndOfMonth(ms = Date.now()) {
+    const d = new Date(ms);
+    d.setMonth(d.getMonth() + 1, 0);
+    d.setHours(23, 59, 59, 999);
+    return d.getTime();
+}
+
+function buildDateRange(key: DateRangeKey, now = Date.now()): DateRangeState {
+    if (key === "today") {
+        return {
+            key,
+            startAtMs: startOfLocalDay(now),
+            endAtMs: endOfLocalDay(now),
+        };
+    }
+
+    if (key === "last_7_days") {
+        return {
+            key,
+            startAtMs: startOfLocalDay(now - 6 * 24 * 60 * 60 * 1000),
+            endAtMs: endOfLocalDay(now),
+        };
+    }
+
+    if (key === "this_month") {
+        return {
+            key,
+            startAtMs: getStartOfMonth(now),
+            endAtMs: getEndOfMonth(now),
+        };
+    }
+
+    return {
+        key: "this_week",
+        startAtMs: getStartOfWeekMonday(now),
+        endAtMs: getEndOfWeekSunday(now),
+    };
+}
+
+function getDateRangeLabel(range: DateRangeState) {
+    return `${formatDateShort(range.startAtMs)} - ${formatDateShort(range.endAtMs)}`;
+}
+
+function getDateRangePresetLabel(key: DateRangeKey) {
+    if (key === "today") return "Hoy";
+    if (key === "last_7_days") return "7 días";
+    if (key === "this_month") return "Mes";
+    return "Semana";
 }
 
 function getClientParseStatus(c: ClientDoc): "ready" | "partial" | "empty" {
@@ -227,10 +341,13 @@ function hasUsefulMaps(c: ClientDoc) {
     const mapsUrl = !!String(c.mapsUrl ?? "").trim();
     const lat = safeNumber((c as any)?.lat);
     const lng = safeNumber((c as any)?.lng);
-    const currentLeadMapsConfirmedAt = safeNumber((c as any)?.currentLeadMapsConfirmedAt);
+    const currentLeadMapsConfirmedAt = safeNumber(
+        (c as any)?.currentLeadMapsConfirmedAt
+    );
 
     const hasStoredMaps = mapsUrl || (lat != null && lng != null);
-    const hasConfirmedCurrentLeadMaps = currentLeadMapsConfirmedAt != null && currentLeadMapsConfirmedAt > 0;
+    const hasConfirmedCurrentLeadMaps =
+        currentLeadMapsConfirmedAt != null && currentLeadMapsConfirmedAt > 0;
 
     return hasStoredMaps && hasConfirmedCurrentLeadMaps;
 }
@@ -337,11 +454,7 @@ function getCityNormalized(c: ClientDoc) {
 }
 
 function getCityOutOfCoverage(c: ClientDoc) {
-    const v =
-        (c as any)?.geoOutOfCoverage ??
-        (c as any)?.cityOutOfCoverage ??
-        false;
-
+    const v = (c as any)?.geoOutOfCoverage ?? (c as any)?.cityOutOfCoverage ?? false;
     return v === true;
 }
 
@@ -358,7 +471,9 @@ function buildLeadVM(c: ClientDoc): LeadRowVM {
     const phone = String(c.phone ?? "").trim();
     const waPhone = String((c as any)?.waId ?? c.phone ?? "").trim();
     const name = String((c as any)?.name ?? "").trim();
-    const subtitle = String((c as any)?.business ?? (c as any)?.businessRaw ?? "").trim();
+    const subtitle = String(
+        (c as any)?.business ?? (c as any)?.businessRaw ?? ""
+    ).trim();
     const address = String(c.address ?? "").trim();
     const mapsUrl = String(c.mapsUrl ?? "").trim();
     const quickStatusText = getQuickStatusText(c);
@@ -522,20 +637,31 @@ const LeadCard = memo(function LeadCard({
                     ]}
                     disabled={isBusy}
                 >
-                    <Ionicons name="ellipsis-horizontal" size={16} color={COLORS.text} />
+                    <Ionicons
+                        name="ellipsis-horizontal"
+                        size={16}
+                        color={COLORS.text}
+                    />
                 </Pressable>
             </View>
 
             <View style={[styles.statusBox, statusBoxStyle]}>
                 <Ionicons name={statusIconName} size={14} color={statusIconColor} />
-                <Text style={[styles.statusBoxText, statusTextStyle]} numberOfLines={2}>
+                <Text
+                    style={[styles.statusBoxText, statusTextStyle]}
+                    numberOfLines={2}
+                >
                     {item.quickStatusText}
                 </Text>
             </View>
 
             {!!item.address ? (
                 <View style={styles.infoRow}>
-                    <Ionicons name="location-outline" size={14} color={COLORS.muted} />
+                    <Ionicons
+                        name="location-outline"
+                        size={14}
+                        color={COLORS.muted}
+                    />
                     <Text style={styles.infoText} numberOfLines={2}>
                         {item.address}
                     </Text>
@@ -583,7 +709,11 @@ const LeadCard = memo(function LeadCard({
                         pressed && styles.pressed,
                     ]}
                 >
-                    <Ionicons name="chatbubble-outline" size={15} color="#93C5FD" />
+                    <Ionicons
+                        name="chatbubble-outline"
+                        size={15}
+                        color="#93C5FD"
+                    />
                     <Text style={styles.openChatEmptyBtnText}>Abrir chat</Text>
                 </Pressable>
             )}
@@ -591,19 +721,30 @@ const LeadCard = memo(function LeadCard({
             <View style={styles.bottomMiniRow}>
                 <Pressable
                     onPress={() => onOpenMaps(item.mapsUrl)}
-                    style={({ pressed }) => [styles.miniIconBtn, pressed && styles.iconBtnPressed]}
+                    style={({ pressed }) => [
+                        styles.miniIconBtn,
+                        pressed && styles.iconBtnPressed,
+                    ]}
                 >
                     <Ionicons name="map-outline" size={16} color={COLORS.text} />
                 </Pressable>
 
                 <Pressable
                     onPress={() => onOpenWsp(item.waPhone || item.phone)}
-                    style={({ pressed }) => [styles.miniIconBtn, pressed && styles.iconBtnPressed]}
+                    style={({ pressed }) => [
+                        styles.miniIconBtn,
+                        pressed && styles.iconBtnPressed,
+                    ]}
                 >
-                    <Ionicons name="logo-whatsapp" size={16} color={COLORS.text} />
+                    <Ionicons
+                        name="logo-whatsapp"
+                        size={16}
+                        color={COLORS.text}
+                    />
                 </Pressable>
 
-                {item.verificationStatus === "not_suitable" && !!item.notSuitableReason ? (
+                {item.verificationStatus === "not_suitable" &&
+                    !!item.notSuitableReason ? (
                     <Text style={styles.bottomReasonText} numberOfLines={1}>
                         {item.notSuitableReason}
                     </Text>
@@ -690,8 +831,10 @@ export default function AdminLeadQueueScreen() {
     const debouncedQ = useDebouncedValue(q, 280);
 
     const [filter, setFilter] = useState<MetaFilterKey>("pending_review");
-    const [queueScope, setQueueScope] = useState<QueueScope>("all");
     const [busyId, setBusyId] = useState<string | null>(null);
+    const [dateRange, setDateRange] = useState<DateRangeState>(() =>
+        buildDateRange("this_week")
+    );
 
     const [actionSheet, setActionSheet] = useState<ActionSheetState>({
         open: false,
@@ -713,7 +856,9 @@ export default function AdminLeadQueueScreen() {
 
     const [userPickerOpen, setUserPickerOpen] = useState(false);
     const [pickerQuery, setPickerQuery] = useState("");
-    const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(null);
+    const [pickerTargetClientId, setPickerTargetClientId] = useState<string | null>(
+        null
+    );
 
     const listRef = useRef<any>(null);
 
@@ -722,7 +867,13 @@ export default function AdminLeadQueueScreen() {
             (list) => setQueueClients(list ?? []),
             {
                 limitCount: 800,
-                verificationStatuses: ["pending_review", "incomplete", "not_suitable"],
+                verificationStatuses: [
+                    "pending_review",
+                    "incomplete",
+                    "not_suitable",
+                ],
+                startAtMs: dateRange.startAtMs,
+                endAtMs: dateRange.endAtMs,
             }
         );
 
@@ -731,6 +882,8 @@ export default function AdminLeadQueueScreen() {
             {
                 limitCount: 800,
                 verificationStatuses: ["incomplete", "not_suitable"],
+                startAtMs: dateRange.startAtMs,
+                endAtMs: dateRange.endAtMs,
             }
         );
 
@@ -738,7 +891,7 @@ export default function AdminLeadQueueScreen() {
             unsubQueue();
             unsubHistory();
         };
-    }, []);
+    }, [dateRange.startAtMs, dateRange.endAtMs]);
 
     const reloadUsers = useCallback(async () => {
         if (usersLoading) return;
@@ -761,7 +914,7 @@ export default function AdminLeadQueueScreen() {
 
     useEffect(() => {
         closeActionSheet();
-    }, [filter, queueScope, debouncedQ, closeActionSheet]);
+    }, [filter, debouncedQ, dateRange.key, dateRange.startAtMs, dateRange.endAtMs, closeActionSheet]);
 
     const activeQueueClients = useMemo(() => {
         const now = Date.now();
@@ -808,47 +961,15 @@ export default function AdminLeadQueueScreen() {
         };
     }, [leadVMs]);
 
-    const todayCounts = useMemo(() => {
-        const now = Date.now();
-
-        let pendingReview = 0;
-        let incomplete = 0;
-        let notSuitable = 0;
-
-        for (const item of leadVMs) {
-            if (!isSameLocalDay(item.baseDateMs, now)) continue;
-
-            if (item.verificationStatus === "pending_review") pendingReview++;
-            else if (item.verificationStatus === "incomplete") incomplete++;
-            else if (item.verificationStatus === "not_suitable") notSuitable++;
-        }
-
-        return {
-            pendingReview,
-            incomplete,
-            notSuitable,
-        };
-    }, [leadVMs]);
-
     const filteredIds = useMemo(() => {
         const qtText = debouncedQ.trim().toLowerCase();
         const qtDigits = normalizePhone(debouncedQ);
-        const now = Date.now();
 
         const list = leadVMs.filter((item) => {
             const verification = item.verificationStatus;
 
             if (verification === "verified") return false;
             if (filter !== "all" && verification !== filter) return false;
-
-            const shouldShowScope =
-                filter === "pending_review" ||
-                filter === "incomplete" ||
-                filter === "not_suitable";
-
-            if (shouldShowScope && queueScope === "today") {
-                if (!isSameLocalDay(item.baseDateMs, now)) return false;
-            }
 
             if (!qtText && !qtDigits) return true;
 
@@ -870,7 +991,7 @@ export default function AdminLeadQueueScreen() {
         });
 
         return list.map((x) => x.id);
-    }, [leadVMs, debouncedQ, filter, queueScope]);
+    }, [leadVMs, debouncedQ, filter]);
 
     useEffect(() => {
         if (!actionSheet.clientId) return;
@@ -882,25 +1003,6 @@ export default function AdminLeadQueueScreen() {
     const visibleTotal = useMemo(() => {
         return totals.pendingReview + totals.incomplete + totals.notSuitable;
     }, [totals]);
-
-    const currentScopeAllCount = useMemo(() => {
-        if (filter === "pending_review") return totals.pendingReview;
-        if (filter === "incomplete") return totals.incomplete;
-        if (filter === "not_suitable") return totals.notSuitable;
-        return visibleTotal;
-    }, [filter, totals, visibleTotal]);
-
-    const currentScopeTodayCount = useMemo(() => {
-        if (filter === "pending_review") return todayCounts.pendingReview;
-        if (filter === "incomplete") return todayCounts.incomplete;
-        if (filter === "not_suitable") return todayCounts.notSuitable;
-        return 0;
-    }, [filter, todayCounts]);
-
-    const showScopeFilter =
-        filter === "pending_review" ||
-        filter === "incomplete" ||
-        filter === "not_suitable";
 
     const allKnownClients = useMemo(() => {
         const map = new Map<string, ClientDoc>();
@@ -972,7 +1074,6 @@ export default function AdminLeadQueueScreen() {
 
             const clientName = vm.name || vm.phone || "Lead";
             markClientSeenInstant(vm);
-
 
             router.push({
                 pathname: "/admin/lead-chat" as any,
@@ -1188,7 +1289,10 @@ export default function AdminLeadQueueScreen() {
         }
 
         if (phoneExists(cleanPhone, editingId)) {
-            Alert.alert("Duplicado", "Ese teléfono ya existe. No se puede guardar duplicado.");
+            Alert.alert(
+                "Duplicado",
+                "Ese teléfono ya existe. No se puede guardar duplicado."
+            );
             return;
         }
 
@@ -1229,9 +1333,13 @@ export default function AdminLeadQueueScreen() {
                 parseStatus: finalBusiness && cleanMaps ? "ready" : "partial",
                 verificationStatus: eVerificationStatus,
                 notSuitableReason:
-                    eVerificationStatus === "not_suitable" ? cleanNotSuitableReason : "",
+                    eVerificationStatus === "not_suitable"
+                        ? cleanNotSuitableReason
+                        : "",
                 leadQuality:
-                    eVerificationStatus === "not_suitable" ? "not_suitable" : "review",
+                    eVerificationStatus === "not_suitable"
+                        ? "not_suitable"
+                        : "review",
                 verifiedAt: null,
             };
 
@@ -1277,7 +1385,9 @@ export default function AdminLeadQueueScreen() {
                 <LeadCard
                     item={vm}
                     isBusy={busyId === id}
-                    onOpenActions={(clientId) => setActionSheet({ open: true, clientId })}
+                    onOpenActions={(clientId) =>
+                        setActionSheet({ open: true, clientId })
+                    }
                     onOpenMaps={openMaps}
                     onOpenWsp={openWsp}
                     onOpenChat={openChatScreen}
@@ -1318,7 +1428,11 @@ export default function AdminLeadQueueScreen() {
                                 pressed && styles.pressed,
                             ]}
                         >
-                            <Ionicons name="git-merge-outline" size={18} color={COLORS.text} />
+                            <Ionicons
+                                name="git-merge-outline"
+                                size={18}
+                                color={COLORS.text}
+                            />
                         </Pressable>
 
                         <Pressable
@@ -1329,7 +1443,11 @@ export default function AdminLeadQueueScreen() {
                             ]}
                             accessibilityLabel="Abrir historial de leads"
                         >
-                            <Ionicons name="archive-outline" size={17} color={COLORS.text} />
+                            <Ionicons
+                                name="archive-outline"
+                                size={17}
+                                color={COLORS.text}
+                            />
                             <Text style={styles.headerHistoryBtnText}>
                                 {historyCandidates.length}
                             </Text>
@@ -1358,7 +1476,7 @@ export default function AdminLeadQueueScreen() {
                         <TextInput
                             value={q}
                             onChangeText={setQ}
-                            placeholder=""
+                            placeholder="Buscar..."
                             placeholderTextColor={COLORS.muted}
                             style={styles.searchInput}
                         />
@@ -1369,87 +1487,55 @@ export default function AdminLeadQueueScreen() {
                         ) : null}
                     </View>
 
-                    {showScopeFilter ? (
-                        <View style={styles.secondaryFilterWrap}>
-                            <View style={styles.secondaryFilterRow}>
-                                <Pressable
-                                    onPress={() => setQueueScope("today")}
-                                    style={({ pressed }) => [
-                                        styles.secondaryFilterPill,
-                                        queueScope === "today" &&
-                                        styles.secondaryFilterPillActive,
-                                        pressed && styles.pressed,
-                                    ]}
-                                >
-                                    <Ionicons
-                                        name="today-outline"
-                                        size={13}
-                                        color={
-                                            queueScope === "today"
-                                                ? "#93C5FD"
-                                                : COLORS.muted
-                                        }
-                                    />
-                                    <Text
-                                        style={[
-                                            styles.secondaryFilterPillText,
-                                            queueScope === "today" &&
-                                            styles.secondaryFilterPillTextActive,
-                                        ]}
-                                    >
-                                        Hoy
-                                    </Text>
-                                    <Text
-                                        style={[
-                                            styles.secondaryFilterPillCount,
-                                            queueScope === "today" &&
-                                            styles.secondaryFilterPillCountActive,
-                                        ]}
-                                    >
-                                        {currentScopeTodayCount}
-                                    </Text>
-                                </Pressable>
-
-                                <Pressable
-                                    onPress={() => setQueueScope("all")}
-                                    style={({ pressed }) => [
-                                        styles.secondaryFilterPill,
-                                        queueScope === "all" &&
-                                        styles.secondaryFilterPillActive,
-                                        pressed && styles.pressed,
-                                    ]}
-                                >
-                                    <Ionicons
-                                        name="albums-outline"
-                                        size={13}
-                                        color={
-                                            queueScope === "all"
-                                                ? "#93C5FD"
-                                                : COLORS.muted
-                                        }
-                                    />
-                                    <Text
-                                        style={[
-                                            styles.secondaryFilterPillText,
-                                            queueScope === "all" &&
-                                            styles.secondaryFilterPillTextActive,
-                                        ]}
-                                    >
-                                        Todos
-                                    </Text>
-                                    <Text
-                                        style={[
-                                            styles.secondaryFilterPillCount,
-                                            queueScope === "all" &&
-                                            styles.secondaryFilterPillCountActive,
-                                        ]}
-                                    >
-                                        {currentScopeAllCount}
-                                    </Text>
-                                </Pressable>
+                    <View style={styles.dateRangeWrap}>
+                        <View style={styles.dateRangeHeader}>
+                            <View style={styles.dateRangeTitleWrap}>
+                                <Ionicons
+                                    name="calendar-outline"
+                                    size={15}
+                                    color={COLORS.primarySoft}
+                                />
+                                <Text style={styles.dateRangeTitle}>
+                                    Rango: {getDateRangeLabel(dateRange)}
+                                </Text>
                             </View>
                         </View>
-                    ) : null}
+
+                        <View style={styles.dateRangeRow}>
+                            {(
+                                [
+                                    "this_week",
+                                    "today",
+                                    "last_7_days",
+                                    "this_month",
+                                ] as DateRangeKey[]
+                            ).map((presetKey) => {
+                                const active = dateRange.key === presetKey;
+                                return (
+                                    <Pressable
+                                        key={presetKey}
+                                        onPress={() =>
+                                            setDateRange(buildDateRange(presetKey))
+                                        }
+                                        style={({ pressed }) => [
+                                            styles.dateRangePill,
+                                            active && styles.dateRangePillActive,
+                                            pressed && styles.pressed,
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.dateRangePillText,
+                                                active && styles.dateRangePillTextActive,
+                                            ]}
+                                        >
+                                            {getDateRangePresetLabel(presetKey)}
+                                        </Text>
+                                    </Pressable>
+                                );
+                            })}
+                        </View>
+                    </View>
 
                     <View style={styles.listWrap}>
                         <FlashList
@@ -1474,9 +1560,7 @@ export default function AdminLeadQueueScreen() {
                                     <Text style={styles.emptyText}>
                                         {debouncedQ.trim()
                                             ? "No hay resultados."
-                                            : showScopeFilter && queueScope === "today"
-                                                ? "No hay leads activos de hoy en este filtro."
-                                                : "No hay leads Meta en la cola activa."}
+                                            : "No hay leads Meta en la cola activa para ese rango."}
                                     </Text>
                                 </View>
                             }
@@ -1535,7 +1619,6 @@ export default function AdminLeadQueueScreen() {
                                 onPress={() => {
                                     closeActionSheet();
                                     setFilter("all");
-                                    setQueueScope("all");
                                 }}
                             />
                         </View>
@@ -1688,10 +1771,7 @@ export default function AdminLeadQueueScreen() {
                                         color={COLORS.rejected}
                                     />
                                     <Text
-                                        style={[
-                                            styles.sheetItemText,
-                                            { color: "#FCA5A5" },
-                                        ]}
+                                        style={[styles.sheetItemText, { color: "#FCA5A5" }]}
                                     >
                                         Eliminar lead
                                     </Text>
@@ -1815,12 +1895,10 @@ export default function AdminLeadQueueScreen() {
                                                         "pending_review",
                                                         "incomplete",
                                                         "not_suitable",
-                                                    ] as Exclude<
-                                                        VerificationStatus,
-                                                        "verified"
-                                                    >[]
+                                                    ] as Exclude<VerificationStatus, "verified">[]
                                                 ).map((s) => {
-                                                    const active = eVerificationStatus === s;
+                                                    const active =
+                                                        eVerificationStatus === s;
                                                     const label =
                                                         getVerificationStatusFilterLabel(s);
 
@@ -2140,55 +2218,53 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(255,255,255,0.06)",
     },
 
-    secondaryFilterWrap: {
+    dateRangeWrap: {
         paddingHorizontal: 16,
         paddingBottom: 10,
+        gap: 8,
     },
-    secondaryFilterRow: {
+    dateRangeHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+    },
+    dateRangeTitleWrap: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    dateRangeTitle: {
+        color: COLORS.soft,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    dateRangeRow: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
+        flexWrap: "wrap",
     },
-    secondaryFilterPill: {
+    dateRangePill: {
         minHeight: 32,
-        paddingHorizontal: 10,
+        paddingHorizontal: 12,
         borderRadius: 999,
         borderWidth: 1,
         borderColor: COLORS.border,
         backgroundColor: "#0F172A",
-        flexDirection: "row",
         alignItems: "center",
-        gap: 7,
+        justifyContent: "center",
     },
-    secondaryFilterPillActive: {
+    dateRangePillActive: {
         backgroundColor: "rgba(37,99,235,0.10)",
         borderColor: "rgba(37,99,235,0.26)",
     },
-    secondaryFilterPillText: {
+    dateRangePillText: {
         color: COLORS.muted,
         fontSize: 12,
         fontWeight: "900",
     },
-    secondaryFilterPillTextActive: {
+    dateRangePillTextActive: {
         color: "#DDEAFE",
-    },
-    secondaryFilterPillCount: {
-        minWidth: 18,
-        height: 18,
-        borderRadius: 999,
-        paddingHorizontal: 5,
-        textAlign: "center",
-        textAlignVertical: "center",
-        overflow: "hidden",
-        backgroundColor: "rgba(255,255,255,0.06)",
-        color: "#CBD5E1",
-        fontSize: 10,
-        fontWeight: "900",
-        lineHeight: 18,
-    },
-    secondaryFilterPillCountActive: {
-        backgroundColor: "rgba(37,99,235,0.22)",
-        color: "#93C5FD",
     },
 
     listWrap: { flex: 1 },

@@ -323,28 +323,62 @@ export default function AdminUserClientsRejectedHistoryScreen() {
     const [menuOpen, setMenuOpen] = useState(false);
     const [menuClientId, setMenuClientId] = useState<string | null>(null);
 
+
+    const rangeMs = useMemo(() => {
+        const now = Date.now();
+
+        if (rangeKey === "today") {
+            const start = new Date();
+            start.setHours(0, 0, 0, 0);
+            return { start: start.getTime(), end: now };
+        }
+
+        const days =
+            rangeKey === "7d" ? 7 :
+                rangeKey === "30d" ? 30 :
+                    90;
+
+        const start = now - days * 24 * 60 * 60 * 1000;
+
+        return { start, end: now };
+    }, [rangeKey]);
+
     useEffect(() => {
         if (!userId) {
             setClients([]);
             return;
         }
 
-        if (isUnassignedView) {
-            const unsub = subscribeAdminClients((list) => {
-                const all = Array.isArray(list) ? list : [];
-                setClients(
-                    all.filter((c) => String((c.assignedTo ?? "") as any).trim().length === 0)
-                );
-            });
-            return () => unsub();
-        }
-
-        const unsub = subscribeUserClients(userId, (list) => {
-            setClients(Array.isArray(list) ? list : []);
-        });
+        const unsub = isUnassignedView
+            ? subscribeAdminClients(
+                (list) => {
+                    const all = Array.isArray(list) ? list : [];
+                    setClients(
+                        all.filter((c) =>
+                            String((c.assignedTo ?? "")).trim().length === 0
+                        )
+                    );
+                },
+                {
+                    startAtMs: rangeMs.start,
+                    endAtMs: rangeMs.end,
+                    limitCount: 800,
+                }
+            )
+            : subscribeUserClients(
+                userId,
+                (list) => {
+                    setClients(Array.isArray(list) ? list : []);
+                },
+                {
+                    startAtMs: rangeMs.start,
+                    endAtMs: rangeMs.end,
+                    limitCount: 800,
+                }
+            );
 
         return () => unsub();
-    }, [userId, isUnassignedView]);
+    }, [userId, isUnassignedView, rangeMs]);
 
     const reloadUsers = async () => {
         if (usersLoading) return;

@@ -9,23 +9,52 @@ function s(v) {
 
 async function autoAssignLead(lead) {
     try {
-        if (!lead?.id) return;
-        if (s(lead.assignedTo)) return;
+        if (!lead?.id) {
+            console.log("[AUTO ASSIGN] skipped: missing lead.id");
+            return;
+        }
+
+        if (s(lead.assignedTo)) {
+            console.log("[AUTO ASSIGN] skipped: already assigned", {
+                clientId: lead.id,
+                assignedTo: lead.assignedTo,
+            });
+            return;
+        }
 
         const parseStatus = s(lead.parseStatus);
         const verificationStatus = s(lead.verificationStatus);
 
-        if (parseStatus !== "ready") return;
+        if (parseStatus !== "ready") {
+            console.log("[AUTO ASSIGN] skipped: parseStatus not ready", {
+                clientId: lead.id,
+                parseStatus,
+            });
+            return;
+        }
 
         if (
             verificationStatus !== "pending_review" &&
             verificationStatus !== "verified"
         ) {
+            console.log("[AUTO ASSIGN] skipped: invalid verificationStatus", {
+                clientId: lead.id,
+                verificationStatus,
+            });
             return;
         }
 
         const selected = await selectAutoAssignUser(lead);
-        if (!selected) return;
+
+        if (!selected) {
+            console.log("[AUTO ASSIGN] skipped: no user matched", {
+                clientId: lead.id,
+                geoAdminCityLabel: lead?.geoAdminCityLabel || "",
+                geoCityLabel: lead?.geoCityLabel || "",
+                geoAdminStateLabel: lead?.geoAdminStateLabel || "",
+            });
+            return;
+        }
 
         const {
             user,
@@ -88,6 +117,7 @@ async function autoAssignLead(lead) {
             coverageKey,
             dayKey,
         });
+
     } catch (e) {
         console.error("[AUTO ASSIGN] autoAssignLead error:", e);
     }
