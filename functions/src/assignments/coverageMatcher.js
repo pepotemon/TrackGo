@@ -14,15 +14,22 @@ function s(v) {
 }
 
 function getLeadGeo(lead) {
+    const marketCountryNormalized =
+        sn(lead?.marketCountryNormalized) ||
+        (s(lead?.marketCountry) === "PA" ? "panama" : "brasil");
+    const marketCountryLabel =
+        s(lead?.marketCountryLabel) ||
+        (s(lead?.marketCountry) === "PA" ? "Panama" : "Brasil");
+
     return {
         adminCity: sn(lead?.geoAdminCityNormalized),
         adminState: sn(lead?.geoAdminStateNormalized),
-        adminCountry: sn(lead?.geoAdminCountryNormalized || "brasil"),
+        adminCountry: sn(lead?.geoAdminCountryNormalized) || marketCountryNormalized,
         hubCity: sn(lead?.geoCityNormalized),
 
         adminCityLabel: s(lead?.geoAdminCityLabel),
         adminStateLabel: s(lead?.geoAdminStateLabel),
-        adminCountryLabel: s(lead?.geoAdminCountryLabel || "Brasil"),
+        adminCountryLabel: s(lead?.geoAdminCountryLabel) || marketCountryLabel,
         hubCityLabel: s(lead?.geoCityLabel),
         displayLabel:
             s(lead?.geoAdminDisplayLabel) ||
@@ -80,6 +87,14 @@ function matchCoverageItemToLead(item, lead) {
     const geo = getLeadGeo(lead);
 
     if (item.type === "city") {
+        if (
+            item.countryNormalized &&
+            geo.adminCountry &&
+            item.countryNormalized !== geo.adminCountry
+        ) {
+            return { match: false };
+        }
+
         if (
             geo.adminCity &&
             item.cityNormalized &&

@@ -39,6 +39,11 @@ function createLeadParser({
             "meu nome",
             "me chamo",
             "sou",
+            "nombre completo",
+            "nombre",
+            "mi nombre",
+            "me llamo",
+            "soy",
         ]);
 
         const parsedAddressLabeled = extractLabeledValue(text, [
@@ -56,6 +61,13 @@ function createLeadParser({
             "local do comércio",
             "maps",
             "google maps",
+            "direccion",
+            "dirección",
+            "ubicacion",
+            "ubicación",
+            "direccion del negocio",
+            "direccion de la tienda",
+            "localizacion",
         ]);
 
         const parsedBusinessLabeled = extractLabeledValue(text, [
@@ -92,6 +104,19 @@ function createLeadParser({
             "meu comércio",
             "meu negocio",
             "meu negócio",
+            "comercio",
+            "tienda",
+            "actividad",
+            "trabajo con",
+            "venta de",
+            "ventas de",
+            "tengo un",
+            "tengo una",
+            "tengo un negocio",
+            "tengo una tienda",
+            "soy comerciante",
+            "mi negocio",
+            "mi tienda",
         ]);
 
         let explicitName = sanitizeExplicitPersonName(parsedNameLabeled);

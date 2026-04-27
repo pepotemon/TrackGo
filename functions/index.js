@@ -63,10 +63,12 @@ const namesFactory = require("./src/bot/names");
 
 const { createLeadParser } = require("./src/bot/parser");
 const { createBotReplyBuilder } = require("./src/bot/replies");
+const { createBotReplyBuilderEsPa } = require("./src/bot/repliesEsPa");
 const leadState = require("./src/bot/leadState");
 
 const { createUpsertLeadAsClient } = require("./src/whatsapp/upsertLead");
 const { createProcessIncomingWhatsappMessage } = require("./src/whatsapp/processIncoming");
+const { getWhatsappChannelFromClient } = require("./src/whatsapp/channels");
 
 const isBadProfileName = namesFactory.isBadProfileNameFactory({
     isLikelyBusinessLine: business.isLikelyBusinessLine,
@@ -137,6 +139,11 @@ const buildBotReplyPtBr = createBotReplyBuilder({
     hasRequiredMapsForFlow: leadState.hasRequiredMapsForFlow,
 });
 
+const buildBotReplyEsPa = createBotReplyBuilderEsPa({
+    hasUsefulBusiness: leadState.hasUsefulBusiness,
+    hasRequiredMapsForFlow: leadState.hasRequiredMapsForFlow,
+});
+
 async function requireAdminUser(req) {
     const authHeader = String(req.headers.authorization || "");
     const match = authHeader.match(/^Bearer\s+(.+)$/i);
@@ -192,6 +199,14 @@ async function maybeReplyToLead({
     const { safeString, safeNumber } = require("./src/utils/text");
 
     if (!isBotAllowedForClient(client)) {
+        console.log("[WHATSAPP BOT] skipped:", {
+            clientId,
+            waId,
+            reason: "human_takeover_active",
+            chatMode: safeString(client?.chatMode || ""),
+            assignedTo: safeString(client?.assignedTo || ""),
+        });
+
         await inboxRef.set(
             {
                 botReplyStatus: "skipped",
@@ -204,6 +219,16 @@ async function maybeReplyToLead({
     }
 
     if (!leadState.shouldSendBotReply(client)) {
+        console.log("[WHATSAPP BOT] skipped:", {
+            clientId,
+            waId,
+            reason: "reply_rules_blocked",
+            parseStatus: safeString(client?.parseStatus || ""),
+            verificationStatus: safeString(client?.verificationStatus || ""),
+            lastBotStage: safeString(client?.lastBotStage || ""),
+            chatMode: safeString(client?.chatMode || ""),
+        });
+
         await inboxRef.set(
             {
                 botReplyStatus: "skipped",
@@ -215,13 +240,25 @@ async function maybeReplyToLead({
         return;
     }
 
-    const reply = buildBotReplyPtBr({ client, messageType });
+    const channel = getWhatsappChannelFromClient(client);
+    const reply =
+        channel.language === "es-PA"
+            ? buildBotReplyEsPa({ client, messageType })
+            : buildBotReplyPtBr({ client, messageType });
 
     const body = safeString(reply?.body || "");
     const currentBotStage = safeString(reply?.stage || "");
     const markIntroSent = !!reply?.markIntroSent;
 
     if (!body || !currentBotStage) {
+        console.log("[WHATSAPP BOT] skipped:", {
+            clientId,
+            waId,
+            reason: "empty_reply",
+            language: channel.language,
+            marketCountry: channel.marketCountry,
+        });
+
         await inboxRef.set(
             {
                 botReplyStatus: "skipped",
@@ -237,6 +274,15 @@ async function maybeReplyToLead({
     const lastBotStage = safeString(client?.lastBotStage || "");
 
     if (lastBotReplyText === body && lastBotStage === currentBotStage) {
+        console.log("[WHATSAPP BOT] skipped:", {
+            clientId,
+            waId,
+            reason: "same_reply_as_previous",
+            stage: currentBotStage,
+            language: channel.language,
+            marketCountry: channel.marketCountry,
+        });
+
         await inboxRef.set(
             {
                 botReplyStatus: "skipped",
@@ -248,7 +294,9 @@ async function maybeReplyToLead({
         return;
     }
 
-    const sendResult = await sendWhatsAppText(waId, body);
+    const sendResult = await sendWhatsAppText(waId, body, {
+        phoneNumberId: channel.phoneNumberId,
+    });
     const now = Date.now();
     const whatsappMessageId = safeString(sendResult?.messages?.[0]?.id || "");
 
@@ -264,6 +312,9 @@ async function maybeReplyToLead({
         meta: {
             source: "bot_auto",
             stage: currentBotStage,
+            whatsappPhoneNumberId: channel.phoneNumberId,
+            language: channel.language,
+            marketCountry: channel.marketCountry,
         },
     });
 
@@ -291,6 +342,16 @@ async function maybeReplyToLead({
         },
         { merge: true }
     );
+
+    console.log("[WHATSAPP BOT] sent:", {
+        clientId,
+        waId,
+        stage: currentBotStage,
+        language: channel.language,
+        marketCountry: channel.marketCountry,
+        phoneNumberId: channel.phoneNumberId,
+        whatsappMessageId,
+    });
 }
 
 const upsertLeadAsClient = createUpsertLeadAsClient({

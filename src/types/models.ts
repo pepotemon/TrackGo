@@ -2,6 +2,15 @@
 // USERS
 // ----------------------
 export type UserRole = "admin" | "user";
+export type UserBillingMode = "per_visit" | "weekly_subscription";
+
+export type UserWeeklySubscriptionWeek = {
+    paid: boolean;
+    amount?: number;
+    cost?: number;
+    updatedAt?: number;
+    updatedBy?: string | null;
+};
 
 /**
  * ✅ Tipo de cobertura geográfica manual del usuario
@@ -75,6 +84,17 @@ export type UserDoc = {
      * Tarifa por cliente visitado (R$)
      */
     ratePerVisit?: number;
+
+    /**
+     * Modelo contable del usuario.
+     * - per_visit: cobra por cliente visitado/aceptado
+     * - weekly_subscription: cobra una cuota semanal fija
+     */
+    billingMode?: UserBillingMode;
+    weeklySubscriptionAmount?: number;
+    weeklySubscriptionCost?: number;
+    weeklySubscriptionActive?: boolean;
+    weeklySubscriptionWeeks?: Record<string, UserWeeklySubscriptionWeek>;
 
     /**
      * ✅ Push notifications (Expo)

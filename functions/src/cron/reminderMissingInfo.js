@@ -2,6 +2,7 @@ const { logger } = require("firebase-functions");
 const { db } = require("../core/firebase");
 const { sendWhatsAppText } = require("../whatsapp/sender");
 const { appendClientMessage, isBotAllowedForClient } = require("../whatsapp/manualReply");
+const { getWhatsappChannelFromClient } = require("../whatsapp/channels");
 const { safeString, safeNumber, stripUndefined } = require("../utils/text");
 
 const WINDOW_HOURS = 24;
@@ -68,6 +69,41 @@ function buildShortMissingInfoReminderPtBr(missingType) {
         "Ainda preciso do tipo de comércio e da localização no Google Maps para completar sua análise.",
         "Se ainda tiver interesse, pode me enviar por aqui.",
     ].join("\n");
+}
+
+function buildShortMissingInfoReminderEsPa(missingType) {
+    if (missingType === "business") {
+        return [
+            "Hola.",
+            "",
+            "Todavia necesito el tipo de negocio para completar tu analisis.",
+            "Si sigues con interes, puedes enviarmelo por aqui.",
+        ].join("\n");
+    }
+
+    if (missingType === "maps") {
+        return [
+            "Hola.",
+            "",
+            "Todavia necesito la ubicacion del negocio en Google Maps para completar tu analisis.",
+            "Si sigues con interes, puedes enviarmela por aqui.",
+        ].join("\n");
+    }
+
+    return [
+        "Hola.",
+        "",
+        "Todavia necesito el tipo de negocio y la ubicacion en Google Maps para completar tu analisis.",
+        "Si sigues con interes, puedes enviarmelos por aqui.",
+    ].join("\n");
+}
+
+function buildShortMissingInfoReminder(missingType, language) {
+    if (safeString(language || "") === "es-PA") {
+        return buildShortMissingInfoReminderEsPa(missingType);
+    }
+
+    return buildShortMissingInfoReminderPtBr(missingType);
 }
 
 function shouldSkipReminder(
@@ -171,8 +207,11 @@ async function processClientReminder({
         return { ok: false, reason: "missing_waid" };
     }
 
-    const body = buildShortMissingInfoReminderPtBr(missingType);
-    const sendResult = await sendWhatsAppText(waId, body);
+    const channel = getWhatsappChannelFromClient(client);
+    const body = buildShortMissingInfoReminder(missingType, channel.language);
+    const sendResult = await sendWhatsAppText(waId, body, {
+        phoneNumberId: channel.phoneNumberId,
+    });
     const whatsappMessageId = safeString(sendResult?.messages?.[0]?.id || "");
 
     await appendClientMessage({
@@ -188,6 +227,9 @@ async function processClientReminder({
             source: "bot_reminder",
             stage: `reminder:missing:${missingType}`,
             reminderType: missingType,
+            whatsappPhoneNumberId: channel.phoneNumberId,
+            language: channel.language,
+            marketCountry: channel.marketCountry,
         },
     });
 

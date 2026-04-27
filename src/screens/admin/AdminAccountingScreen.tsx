@@ -27,11 +27,13 @@ import Svg, {
     Text as SvgText,
 } from "react-native-svg";
 
+import { getAccountingGrossForUserWeek, getWeeklyBillingSnapshot } from "../../data/billing";
 import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
 import {
     subscribeWeeklyInvestment,
     type WeeklyInvestmentAllocations,
+    type WeeklyInvestmentGroup,
 } from "../../data/repositories/investmentsRepo";
 import { listUsers } from "../../data/repositories/usersRepo";
 import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
@@ -645,6 +647,7 @@ export default function AdminAccountingScreen() {
 
     // allocations desde firestore
     const [allocations, setAllocations] = useState<WeeklyInvestmentAllocations>({});
+    const [groups, setGroups] = useState<WeeklyInvestmentGroup[]>([]);
 
     // historial semanas
     const [weeksRange, setWeeksRange] = useState(1); // empieza solo con semana actual
@@ -713,17 +716,46 @@ export default function AdminAccountingScreen() {
             (doc) => {
                 const amt = clamp2(safeNumber((doc as any)?.amount ?? 0));
                 const alloc = ((doc as any)?.allocations ?? {}) as WeeklyInvestmentAllocations;
+                const rawGroups = Array.isArray((doc as any)?.groups)
+                    ? ((doc as any)?.groups as WeeklyInvestmentGroup[])
+                    : [];
 
                 setInvestment(amt);
                 setAllocations(alloc && typeof alloc === "object" ? alloc : {});
+                setGroups(rawGroups);
             },
             () => {
                 setInvestment(0);
                 setAllocations({});
+                setGroups([]);
             }
         );
         return () => unsub();
     }, [startKey]);
+
+    const assignedInvestmentByUser = useMemo(() => {
+        const map = new Map<string, number>();
+
+        for (const [uid, value] of Object.entries(allocations || {})) {
+            const cleanUid = String(uid || "").trim();
+            if (!cleanUid) continue;
+            map.set(cleanUid, clamp2((map.get(cleanUid) ?? 0) + safeNumber(value)));
+        }
+
+        for (const group of groups || []) {
+            const userIds = Array.isArray(group.userIds)
+                ? group.userIds.map((x) => String(x || "").trim()).filter(Boolean)
+                : [];
+            if (!userIds.length) continue;
+
+            const share = clamp2(safeNumber(group.amount) / userIds.length);
+            for (const uid of userIds) {
+                map.set(uid, clamp2((map.get(uid) ?? 0) + share));
+            }
+        }
+
+        return map;
+    }, [allocations, groups]);
 
     // Historial 24 semanas (Lun–Sáb)
     const historyWeeks = useMemo(() => {
@@ -811,9 +843,16 @@ export default function AdminAccountingScreen() {
 
         let visited = 0;
         let rejected = 0;
+        let subscriptionGross = 0;
+        let subscriptionCost = 0;
+        let subscriptionAssignedInvestment = 0;
+        let subscriptionPaidUsers = 0;
+        let subscriptionUnpaidUsers = 0;
+        let weeklySubscriptionUsers = 0;
 
         const perUserVisits: Record<string, number> = {};
-        const perUserAmount: Record<string, number> = {};
+        const perUserPerVisitAmount: Record<string, number> = {};
+        const perUserAccountingAmount: Record<string, number> = {};
 
         for (const e of latest.values()) {
             if (!shouldCountEventCurrentWeek(e)) continue;
@@ -832,31 +871,99 @@ export default function AdminAccountingScreen() {
 
             const uid = e.userId;
             const amount = getFrozenAmountFromEvent(e, userById.get(uid));
-            perUserAmount[uid] = clamp2((perUserAmount[uid] ?? 0) + amount);
+            perUserPerVisitAmount[uid] = clamp2((perUserPerVisitAmount[uid] ?? 0) + amount);
         }
 
-        const gross = Object.values(perUserAmount).reduce((a, b) => a + b, 0);
+        for (const u of users) {
+            if (u.role !== "user") continue;
+
+            const perVisitGross = perUserPerVisitAmount[u.id] ?? 0;
+            const billing = getWeeklyBillingSnapshot(u, startKey);
+            const accountingGross = getAccountingGrossForUserWeek(u, startKey, perVisitGross);
+
+            perUserAccountingAmount[u.id] = accountingGross;
+
+            if (billing.isWeeklySubscription) {
+                weeklySubscriptionUsers += 1;
+                if (billing.paid) {
+                    subscriptionPaidUsers += 1;
+                    subscriptionGross = clamp2(subscriptionGross + billing.gross);
+                    const assignedInvestment = clamp2(assignedInvestmentByUser.get(u.id) ?? 0);
+                    const effectiveCost = assignedInvestment > 0 ? assignedInvestment : billing.cost;
+                    subscriptionAssignedInvestment = clamp2(
+                        subscriptionAssignedInvestment + assignedInvestment
+                    );
+                    subscriptionCost = clamp2(subscriptionCost + effectiveCost);
+                } else {
+                    subscriptionUnpaidUsers += 1;
+                }
+            }
+        }
+
+        const perVisitGross = clamp2(Object.values(perUserPerVisitAmount).reduce((a, b) => a + b, 0));
+        const gross = clamp2(Object.values(perUserAccountingAmount).reduce((a, b) => a + b, 0));
 
         let topUid: string | null = null;
         let topAmount = 0;
-        for (const [uid, amt] of Object.entries(perUserAmount)) {
+        for (const [uid, amt] of Object.entries(perUserAccountingAmount)) {
             if (amt > topAmount) {
                 topAmount = amt;
                 topUid = uid;
             }
         }
 
-        return { visited, rejected, gross, topUid, topAmount };
-    }, [weekEvents, shouldCountEventCurrentWeek, userById]);
+        return {
+            visited,
+            rejected,
+            gross,
+            perVisitGross,
+            subscriptionGross,
+            subscriptionCost,
+            subscriptionAssignedInvestment,
+            subscriptionPaidUsers,
+            subscriptionUnpaidUsers,
+            weeklySubscriptionUsers,
+            topUid,
+            topAmount,
+        };
+    }, [weekEvents, shouldCountEventCurrentWeek, userById, users, startKey, assignedInvestmentByUser]);
 
-    const profit = useMemo(() => clamp2(weekStats.gross - investment), [weekStats.gross, investment]);
+    const totalInvestment = useMemo(
+        () => clamp2(investment + Math.max(0, weekStats.subscriptionCost - weekStats.subscriptionAssignedInvestment)),
+        [investment, weekStats.subscriptionCost, weekStats.subscriptionAssignedInvestment]
+    );
+
+    const perVisitInvestment = useMemo(
+        () => clamp2(Math.max(0, investment - weekStats.subscriptionAssignedInvestment)),
+        [investment, weekStats.subscriptionAssignedInvestment]
+    );
+
+    const perVisitProfit = useMemo(
+        () => clamp2(weekStats.perVisitGross - perVisitInvestment),
+        [weekStats.perVisitGross, perVisitInvestment]
+    );
+
+    const subscriptionProfit = useMemo(
+        () => clamp2(weekStats.subscriptionGross - weekStats.subscriptionCost),
+        [weekStats.subscriptionGross, weekStats.subscriptionCost]
+    );
+
+    const profit = useMemo(
+        () => clamp2(perVisitProfit + subscriptionProfit),
+        [perVisitProfit, subscriptionProfit]
+    );
 
     const roi = useMemo(() => {
-        if (investment <= 0) return null;
-        return (profit / investment) * 100;
-    }, [profit, investment]);
+        if (totalInvestment <= 0) return null;
+        return (profit / totalInvestment) * 100;
+    }, [profit, totalInvestment]);
 
     const avgPerDay = useMemo(() => clamp2(profit / 6), [profit]);
+
+    const paidSubscriptionRate = useMemo(() => {
+        if (weekStats.weeklySubscriptionUsers <= 0) return null;
+        return (weekStats.subscriptionPaidUsers / weekStats.weeklySubscriptionUsers) * 100;
+    }, [weekStats.subscriptionPaidUsers, weekStats.weeklySubscriptionUsers]);
 
     const topUserLabel = useMemo(() => {
         if (!weekStats.topUid) return "—";
@@ -916,9 +1023,14 @@ export default function AdminAccountingScreen() {
             // historial NO usa client.status actual
             let visited = 0;
             let rejected = 0;
+            let subscriptionGross = 0;
+            let subscriptionCost = 0;
+            let subscriptionPaidUsers = 0;
+            let subscriptionUnpaidUsers = 0;
 
             const perUserVisits: Record<string, number> = {};
-            const perUserAmount: Record<string, number> = {};
+            const perUserPerVisitAmount: Record<string, number> = {};
+            const perUserAccountingAmount: Record<string, number> = {};
 
             for (const e of latest.values()) {
                 if (e.type === "visited") {
@@ -934,12 +1046,38 @@ export default function AdminAccountingScreen() {
 
                 const uid = e.userId;
                 const amount = getFrozenAmountFromEvent(e, userById.get(uid));
-                perUserAmount[uid] = clamp2((perUserAmount[uid] ?? 0) + amount);
+                perUserPerVisitAmount[uid] = clamp2((perUserPerVisitAmount[uid] ?? 0) + amount);
             }
 
-            const gross = clamp2(Object.values(perUserAmount).reduce((a, b) => a + b, 0));
-            const inv = clamp2(historyInvByWeek[w.startKey] ?? 0);
-            const real = clamp2(gross - inv);
+            for (const u of users) {
+                if (u.role !== "user") continue;
+
+                const perVisitGross = perUserPerVisitAmount[u.id] ?? 0;
+                const billing = getWeeklyBillingSnapshot(u, w.startKey);
+                perUserAccountingAmount[u.id] = getAccountingGrossForUserWeek(
+                    u,
+                    w.startKey,
+                    perVisitGross
+                );
+
+                if (billing.isWeeklySubscription) {
+                    if (billing.paid) {
+                        subscriptionPaidUsers += 1;
+                        subscriptionGross = clamp2(subscriptionGross + billing.gross);
+                        subscriptionCost = clamp2(subscriptionCost + billing.cost);
+                    } else {
+                        subscriptionUnpaidUsers += 1;
+                    }
+                }
+            }
+
+            const perVisitGross = clamp2(Object.values(perUserPerVisitAmount).reduce((a, b) => a + b, 0));
+            const gross = clamp2(Object.values(perUserAccountingAmount).reduce((a, b) => a + b, 0));
+            const inv = clamp2((historyInvByWeek[w.startKey] ?? 0) + subscriptionCost);
+            const perVisitInv = clamp2(historyInvByWeek[w.startKey] ?? 0);
+            const perVisitReal = clamp2(perVisitGross - perVisitInv);
+            const subscriptionReal = clamp2(subscriptionGross - subscriptionCost);
+            const real = clamp2(perVisitReal + subscriptionReal);
             const roiVal = inv > 0 ? (real / inv) * 100 : null;
             const monthKey = monthKeyFromDayKey(w.startKey);
 
@@ -952,6 +1090,13 @@ export default function AdminAccountingScreen() {
                 visited,
                 rejected,
                 gross,
+                perVisitGross,
+                subscriptionGross,
+                subscriptionCost,
+                perVisitReal,
+                subscriptionReal,
+                subscriptionPaidUsers,
+                subscriptionUnpaidUsers,
                 inv,
                 real,
                 roi: roiVal,
@@ -963,7 +1108,7 @@ export default function AdminAccountingScreen() {
                     real !== 0,
             };
         });
-    }, [historyWeeks, historyEventsByWeek, historyInvByWeek, userById]);
+    }, [historyWeeks, historyEventsByWeek, historyInvByWeek, userById, users]);
 
     const activeMonths = useMemo(() => {
         const map = new Map<
@@ -973,10 +1118,17 @@ export default function AdminAccountingScreen() {
                 labelLong: string;
                 labelShort: string;
                 gross: number;
+                perVisitGross: number;
+                subscriptionGross: number;
+                subscriptionCost: number;
+                perVisitReal: number;
+                subscriptionReal: number;
                 inv: number;
                 real: number;
                 visited: number;
                 rejected: number;
+                subscriptionPaidUsers: number;
+                subscriptionUnpaidUsers: number;
                 roi: number | null;
                 weeks: typeof weeklyHistory;
                 hasMovement: boolean;
@@ -990,10 +1142,17 @@ export default function AdminAccountingScreen() {
                     labelLong: formatMonthLabelLong(w.monthKey),
                     labelShort: formatMonthLabelShort(w.monthKey),
                     gross: 0,
+                    perVisitGross: 0,
+                    subscriptionGross: 0,
+                    subscriptionCost: 0,
+                    perVisitReal: 0,
+                    subscriptionReal: 0,
                     inv: 0,
                     real: 0,
                     visited: 0,
                     rejected: 0,
+                    subscriptionPaidUsers: 0,
+                    subscriptionUnpaidUsers: 0,
                     roi: null,
                     weeks: [],
                     hasMovement: false,
@@ -1002,10 +1161,17 @@ export default function AdminAccountingScreen() {
 
             const item = map.get(w.monthKey)!;
             item.gross = clamp2(item.gross + w.gross);
+            item.perVisitGross = clamp2(item.perVisitGross + w.perVisitGross);
+            item.subscriptionGross = clamp2(item.subscriptionGross + w.subscriptionGross);
+            item.subscriptionCost = clamp2(item.subscriptionCost + w.subscriptionCost);
+            item.perVisitReal = clamp2(item.perVisitReal + w.perVisitReal);
+            item.subscriptionReal = clamp2(item.subscriptionReal + w.subscriptionReal);
             item.inv = clamp2(item.inv + w.inv);
             item.real = clamp2(item.real + w.real);
             item.visited += w.visited;
             item.rejected += w.rejected;
+            item.subscriptionPaidUsers += w.subscriptionPaidUsers;
+            item.subscriptionUnpaidUsers += w.subscriptionUnpaidUsers;
             item.weeks.push(w);
             item.hasMovement = item.hasMovement || w.hasMovement;
         }
@@ -1027,7 +1193,7 @@ export default function AdminAccountingScreen() {
         () =>
             activeMonths.map(
                 (m) =>
-                    `${m.labelLong} · Bruta R$ ${money(m.gross)} · Inv R$ ${money(m.inv)} · Real R$ ${money(m.real)}`
+                    `${m.labelLong} - Real visitas R$ ${money(m.perVisitReal)} - Real subs R$ ${money(m.subscriptionReal)} - Total R$ ${money(m.real)}`
             ),
         [activeMonths]
     );
@@ -1126,90 +1292,161 @@ export default function AdminAccountingScreen() {
                         </View>
                     </View>
 
-                    {/* KPIs */}
-                    <View style={styles.kpiRow}>
-                        <View style={styles.kpiCard}>
-                            <Text style={styles.kpiLabel}>Ganancia bruta</Text>
-                            <Text style={styles.kpiValue}>R$ {money(weekStats.gross)}</Text>
+                    <Pressable
+                        onPress={goToUserAccounting}
+                        style={({ pressed }) => [styles.heroCard, pressed && styles.pressed]}
+                        accessibilityLabel="Ver contabilidad individual por usuario"
+                    >
+                        <View style={styles.heroTop}>
+                            <View style={{ flex: 1, gap: 4 }}>
+                                <Text style={styles.kpiLabel}>Ganancia real semanal</Text>
+                                <Text
+                                    style={[
+                                        styles.heroValue,
+                                        perfTone === "pos"
+                                            ? styles.valuePos
+                                            : perfTone === "neg"
+                                                ? styles.valueNeg
+                                                : null,
+                                    ]}
+                                >
+                                    R$ {money(profit)}
+                                </Text>
+                                <Text style={styles.kpiHint}>
+                                    Bruta R$ {money(weekStats.gross)} - Inversion R$ {money(totalInvestment)}
+                                </Text>
+                            </View>
+
+                            <View
+                                style={[
+                                    styles.perfPill,
+                                    perfTone === "pos"
+                                        ? styles.perfPillPos
+                                        : perfTone === "neg"
+                                            ? styles.perfPillNeg
+                                            : styles.perfPillNeutral,
+                                ]}
+                            >
+                                <Ionicons
+                                    name={
+                                        perfTone === "pos"
+                                            ? "trending-up-outline"
+                                            : perfTone === "neg"
+                                                ? "trending-down-outline"
+                                                : "remove-outline"
+                                    }
+                                    size={14}
+                                    color={
+                                        perfTone === "pos"
+                                            ? COLORS.ok
+                                            : perfTone === "neg"
+                                                ? COLORS.bad
+                                                : COLORS.muted
+                                    }
+                                />
+                                <Text
+                                    style={[
+                                        styles.perfPillText,
+                                        perfTone === "pos"
+                                            ? styles.perfTextPos
+                                            : perfTone === "neg"
+                                                ? styles.perfTextNeg
+                                                : styles.perfTextNeutral,
+                                    ]}
+                                >
+                                    {perfLabel}
+                                </Text>
+                            </View>
+                        </View>
+
+                        <View style={styles.heroMetaRow}>
+                            <View style={styles.heroMetaChip}>
+                                <Text style={styles.heroMetaLabel}>Real visitas</Text>
+                                <Text
+                                    style={[
+                                        styles.heroMetaValue,
+                                        perVisitProfit > 0 ? styles.valuePos : perVisitProfit < 0 ? styles.valueNeg : null,
+                                    ]}
+                                >
+                                    R$ {money(perVisitProfit)}
+                                </Text>
+                            </View>
+                            <View style={styles.heroMetaChip}>
+                                <Text style={styles.heroMetaLabel}>Real subs</Text>
+                                <Text
+                                    style={[
+                                        styles.heroMetaValue,
+                                        subscriptionProfit > 0
+                                            ? styles.valuePos
+                                            : subscriptionProfit < 0
+                                                ? styles.valueNeg
+                                                : null,
+                                    ]}
+                                >
+                                    R$ {money(subscriptionProfit)}
+                                </Text>
+                            </View>
+                            <View style={styles.heroMetaChip}>
+                                <Text style={styles.heroMetaLabel}>ROI</Text>
+                                <Text style={styles.heroMetaValue}>
+                                    {totalInvestment <= 0 ? "-" : `${roi?.toFixed(1)}%`}
+                                </Text>
+                            </View>
+                            <View style={styles.heroMetaChip}>
+                                <Text style={styles.heroMetaLabel}>Prom/dia</Text>
+                                <Text style={styles.heroMetaValue}>R$ {money(avgPerDay)}</Text>
+                            </View>
+                            <View style={styles.heroMetaChipWide}>
+                                <Text style={styles.heroMetaLabel}>Top</Text>
+                                <Text style={styles.heroMetaValue} numberOfLines={1}>{topUserLabel}</Text>
+                            </View>
+                        </View>
+                    </Pressable>
+
+                    <View style={styles.breakdownGrid}>
+                        <View style={styles.metricCard}>
+                            <View style={styles.metricIconGreen}>
+                                <Ionicons name="people-outline" size={16} color="#86EFAC" />
+                            </View>
+                            <Text style={styles.kpiLabel}>Ingresos por visitas</Text>
+                            <Text style={styles.kpiValue}>R$ {money(weekStats.perVisitGross)}</Text>
                             <Text style={styles.kpiHint}>
-                                {weekStats.visited} visitados · {weekStats.rejected} rechazados
-                            </Text>
-                            <Text style={styles.kpiHint2} numberOfLines={1}>
-                                Top: {topUserLabel}
+                                Real R$ {money(perVisitProfit)} - {weekStats.visited} visitados
                             </Text>
                         </View>
 
-                        <Pressable
-                            onPress={goToUserAccounting}
-                            style={({ pressed }) => [styles.kpiCard, pressed && styles.pressed]}
-                            accessibilityLabel="Ver contabilidad individual por usuario"
-                        >
-                            <View style={styles.kpiTopRow}>
-                                <Text style={styles.kpiLabel}>Ganancia real</Text>
-                                <View
-                                    style={[
-                                        styles.perfPill,
-                                        perfTone === "pos"
-                                            ? styles.perfPillPos
-                                            : perfTone === "neg"
-                                                ? styles.perfPillNeg
-                                                : styles.perfPillNeutral,
-                                    ]}
-                                >
-                                    <Ionicons
-                                        name={
-                                            perfTone === "pos"
-                                                ? "trending-up-outline"
-                                                : perfTone === "neg"
-                                                    ? "trending-down-outline"
-                                                    : "remove-outline"
-                                        }
-                                        size={14}
-                                        color={
-                                            perfTone === "pos"
-                                                ? COLORS.ok
-                                                : perfTone === "neg"
-                                                    ? COLORS.bad
-                                                    : COLORS.muted
-                                        }
-                                    />
-                                    <Text
-                                        style={[
-                                            styles.perfPillText,
-                                            perfTone === "pos"
-                                                ? styles.perfTextPos
-                                                : perfTone === "neg"
-                                                    ? styles.perfTextNeg
-                                                    : styles.perfTextNeutral,
-                                        ]}
-                                    >
-                                        {perfLabel}
-                                    </Text>
-                                </View>
+                        <View style={styles.metricCard}>
+                            <View style={styles.metricIconBlue}>
+                                <Ionicons name="calendar-outline" size={16} color="#93C5FD" />
                             </View>
-
-                            <Text
-                                style={[
-                                    styles.kpiValue,
-                                    perfTone === "pos"
-                                        ? styles.valuePos
-                                        : perfTone === "neg"
-                                            ? styles.valueNeg
-                                            : null,
-                                ]}
-                            >
-                                R$ {money(profit)}
-                            </Text>
+                            <Text style={styles.kpiLabel}>Suscripciones</Text>
+                            <Text style={styles.kpiValue}>R$ {money(weekStats.subscriptionGross)}</Text>
                             <Text style={styles.kpiHint}>
-                                {investment <= 0 ? "ROI: — (sin inversión)" : `ROI: ${roi?.toFixed(1)}%`}
+                                Real R$ {money(subscriptionProfit)} - {weekStats.subscriptionPaidUsers}/{weekStats.weeklySubscriptionUsers} pagadas
                             </Text>
-                            <View style={styles.kpiHintRow}>
-                                <Text style={styles.kpiHint2}>Prom/día: R$ {money(avgPerDay)}</Text>
-                                <View style={styles.tapHint}>
-                                    <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.55)" />
-                                </View>
+                        </View>
+
+                        <View style={styles.metricCard}>
+                            <View style={styles.metricIconPurple}>
+                                <Ionicons name="wallet-outline" size={16} color="#C4B5FD" />
                             </View>
-                        </Pressable>
+                            <Text style={styles.kpiLabel}>Inversion total</Text>
+                            <Text style={styles.kpiValue}>R$ {money(totalInvestment)}</Text>
+                            <Text style={styles.kpiHint}>
+                                Visitas R$ {money(perVisitInvestment)} - Subs R$ {money(weekStats.subscriptionCost)}
+                            </Text>
+                        </View>
+
+                        <View style={styles.metricCard}>
+                            <View style={styles.metricIconAmber}>
+                                <Ionicons name="alert-circle-outline" size={16} color="#FBBF24" />
+                            </View>
+                            <Text style={styles.kpiLabel}>Pendientes</Text>
+                            <Text style={styles.kpiValue}>{weekStats.subscriptionUnpaidUsers}</Text>
+                            <Text style={styles.kpiHint}>
+                                {paidSubscriptionRate == null ? "Sin usuarios semanales" : `${paidSubscriptionRate.toFixed(0)}% pago semanal`}
+                            </Text>
+                        </View>
                     </View>
 
                     {/* Charts PRO (diario semana actual) */}
@@ -1226,7 +1463,7 @@ export default function AdminAccountingScreen() {
                         </View>
 
                         <View style={styles.chartBlock}>
-                            <Text style={styles.cardSub}>Ganancia bruta por día</Text>
+                            <Text style={styles.cardSub}>Ingresos por visitas por dia</Text>
                             <View style={styles.svgCard}>
                                 <ProBarChart
                                     values={chartValuesGross}
@@ -1343,7 +1580,7 @@ export default function AdminAccountingScreen() {
 
                                                     <Text style={styles.weekRowSub} numberOfLines={1}>
                                                         {month.visited} visitados · {month.rejected} rechazados ·
-                                                        Bruta R$ {money(month.gross)} · Inv R$ {money(month.inv)}
+                                                        Visitas R$ {money(month.perVisitGross)} - Subs R$ {money(month.subscriptionGross)} - Inv R$ {money(month.inv)}
                                                     </Text>
                                                 </View>
 
@@ -1402,7 +1639,7 @@ export default function AdminAccountingScreen() {
                                                                             numberOfLines={1}
                                                                         >
                                                                             {w.visited} visitados · {w.rejected} rechazados ·
-                                                                            Bruta R$ {money(w.gross)} · Inv R$ {money(w.inv)}
+                                                                            Visitas R$ {money(w.perVisitGross)} - Subs R$ {money(w.subscriptionGross)} - Inv R$ {money(w.inv)}
                                                                         </Text>
                                                                     </View>
 
@@ -1476,6 +1713,121 @@ const styles = StyleSheet.create({
         borderColor: "rgba(255,255,255,0.08)",
         alignItems: "center",
         justifyContent: "center",
+    },
+
+    heroCard: {
+        backgroundColor: "rgba(15,23,42,0.92)",
+        borderWidth: 1,
+        borderColor: "rgba(96,165,250,0.20)",
+        borderRadius: 18,
+        padding: 14,
+        gap: 12,
+    },
+    heroTop: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 12,
+    },
+    heroValue: {
+        color: COLORS.text,
+        fontSize: 30,
+        fontWeight: "900",
+    },
+    heroMetaRow: {
+        flexDirection: "row",
+        gap: 8,
+        flexWrap: "wrap",
+    },
+    heroMetaChip: {
+        minHeight: 42,
+        minWidth: 86,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        backgroundColor: "rgba(255,255,255,0.04)",
+        paddingHorizontal: 10,
+        justifyContent: "center",
+        gap: 2,
+    },
+    heroMetaChipWide: {
+        flex: 1,
+        minHeight: 42,
+        minWidth: 132,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.08)",
+        backgroundColor: "rgba(255,255,255,0.04)",
+        paddingHorizontal: 10,
+        justifyContent: "center",
+        gap: 2,
+    },
+    heroMetaLabel: {
+        color: COLORS.muted,
+        fontSize: 10,
+        fontWeight: "900",
+    },
+    heroMetaValue: {
+        color: COLORS.text,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+
+    breakdownGrid: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 10,
+    },
+    metricCard: {
+        flexGrow: 1,
+        flexBasis: "47%",
+        minWidth: 150,
+        backgroundColor: COLORS.card,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        borderRadius: 16,
+        padding: 12,
+        gap: 6,
+    },
+    metricIconGreen: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.20)",
+    },
+    metricIconBlue: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(96,165,250,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(96,165,250,0.20)",
+    },
+    metricIconPurple: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(196,181,253,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(196,181,253,0.20)",
+    },
+    metricIconAmber: {
+        width: 32,
+        height: 32,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(251,191,36,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(251,191,36,0.20)",
     },
 
     weekPill: {
@@ -1733,3 +2085,5 @@ const styles = StyleSheet.create({
         fontWeight: "900",
     },
 });
+
+

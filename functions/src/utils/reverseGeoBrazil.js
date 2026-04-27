@@ -54,13 +54,15 @@ function buildDisplayLabel(city, state) {
     return null;
 }
 
-async function reverseGeoBrazil(lat, lng, now = Date.now()) {
+async function reverseGeoBrazil(lat, lng, now = Date.now(), options = {}) {
     const numLat = Number(lat);
     const numLng = Number(lng);
 
     if (!Number.isFinite(numLat) || !Number.isFinite(numLng)) {
         return buildEmptyReverseGeoBrazil();
     }
+
+    const acceptLanguage = safeString(options?.acceptLanguage || "pt-BR") || "pt-BR";
 
     const url =
         `https://nominatim.openstreetmap.org/reverse` +
@@ -69,7 +71,7 @@ async function reverseGeoBrazil(lat, lng, now = Date.now()) {
         `&format=jsonv2` +
         `&addressdetails=1` +
         `&zoom=18` +
-        `&accept-language=pt-BR`;
+        `&accept-language=${encodeURIComponent(acceptLanguage)}`;
 
     try {
         const response = await fetch(url, {
@@ -95,11 +97,14 @@ async function reverseGeoBrazil(lat, lng, now = Date.now()) {
             "city_district",
             "suburb",
             "county",
+            "district",
         ]);
 
         const state = pickFirstAddressValue(address, [
             "state",
             "region",
+            "province",
+            "county",
         ]);
 
         const country = pickFirstAddressValue(address, [

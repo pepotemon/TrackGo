@@ -32,11 +32,12 @@ function safeNumber(value: unknown, fallback = 0) {
 }
 
 function buildCoverageId(
+    countryNormalized: string,
     stateNormalized: string,
     cityNormalized: string,
     type: string
 ) {
-    return `${type}__${stateNormalized}__${cityNormalized}`;
+    return `${type}__${countryNormalized}__${stateNormalized || "all"}__${cityNormalized || "all"}`;
 }
 
 function normalizeCoverageItem(input: Partial<UserGeoCoverage> | null | undefined): UserGeoCoverage | null {
@@ -52,7 +53,9 @@ function normalizeCoverageItem(input: Partial<UserGeoCoverage> | null | undefine
     const cityLabel = safeString(input.cityLabel);
     const cityNormalized = normalizeLooseText(input.cityNormalized || input.cityLabel);
 
-    if (!stateLabel || !stateNormalized || !cityLabel || !cityNormalized) {
+    if (type === "country" && (!countryLabel || !countryNormalized)) return null;
+    if (type === "state" && (!stateLabel || !stateNormalized)) return null;
+    if (type === "city" && (!stateLabel || !stateNormalized || !cityLabel || !cityNormalized)) {
         return null;
     }
 
@@ -64,7 +67,7 @@ function normalizeCoverageItem(input: Partial<UserGeoCoverage> | null | undefine
     return {
         id:
             safeString(input.id) ||
-            buildCoverageId(stateNormalized, cityNormalized, type),
+            buildCoverageId(countryNormalized, stateNormalized, cityNormalized, type),
         type,
         countryLabel,
         countryNormalized,
@@ -111,6 +114,18 @@ function normalizeUserPayload(user: Partial<UserDoc>) {
         role: (safeString(user.role || "user") as UserRole) || "user",
         active: user.active !== false,
         ratePerVisit: safeNumber((user as any).ratePerVisit, 0),
+        billingMode:
+            safeString((user as any).billingMode) === "weekly_subscription"
+                ? "weekly_subscription"
+                : "per_visit",
+        weeklySubscriptionAmount: safeNumber((user as any).weeklySubscriptionAmount, 0),
+        weeklySubscriptionCost: safeNumber((user as any).weeklySubscriptionCost, 0),
+        weeklySubscriptionActive: (user as any).weeklySubscriptionActive !== false,
+        weeklySubscriptionWeeks:
+            (user as any).weeklySubscriptionWeeks &&
+                typeof (user as any).weeklySubscriptionWeeks === "object"
+                ? (user as any).weeklySubscriptionWeeks
+                : {},
         whatsappPhone: normalizePhone((user as any).whatsappPhone),
         geoCoverage,
         primaryGeoCoverageLabel,
@@ -179,6 +194,31 @@ export async function updateUserRatePerVisit(userId: string, ratePerVisit: numbe
 
     await updateDoc(docRef.user(userId), {
         ratePerVisit: rate,
+        updatedAt: Date.now(),
+    });
+}
+
+export async function updateUserWeeklySubscriptionWeek(
+    userId: string,
+    weekStartKey: string,
+    input: {
+        paid: boolean;
+        amount?: number;
+        cost?: number;
+        updatedBy?: string | null;
+    }
+) {
+    const key = safeString(weekStartKey);
+    if (!key) throw new Error("weekStartKey requerido");
+
+    await updateDoc(docRef.user(userId), {
+        [`weeklySubscriptionWeeks.${key}`]: {
+            paid: !!input.paid,
+            amount: safeNumber(input.amount, 0),
+            cost: safeNumber(input.cost, 0),
+            updatedAt: Date.now(),
+            updatedBy: input.updatedBy ?? null,
+        },
         updatedAt: Date.now(),
     });
 }

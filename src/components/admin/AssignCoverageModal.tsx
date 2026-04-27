@@ -114,7 +114,9 @@ function getLeadGeoAdminStateNormalized(lead: ClientDoc) {
 }
 
 function getLeadGeoAdminCountryNormalized(lead: ClientDoc) {
-    return sn((lead as any)?.geoAdminCountryNormalized || "brasil");
+    const marketCountry = s((lead as any)?.marketCountry);
+    const fallbackCountry = marketCountry === "PA" ? "panama" : "brasil";
+    return sn((lead as any)?.geoAdminCountryNormalized || (lead as any)?.marketCountryNormalized || fallbackCountry);
 }
 
 function getLeadGeoHubCityNormalized(lead: ClientDoc) {
@@ -202,6 +204,10 @@ function userMatchesLead(user: UserDoc, lead: ClientDoc) {
 
             if (!cityMatch) return false;
 
+            if (country && leadAdminCountry && country !== leadAdminCountry) {
+                return false;
+            }
+
             if (state && leadAdminState) {
                 return state === leadAdminState;
             }
@@ -211,6 +217,7 @@ function userMatchesLead(user: UserDoc, lead: ClientDoc) {
 
         if (type === "state") {
             if (!state || !leadAdminState) return false;
+            if (country && leadAdminCountry && country !== leadAdminCountry) return false;
             return state === leadAdminState;
         }
 

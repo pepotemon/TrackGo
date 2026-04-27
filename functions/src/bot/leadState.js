@@ -40,12 +40,19 @@ function getMissingLeadFields(client) {
 
 function getFinalParseStatusFactory({ hasUsefulName }) {
     return function getFinalParseStatus(client) {
+        const marketCountry = safeString(client?.marketCountry || "").toUpperCase();
         const hasBusiness = hasUsefulBusiness(client);
         const hasMaps = hasRequiredMapsForFlow(client);
         const hasName = hasUsefulName(client);
 
-        // NUEVA REGLA:
-        // con Maps ya pasa a ready, aunque todavía falte business.
+        // Panama needs Maps + business type before assignment.
+        if (marketCountry === "PA") {
+            if (hasMaps && hasBusiness) return "ready";
+            if (hasMaps || hasBusiness || hasName) return "partial";
+            return "empty";
+        }
+
+        // Brazil stays permissive: Maps alone is enough for initial assignment.
         if (hasMaps) return "ready";
         if (hasBusiness || hasName) return "partial";
         return "empty";
@@ -87,9 +94,6 @@ function shouldSendBotReply(client) {
         return false;
     }
 
-    // Si ya está ready y ya cerramos el flujo final, no repetir.
-    // Pero si está ready por Maps y aún falta business, replies.js no usará final,
-    // así que seguirá pudiendo pedir negocio cuando haga falta.
     if (parseStatus === "ready" && lastBotStage.startsWith("final")) {
         return false;
     }

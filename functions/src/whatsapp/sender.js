@@ -4,9 +4,11 @@ const {
     WHATSAPP_PHONE_NUMBER_ID,
 } = require("../config/params");
 
-async function sendWhatsAppText(to, body) {
+async function sendWhatsAppText(to, body, options = {}) {
     const accessToken = safeString(WHATSAPP_ACCESS_TOKEN.value());
-    const phoneNumberId = safeString(WHATSAPP_PHONE_NUMBER_ID.value());
+    const phoneNumberId =
+        safeString(options?.phoneNumberId || "") ||
+        safeString(WHATSAPP_PHONE_NUMBER_ID.value());
 
     if (!accessToken || !phoneNumberId || !to || !body) {
         console.log("[WHATSAPP BOT] missing config or payload", {

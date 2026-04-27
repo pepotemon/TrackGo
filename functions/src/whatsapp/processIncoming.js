@@ -15,6 +15,7 @@ const {
 } = require("../utils/geo");
 const { appendClientMessage } = require("./manualReply");
 const { autoAssignLead } = require("../assignments/autoAssignLead");
+const { getWhatsappChannelFromMetadata } = require("./channels");
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -94,6 +95,7 @@ function createProcessIncomingWhatsappMessage({
     return async function processIncomingWhatsappMessage(changeValue) {
         const contacts = Array.isArray(changeValue?.contacts) ? changeValue.contacts : [];
         const messages = Array.isArray(changeValue?.messages) ? changeValue.messages : [];
+        const channel = getWhatsappChannelFromMetadata(changeValue?.metadata || {});
 
         for (const msg of messages) {
             const msgType = safeString(msg?.type);
@@ -184,6 +186,11 @@ function createProcessIncomingWhatsappMessage({
                     lng: locationData?.lng ?? null,
                     locationAddress: locationData?.address || "",
                     locationName: locationData?.name || "",
+
+                    whatsappPhoneNumberId: channel.phoneNumberId,
+                    whatsappDisplayPhoneNumber: channel.displayPhoneNumber,
+                    marketCountry: channel.marketCountry,
+                    language: channel.language,
                 },
                 { merge: true }
             );
@@ -233,6 +240,7 @@ function createProcessIncomingWhatsappMessage({
                     contactWaId: waId,
                     locationData,
                     originalMapsUrl,
+                    channel,
                 });
 
                 if (result?.clientId) {
@@ -257,6 +265,10 @@ function createProcessIncomingWhatsappMessage({
                             mapsUrl: safeString(result?.mergedClient?.mapsUrl || ""),
                             mapsResolveSource: safeString(result?.mergedClient?.mapsResolveSource || ""),
                             mapsResolveQuery: safeString(result?.mergedClient?.mapsResolveQuery || ""),
+                            whatsappPhoneNumberId: channel.phoneNumberId,
+                            whatsappDisplayPhoneNumber: channel.displayPhoneNumber,
+                            marketCountry: channel.marketCountry,
+                            language: channel.language,
                         },
                     });
                 }
@@ -341,6 +353,11 @@ function createProcessIncomingWhatsappMessage({
 
                         lat: result?.mergedClient?.lat ?? null,
                         lng: result?.mergedClient?.lng ?? null,
+
+                        whatsappPhoneNumberId: channel.phoneNumberId,
+                        whatsappDisplayPhoneNumber: channel.displayPhoneNumber,
+                        marketCountry: channel.marketCountry,
+                        language: channel.language,
                     },
                     { merge: true }
                 );
@@ -387,6 +404,9 @@ function createProcessIncomingWhatsappMessage({
                     messageType: msgType,
                     result: result?.result,
                     clientId: result?.clientId,
+                    phoneNumberId: channel.phoneNumberId,
+                    marketCountry: channel.marketCountry,
+                    language: channel.language,
                 });
             } catch (error) {
                 console.error("[WHATSAPP] process error:", error);

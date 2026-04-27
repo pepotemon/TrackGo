@@ -1,8 +1,8 @@
 const { db } = require("../core/firebase");
 const { sendWhatsAppText } = require("./sender");
+const { getWhatsappChannelFromClient } = require("./channels");
 const {
     safeString,
-    safeNumber,
     stripUndefined,
 } = require("../utils/text");
 
@@ -52,7 +52,6 @@ async function appendClientMessage({
 
 function isBotAllowedForClient(client) {
     const chatMode = safeString(client?.chatMode || "bot");
-    const assignedTo = safeString(client?.assignedTo || "");
 
     if (chatMode === "human") return false;
 
@@ -108,7 +107,10 @@ async function sendManualWhatsAppMessage({
         throw new Error("client_missing_waid");
     }
 
-    const sendResult = await sendWhatsAppText(waId, cleanBody);
+    const channel = getWhatsappChannelFromClient(client);
+    const sendResult = await sendWhatsAppText(waId, cleanBody, {
+        phoneNumberId: channel.phoneNumberId,
+    });
     const now = Date.now();
     const whatsappMessageId = safeString(sendResult?.messages?.[0]?.id || "");
 
@@ -123,6 +125,9 @@ async function sendManualWhatsAppMessage({
         status: "sent",
         meta: {
             source: "admin_manual",
+            whatsappPhoneNumberId: channel.phoneNumberId,
+            language: channel.language,
+            marketCountry: channel.marketCountry,
         },
     });
 

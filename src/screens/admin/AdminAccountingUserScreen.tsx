@@ -3,6 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+    Alert,
     FlatList,
     Modal,
     Pressable,
@@ -15,6 +16,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AdminBackground from "../../components/admin/AdminBackground";
 
+import { getAccountingGrossForUserWeek, getWeeklyBillingSnapshot } from "../../data/billing";
 import { subscribeAdminClients } from "../../data/repositories/clientsRepo";
 import { subscribeDailyEventsByRange } from "../../data/repositories/dailyEventsRepo";
 import {
@@ -22,7 +24,7 @@ import {
     type WeeklyInvestmentAllocations,
     type WeeklyInvestmentGroup,
 } from "../../data/repositories/investmentsRepo";
-import { listUsers } from "../../data/repositories/usersRepo";
+import { listUsers, updateUserWeeklySubscriptionWeek } from "../../data/repositories/usersRepo";
 import type { ClientDoc, DailyEventDoc, UserDoc } from "../../types/models";
 
 const COLORS = {
@@ -339,7 +341,11 @@ export default function AdminAccountingUserScreen() {
                     return u?.name?.trim() || u?.email?.trim() || uid;
                 });
 
-                const rates = g.userIds.map((uid) => getRatePerVisit(userById.get(uid)));
+                const rates = g.userIds.map((uid) => {
+                    const u = userById.get(uid);
+                    const billing = getWeeklyBillingSnapshot(u, weekStartKey);
+                    return billing.isWeeklySubscription ? billing.gross : getRatePerVisit(u);
+                });
                 const avgRate =
                     rates.length > 0 ? clamp2(rates.reduce((a, b) => a + b, 0) / rates.length) : 0;
 
@@ -376,9 +382,19 @@ export default function AdminAccountingUserScreen() {
 
             return Array.from(byGroupId.values())
                 .map((r) => {
-                    const real = clamp2(r.gross - r.assigned);
+                    const gross = clamp2(
+                        r.memberIds.reduce((sum, uid) => {
+                            const perVisitGross = visitedEventsByUser.get(uid)?.gross ?? 0;
+                            return sum + getAccountingGrossForUserWeek(
+                                userById.get(uid),
+                                weekStartKey,
+                                perVisitGross
+                            );
+                        }, 0)
+                    );
+                    const real = clamp2(gross - r.assigned);
                     const roi = r.assigned > 0 ? (real / r.assigned) * 100 : null;
-                    return { ...r, real, roi };
+                    return { ...r, gross, real, roi };
                 })
                 .sort((a, b) => {
                     const aScore = a.roi ?? Number.NEGATIVE_INFINITY;
@@ -391,9 +407,17 @@ export default function AdminAccountingUserScreen() {
         }
 
         const base: RowItem[] = users.map((u) => {
-            const assigned = clamp2(safeNumber((allocations as any)?.[u.id] ?? 0));
+            const billing = getWeeklyBillingSnapshot(u, weekStartKey);
+            const assignedFromBudget = clamp2(safeNumber((allocations as any)?.[u.id] ?? 0));
+            const assigned = assignedFromBudget > 0
+                ? assignedFromBudget
+                : billing.isWeeklySubscription ? billing.cost : 0;
             const visits = visitedEventsByUser.get(u.id)?.visits ?? 0;
-            const gross = clamp2(visitedEventsByUser.get(u.id)?.gross ?? 0);
+            const gross = getAccountingGrossForUserWeek(
+                u,
+                weekStartKey,
+                visitedEventsByUser.get(u.id)?.gross ?? 0
+            );
             const real = clamp2(gross - assigned);
             const roi = assigned > 0 ? (real / assigned) * 100 : null;
 
@@ -403,7 +427,7 @@ export default function AdminAccountingUserScreen() {
                 subtitle: u?.email?.trim() || "",
                 memberNames: [u?.name?.trim() || u?.email?.trim() || "Usuario"],
                 memberIds: [u.id],
-                avgRate: getRatePerVisit(u),
+                avgRate: billing.isWeeklySubscription ? billing.gross : getRatePerVisit(u),
                 visits,
                 gross,
                 assigned,
@@ -421,7 +445,7 @@ export default function AdminAccountingUserScreen() {
             if (b.gross !== a.gross) return b.gross - a.gross;
             return b.visits - a.visits;
         });
-    }, [weekEvents, shouldCountEvent, normalizedGroups, userById, users, allocations, visitedEventsByUser]);
+    }, [weekEvents, shouldCountEvent, normalizedGroups, userById, users, allocations, visitedEventsByUser, weekStartKey]);
 
     const rowsById = useMemo(() => {
         const m = new Map<string, RowItem>();
@@ -456,10 +480,18 @@ export default function AdminAccountingUserScreen() {
                     const u = userById.get(uid);
                     const name = u?.name?.trim() || u?.email?.trim() || uid;
                     const email = u?.email?.trim() || "";
-                    const rate = getRatePerVisit(u);
+                    const billing = getWeeklyBillingSnapshot(u, weekStartKey);
+                    const rate = billing.isWeeklySubscription ? billing.gross : getRatePerVisit(u);
                     const visits = visitedEventsByUser.get(uid)?.visits ?? 0;
-                    const gross = clamp2(visitedEventsByUser.get(uid)?.gross ?? 0);
-                    const assigned = assignedKnown ? rawAssigneds[idx] : evenSplit;
+                    const gross = getAccountingGrossForUserWeek(
+                        u,
+                        weekStartKey,
+                        visitedEventsByUser.get(uid)?.gross ?? 0
+                    );
+                    const assignedFromBudget = rawAssigneds[idx] ?? 0;
+                    const assigned = assignedFromBudget > 0
+                        ? assignedFromBudget
+                        : billing.isWeeklySubscription ? billing.cost : evenSplit;
                     const real = clamp2(gross - assigned);
 
                     return {
@@ -479,7 +511,7 @@ export default function AdminAccountingUserScreen() {
                     return b.visits - a.visits;
                 });
         },
-        [allocations, userById, visitedEventsByUser]
+        [allocations, userById, visitedEventsByUser, weekStartKey]
     );
 
     const detailSections = useMemo<DetailSection[]>(() => {
@@ -522,6 +554,34 @@ export default function AdminAccountingUserScreen() {
 
         return `${totals.visits} visitados · R$ ${money(totals.real)}`;
     }, [detailTargetId, rowsById, totals]);
+
+    const toggleWeeklySubscriptionPaid = useCallback(
+        async (userId: string) => {
+            const user = userById.get(userId);
+            if (!user) return;
+
+            const current = getWeeklyBillingSnapshot(user, weekStartKey);
+            if (!current.isWeeklySubscription) return;
+
+            const nextPaid = !current.paid;
+            const amount = current.gross || safeNumber((user as any).weeklySubscriptionAmount);
+            const cost = current.cost || safeNumber((user as any).weeklySubscriptionCost);
+
+            try {
+                await updateUserWeeklySubscriptionWeek(userId, weekStartKey, {
+                    paid: nextPaid,
+                    amount,
+                    cost,
+                });
+                const fresh = await listUsers("user");
+                setUsers(fresh ?? []);
+            } catch (e: any) {
+                console.log("[toggleWeeklySubscriptionPaid] error:", e?.code, e?.message);
+                Alert.alert("Error", e?.message ?? "No se pudo actualizar la suscripcion.");
+            }
+        },
+        [userById, weekStartKey]
+    );
 
     const MetricMini = ({
         label,
@@ -739,6 +799,11 @@ export default function AdminAccountingUserScreen() {
                                     const tone = getRealTone(r.real);
                                     const isTop = idx === 0;
                                     const barWidth = getRoiBarWidth(r.roi);
+                                    const singleUserId = r.memberIds.length === 1 ? r.memberIds[0] : "";
+                                    const singleUser = singleUserId ? userById.get(singleUserId) : null;
+                                    const weeklyBilling = singleUser
+                                        ? getWeeklyBillingSnapshot(singleUser, weekStartKey)
+                                        : null;
 
                                     return (
                                         <View
@@ -768,6 +833,39 @@ export default function AdminAccountingUserScreen() {
                                                             <Ionicons name="trophy" size={12} color={COLORS.text} />
                                                             <Text style={styles.bestBadgeText}>Mejor</Text>
                                                         </View>
+                                                    ) : null}
+
+                                                    {weeklyBilling?.isWeeklySubscription ? (
+                                                        <Pressable
+                                                            onPress={() => toggleWeeklySubscriptionPaid(singleUserId)}
+                                                            style={({ pressed }) => [
+                                                                styles.subscriptionBadge,
+                                                                weeklyBilling.paid
+                                                                    ? styles.subscriptionBadgePaid
+                                                                    : styles.subscriptionBadgeUnpaid,
+                                                                pressed && styles.pressed,
+                                                            ]}
+                                                        >
+                                                            <Ionicons
+                                                                name={
+                                                                    weeklyBilling.paid
+                                                                        ? "checkmark-circle-outline"
+                                                                        : "close-circle-outline"
+                                                                }
+                                                                size={12}
+                                                                color={weeklyBilling.paid ? COLORS.ok : COLORS.bad}
+                                                            />
+                                                            <Text
+                                                                style={[
+                                                                    styles.subscriptionBadgeText,
+                                                                    weeklyBilling.paid
+                                                                        ? styles.subscriptionBadgeTextPaid
+                                                                        : styles.subscriptionBadgeTextUnpaid,
+                                                                ]}
+                                                            >
+                                                                {weeklyBilling.paid ? "Suscripcion pagada" : "No pago"}
+                                                            </Text>
+                                                        </Pressable>
                                                     ) : null}
                                                 </View>
 
@@ -1200,6 +1298,30 @@ const styles = StyleSheet.create({
         borderColor: "rgba(255,255,255,0.14)",
     },
     sharedBadgeText: { color: COLORS.text, fontWeight: "900", fontSize: 10 },
+
+    subscriptionBadge: {
+        minHeight: 24,
+        borderRadius: 999,
+        borderWidth: 1,
+        paddingHorizontal: 8,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+    },
+    subscriptionBadgePaid: {
+        backgroundColor: "rgba(34,197,94,0.10)",
+        borderColor: "rgba(34,197,94,0.24)",
+    },
+    subscriptionBadgeUnpaid: {
+        backgroundColor: "rgba(248,113,113,0.10)",
+        borderColor: "rgba(248,113,113,0.24)",
+    },
+    subscriptionBadgeText: {
+        fontWeight: "900",
+        fontSize: 10,
+    },
+    subscriptionBadgeTextPaid: { color: COLORS.ok },
+    subscriptionBadgeTextUnpaid: { color: COLORS.bad },
 
     bestBadge: {
         flexDirection: "row",

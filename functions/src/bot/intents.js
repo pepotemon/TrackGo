@@ -51,6 +51,16 @@ function isCoverageQuestion(text) {
         "onde trabalham",
         "qual endereco do escritorio",
         "qual endereço do escritório",
+        "atienden en panama",
+        "atienden aqui",
+        "atienden aca",
+        "trabajan en panama",
+        "hacen prestamos aqui",
+        "tienen cobertura aqui",
+        "son de panama",
+        "donde estan",
+        "donde queda la oficina",
+        "direccion de la oficina",
     ]);
 }
 
@@ -75,6 +85,12 @@ function isHowItWorksQuestion(text) {
         "como vocês trabalham",
         "como funciona ai com voces",
         "como funciona aí com vocês",
+        "como es",
+        "como funciona el credito",
+        "como funciona el prestamo",
+        "cuales son las condiciones",
+        "me explicas",
+        "explicame",
     ]);
 }
 
@@ -111,6 +127,11 @@ function isAmountQuestion(text) {
         "quanto empresta",
         "quanto voces emprestam",
         "quanto vocês emprestam",
+        "cuanto prestan",
+        "cuanto me prestan",
+        "cuanto liberan",
+        "que monto prestan",
+        "cual es el monto",
     ]);
 }
 
@@ -160,6 +181,15 @@ function isGenericOutOfFlowQuestion(text) {
         "tem loja física",
         "onde voces ficam mesmo",
         "onde vocês ficam mesmo",
+        "quien habla",
+        "quien eres",
+        "eres robot",
+        "eres un robot",
+        "hay asesor",
+        "quiero hablar con asesor",
+        "quiero hablar con una persona",
+        "no entiendo",
+        "no entendi",
     ];
 
     if (genericQuestionPhrases.some((x) => s.includes(normalizeLooseText(x)))) {
@@ -203,6 +233,14 @@ function detectUnsupportedProfileSignals(text) {
             "recebo beneficio",
             "recebo benefício",
             "sou do inss",
+            "soy jubilado",
+            "soy jubilada",
+            "jubilado",
+            "jubilada",
+            "soy pensionado",
+            "soy pensionada",
+            "pensionado",
+            "pensionada",
         ]) ||
         (hasWholeWordNormalized(s, "inss") &&
             (hasWholeWordNormalized(s, "aposentado") ||
@@ -228,6 +266,12 @@ function detectUnsupportedProfileSignals(text) {
         "sou empregada",
         "sou funcionario",
         "sou funcionário",
+        "soy asalariado",
+        "soy asalariada",
+        "soy empleado",
+        "soy empleada",
+        "trabajo en planilla",
+        "tengo salario",
     ]);
 
     if (hasSalarySignal) {
@@ -255,6 +299,10 @@ function detectUnsupportedProfileSignals(text) {
             "ifood",
             "rappi",
             "loggi",
+            "indriver",
+            "delivery",
+            "repartidor de app",
+            "conductor de app",
         ]) ||
         (
             (hasWholeWordNormalized(s, "app") || hasWholeWordNormalized(s, "aplicativo")) &&

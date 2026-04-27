@@ -333,6 +333,54 @@ async function resolveEffectiveCoords(locationLat, locationLng, originalMapsUrl)
     };
 }
 
+function buildMarketFields(channel, prev = {}) {
+    const marketCountry =
+        safeString(channel?.marketCountry || "") ||
+        safeString(prev?.marketCountry || "") ||
+        "BR";
+    const language =
+        safeString(channel?.language || "") ||
+        safeString(prev?.language || "") ||
+        "pt-BR";
+    const whatsappPhoneNumberId =
+        safeString(channel?.phoneNumberId || "") ||
+        safeString(prev?.whatsappPhoneNumberId || "");
+    const whatsappDisplayPhoneNumber =
+        safeString(channel?.displayPhoneNumber || "") ||
+        safeString(prev?.whatsappDisplayPhoneNumber || "");
+    const marketCountryNormalized =
+        safeString(channel?.countryNormalized || "") ||
+        safeString(prev?.marketCountryNormalized || "") ||
+        (marketCountry === "PA" ? "panama" : "brasil");
+    const marketCountryLabel =
+        safeString(channel?.countryLabel || "") ||
+        safeString(prev?.marketCountryLabel || "") ||
+        (marketCountry === "PA" ? "Panama" : "Brasil");
+
+    return {
+        marketCountry,
+        language,
+        whatsappPhoneNumberId,
+        whatsappDisplayPhoneNumber,
+        marketCountryNormalized,
+        marketCountryLabel,
+    };
+}
+
+function applyCountryFallbackToReverseGeo(reverseGeoFields, marketFields) {
+    const out = { ...(reverseGeoFields || {}) };
+
+    if (!safeString(out.geoAdminCountryNormalized || "")) {
+        out.geoAdminCountryNormalized = safeString(marketFields.marketCountryNormalized || "") || null;
+    }
+
+    if (!safeString(out.geoAdminCountryLabel || "")) {
+        out.geoAdminCountryLabel = safeString(marketFields.marketCountryLabel || "") || null;
+    }
+
+    return out;
+}
+
 function createUpsertLeadAsClient({
     parseLeadText,
     resolveNextClientName,
@@ -347,8 +395,10 @@ function createUpsertLeadAsClient({
         contactWaId,
         locationData,
         originalMapsUrl,
+        channel,
     }) {
         const now = Date.now();
+        const marketFields = buildMarketFields(channel);
         const parsed = parseLeadText(rawText, profileName);
 
         const rawLocationLat = roundCoord(locationData?.lat);
@@ -397,11 +447,13 @@ function createUpsertLeadAsClient({
         }
 
         const resolvedTrackGoGeo = hasValidCoords(lat, lng)
-            ? resolveTrackGoGeoFromCoords(lat, lng, now)
+            ? resolveTrackGoGeoFromCoords(lat, lng, now, marketFields.marketCountry)
             : buildEmptyTrackGoGeo();
 
         const resolvedReverseGeo = hasValidCoords(lat, lng)
-            ? await reverseGeoBrazil(lat, lng, now)
+            ? await reverseGeoBrazil(lat, lng, now, {
+                acceptLanguage: marketFields.language === "es-PA" ? "es-PA" : "pt-BR",
+            })
             : buildEmptyReverseGeoBrazil();
 
         const inboundIntent = detectInboundIntent(rawText);
@@ -416,9 +468,9 @@ function createUpsertLeadAsClient({
         const leadQuality = parsed.leadQuality || "unknown";
         const notSuitableReason = parsed.notSuitableReason || "";
 
-        let found = await findClientByPhone(phone);
+        let found = await findClientByPhone(phone, channel);
         if (!found && contactWaId) {
-            found = await findClientByWaId(contactWaId);
+            found = await findClientByWaId(contactWaId, channel);
         }
 
         if (!found) {
@@ -440,8 +492,13 @@ function createUpsertLeadAsClient({
                 resolvedReverseGeo,
                 hasMapsInThisMessage
             );
+            const reverseGeoWithFallback = applyCountryFallbackToReverseGeo(
+                reverseGeoFields,
+                marketFields
+            );
 
             const draftClient = {
+                ...marketFields,
                 name: resolvedName || "",
                 business: pickBetterBusiness("", parsed.parsedBusiness || ""),
                 businessRaw: pickBetterBusiness(
@@ -470,7 +527,7 @@ function createUpsertLeadAsClient({
                 lng: draftCoords.lng,
                 currentLeadMapsConfirmedAt: hasMapsInThisMessage ? now : 0,
                 ...trackGoGeoFields,
-                ...reverseGeoFields,
+                ...reverseGeoWithFallback,
             };
 
             const finalParseStatus = getFinalParseStatus(draftClient);
@@ -604,6 +661,7 @@ function createUpsertLeadAsClient({
         }
 
         const prev = found.data || {};
+        const mergedMarketFields = buildMarketFields(channel, prev);
 
         const mergedProfileFlags = Array.from(
             new Set([
@@ -638,6 +696,10 @@ function createUpsertLeadAsClient({
             resolvedReverseGeo,
             hasMapsInThisMessage
         );
+        const mergedReverseGeoWithFallback = applyCountryFallbackToReverseGeo(
+            mergedReverseGeoFields,
+            mergedMarketFields
+        );
 
         const mergedOriginalMapsUrl =
             safeString(effectiveCoords.originalMapsUrl || "") ||
@@ -660,6 +722,7 @@ function createUpsertLeadAsClient({
 
         const mergedClientBase = {
             ...prev,
+            ...mergedMarketFields,
 
             name: resolveNextClientName({
                 prevName: prev.name,
@@ -714,7 +777,7 @@ function createUpsertLeadAsClient({
 
             lastInboundIntent: inboundIntent,
             ...mergedTrackGoGeoFields,
-            ...mergedReverseGeoFields,
+            ...mergedReverseGeoWithFallback,
         };
 
         const finalParseStatus = getFinalParseStatus(mergedClientBase);
@@ -757,6 +820,7 @@ function createUpsertLeadAsClient({
             source: prev.source || "whatsapp_meta",
             sourceRef: prev.sourceRef || inboxRef.path,
             waId: contactWaId || phone,
+            ...mergedMarketFields,
 
             name: mergedClient.name,
             business: mergedClient.business,

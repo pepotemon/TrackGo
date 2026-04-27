@@ -13,7 +13,7 @@ import {
     View,
 } from "react-native";
 import { upsertUserDoc } from "../../data/repositories/usersRepo";
-import type { UserDoc, UserGeoCoverage } from "../../types/models";
+import type { UserBillingMode, UserDoc, UserGeoCoverage } from "../../types/models";
 
 type AdminCreateUserModalProps = {
     open: boolean;
@@ -52,6 +52,26 @@ function makeCoverageId(stateLabel: string, cityLabel: string) {
     return `city__${normalizeLooseText(stateLabel)}__${normalizeLooseText(cityLabel)}`;
 }
 
+function makeCountryCoverageItem(countryLabel: string, countryNormalized: string): UserGeoCoverage {
+    const now = Date.now();
+
+    return {
+        id: `country__${countryNormalized}`,
+        type: "country",
+        countryLabel,
+        countryNormalized,
+        stateLabel: "",
+        stateNormalized: "",
+        cityLabel: "",
+        cityNormalized: "",
+        displayLabel: countryLabel,
+        source: "manual",
+        active: true,
+        createdAt: now,
+        updatedAt: now,
+    };
+}
+
 function makeCoverageItem(stateLabel: string, cityLabel: string): UserGeoCoverage | null {
     const cleanState = safeString(stateLabel);
     const cleanCity = safeString(cityLabel);
@@ -84,7 +104,11 @@ function normalizeCoverageList(items: UserGeoCoverage[]) {
     const out: UserGeoCoverage[] = [];
 
     for (const item of items) {
-        if (!item?.stateLabel || !item?.cityLabel) continue;
+        if (item?.type === "country") {
+            if (!item.countryLabel || !item.countryNormalized) continue;
+        } else if (!item?.stateLabel || !item?.cityLabel) {
+            continue;
+        }
         if (seen.has(item.id)) continue;
         seen.add(item.id);
         out.push(item);
@@ -133,6 +157,10 @@ export default function AdminCreateUserModal({
     const [email, setEmail] = useState("");
     const [whatsappPhoneNew, setWhatsappPhoneNew] = useState("");
     const [ratePerVisitNew, setRatePerVisitNew] = useState("50");
+    const [billingMode, setBillingMode] = useState<UserBillingMode>("per_visit");
+    const [weeklySubscriptionAmount, setWeeklySubscriptionAmount] = useState("0");
+    const [weeklySubscriptionCost, setWeeklySubscriptionCost] = useState("0");
+    const [weeklySubscriptionActive, setWeeklySubscriptionActive] = useState(true);
     const [newCoverageState, setNewCoverageState] = useState("");
     const [newCoverageCity, setNewCoverageCity] = useState("");
     const [newCoverageList, setNewCoverageList] = useState<UserGeoCoverage[]>([]);
@@ -154,6 +182,10 @@ export default function AdminCreateUserModal({
         setEmail("");
         setWhatsappPhoneNew("");
         setRatePerVisitNew("50");
+        setBillingMode("per_visit");
+        setWeeklySubscriptionAmount("0");
+        setWeeklySubscriptionCost("0");
+        setWeeklySubscriptionActive(true);
         setNewCoverageState("");
         setNewCoverageCity("");
         setNewCoverageList([]);
@@ -181,6 +213,16 @@ export default function AdminCreateUserModal({
         setNewCoverageCity("");
     };
 
+    const addPanamaCoverage = () => {
+        setErr(null);
+        setNewCoverageList((prev) =>
+            normalizeCoverageList([
+                ...prev,
+                makeCountryCoverageItem("Panama", "panama"),
+            ])
+        );
+    };
+
     const removeCoverage = (id: string) => {
         setNewCoverageList((prev) => prev.filter((x) => x.id !== id));
     };
@@ -193,6 +235,8 @@ export default function AdminCreateUserModal({
         const cleanEmail = email.trim();
         const cleanWhatsapp = normalizePhone(whatsappPhoneNew);
         const rate = Number(onlyNumberLike(ratePerVisitNew)) || 0;
+        const weeklyAmount = Number(onlyNumberLike(weeklySubscriptionAmount)) || 0;
+        const weeklyCost = Number(onlyNumberLike(weeklySubscriptionCost)) || 0;
         const dailyLimitRaw = onlyNumberLike(autoAssignDailyLimit);
         const dailyLimit = dailyLimitRaw ? Number(dailyLimitRaw) : null;
 
@@ -216,6 +260,10 @@ export default function AdminCreateUserModal({
                 active: true,
                 createdAt: Date.now(),
                 ratePerVisit: rate,
+                billingMode,
+                weeklySubscriptionAmount: weeklyAmount,
+                weeklySubscriptionCost: weeklyCost,
+                weeklySubscriptionActive,
                 whatsappPhone: cleanWhatsapp,
                 geoCoverage: normalizedCoverage,
                 primaryGeoCoverageLabel: normalizedCoverage[0]?.displayLabel ?? null,
@@ -326,8 +374,127 @@ export default function AdminCreateUserModal({
                                 />
                             </View>
 
+                            <View style={styles.billingEditor}>
+                                <Text style={styles.coverageEditorTitle}>Modelo contable</Text>
+
+                                <View style={styles.billingModeRow}>
+                                    <Pressable
+                                        onPress={() => setBillingMode("per_visit")}
+                                        style={({ pressed }) => [
+                                            styles.billingModeBtn,
+                                            billingMode === "per_visit" && styles.billingModeBtnActive,
+                                            pressed && styles.btnPressed,
+                                        ]}
+                                    >
+                                        <Ionicons
+                                            name="person-outline"
+                                            size={15}
+                                            color={billingMode === "per_visit" ? "#93C5FD" : COLORS.muted}
+                                        />
+                                        <Text
+                                            style={[
+                                                styles.billingModeText,
+                                                billingMode === "per_visit" && styles.billingModeTextActive,
+                                            ]}
+                                        >
+                                            Por visita
+                                        </Text>
+                                    </Pressable>
+
+                                    <Pressable
+                                        onPress={() => setBillingMode("weekly_subscription")}
+                                        style={({ pressed }) => [
+                                            styles.billingModeBtn,
+                                            billingMode === "weekly_subscription" && styles.billingModeBtnActive,
+                                            pressed && styles.btnPressed,
+                                        ]}
+                                    >
+                                        <Ionicons
+                                            name="calendar-outline"
+                                            size={15}
+                                            color={
+                                                billingMode === "weekly_subscription" ? "#93C5FD" : COLORS.muted
+                                            }
+                                        />
+                                        <Text
+                                            style={[
+                                                styles.billingModeText,
+                                                billingMode === "weekly_subscription" && styles.billingModeTextActive,
+                                            ]}
+                                        >
+                                            Semanal
+                                        </Text>
+                                    </Pressable>
+                                </View>
+
+                                {billingMode === "weekly_subscription" ? (
+                                    <>
+                                        <View style={styles.grid2}>
+                                            <View style={[styles.field, { flex: 1 }]}>
+                                                <Text style={styles.label}>Cuota semanal (R$)</Text>
+                                                <TextInput
+                                                    placeholder="Ej: 400"
+                                                    placeholderTextColor={COLORS.muted}
+                                                    value={weeklySubscriptionAmount}
+                                                    onChangeText={(t) =>
+                                                        setWeeklySubscriptionAmount(onlyNumberLike(t))
+                                                    }
+                                                    keyboardType="numeric"
+                                                    style={styles.input}
+                                                />
+                                            </View>
+
+                                            <View style={[styles.field, { flex: 1 }]}>
+                                                <Text style={styles.label}>Inversión semanal (R$)</Text>
+                                                <TextInput
+                                                    placeholder="Ej: 200"
+                                                    placeholderTextColor={COLORS.muted}
+                                                    value={weeklySubscriptionCost}
+                                                    onChangeText={(t) =>
+                                                        setWeeklySubscriptionCost(onlyNumberLike(t))
+                                                    }
+                                                    keyboardType="numeric"
+                                                    style={styles.input}
+                                                />
+                                            </View>
+                                        </View>
+
+                                        <View style={styles.autoAssignHeader}>
+                                            <View style={{ flex: 1 }}>
+                                                <Text style={styles.label}>Suscripción activa por defecto</Text>
+                                                <Text style={styles.hintSmall}>
+                                                    Si una semana no paga, luego la marcamos como no pagada.
+                                                </Text>
+                                            </View>
+                                            <Switch
+                                                value={weeklySubscriptionActive}
+                                                onValueChange={setWeeklySubscriptionActive}
+                                                trackColor={{
+                                                    false: "rgba(255,255,255,0.12)",
+                                                    true: "rgba(37,99,235,0.45)",
+                                                }}
+                                                thumbColor={weeklySubscriptionActive ? "#2563EB" : "#9CA3AF"}
+                                            />
+                                        </View>
+                                    </>
+                                ) : null}
+                            </View>
+
                             <View style={styles.coverageEditor}>
                                 <Text style={styles.coverageEditorTitle}>Cobertura geográfica</Text>
+
+                                <Pressable
+                                    onPress={addPanamaCoverage}
+                                    style={({ pressed }) => [
+                                        styles.countryCoverageBtn,
+                                        pressed && styles.btnPressed,
+                                    ]}
+                                >
+                                    <Ionicons name="flag-outline" size={16} color="#93C5FD" />
+                                    <Text style={styles.countryCoverageBtnText}>
+                                        Agregar Panama completo
+                                    </Text>
+                                </Pressable>
 
                                 <View style={styles.field}>
                                     <Text style={styles.label}>Estado</Text>
@@ -599,6 +766,62 @@ const styles = StyleSheet.create({
     coverageEditorTitle: {
         color: COLORS.text,
         fontSize: 13,
+        fontWeight: "900",
+    },
+    billingEditor: {
+        gap: 12,
+        padding: 12,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "rgba(255,255,255,0.03)",
+    },
+    billingModeRow: {
+        flexDirection: "row",
+        gap: 8,
+        flexWrap: "wrap",
+    },
+    billingModeBtn: {
+        minHeight: 38,
+        flex: 1,
+        minWidth: 120,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "#0F172A",
+        paddingHorizontal: 12,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+    },
+    billingModeBtnActive: {
+        borderColor: "rgba(37,99,235,0.35)",
+        backgroundColor: "rgba(37,99,235,0.14)",
+    },
+    billingModeText: {
+        color: COLORS.muted,
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    billingModeTextActive: {
+        color: "#93C5FD",
+    },
+    countryCoverageBtn: {
+        minHeight: 42,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(37,99,235,0.30)",
+        backgroundColor: "rgba(37,99,235,0.12)",
+        paddingHorizontal: 12,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+    },
+    countryCoverageBtnText: {
+        color: "#93C5FD",
+        fontSize: 12,
         fontWeight: "900",
     },
     stateRow: {

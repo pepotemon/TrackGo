@@ -113,6 +113,80 @@ const TRACKGO_CITY_HUBS = [
     },
 ];
 
+const TRACKGO_PANAMA_CITY_HUBS = [
+    {
+        key: "ciudad_de_panama",
+        label: "Ciudad de Panama",
+        cluster: "panama_metro",
+        lat: 8.9824,
+        lng: -79.5199,
+        radiusKm: 28,
+        hardRadiusKm: 58,
+    },
+    {
+        key: "san_miguelito",
+        label: "San Miguelito",
+        cluster: "panama_metro",
+        lat: 9.0333,
+        lng: -79.5,
+        radiusKm: 18,
+        hardRadiusKm: 38,
+    },
+    {
+        key: "la_chorrera",
+        label: "La Chorrera",
+        cluster: "panama_oeste",
+        lat: 8.8803,
+        lng: -79.7833,
+        radiusKm: 22,
+        hardRadiusKm: 44,
+    },
+    {
+        key: "colon",
+        label: "Colon",
+        cluster: "colon",
+        lat: 9.3592,
+        lng: -79.9014,
+        radiusKm: 24,
+        hardRadiusKm: 48,
+    },
+    {
+        key: "david",
+        label: "David",
+        cluster: "chiriqui",
+        lat: 8.4273,
+        lng: -82.4309,
+        radiusKm: 24,
+        hardRadiusKm: 48,
+    },
+    {
+        key: "santiago",
+        label: "Santiago",
+        cluster: "veraguas",
+        lat: 8.1,
+        lng: -80.9833,
+        radiusKm: 22,
+        hardRadiusKm: 44,
+    },
+    {
+        key: "chitre",
+        label: "Chitre",
+        cluster: "azuero",
+        lat: 7.9667,
+        lng: -80.4333,
+        radiusKm: 22,
+        hardRadiusKm: 44,
+    },
+];
+
+function getHubsForMarket(marketCountry) {
+    if (String(marketCountry || "").trim().toUpperCase() === "PA") {
+        return TRACKGO_PANAMA_CITY_HUBS;
+    }
+
+    return TRACKGO_CITY_HUBS;
+}
+
 function buildEmptyTrackGoGeo() {
     return {
         geoCityLabel: null,
@@ -128,15 +202,16 @@ function buildEmptyTrackGoGeo() {
     };
 }
 
-function resolveTrackGoGeoFromCoords(lat, lng, now = Date.now()) {
+function resolveTrackGoGeoFromCoords(lat, lng, now = Date.now(), marketCountry = "BR") {
     if (!isFiniteNumber(lat) || !isFiniteNumber(lng)) {
         return buildEmptyTrackGoGeo();
     }
 
+    const hubs = getHubsForMarket(marketCountry);
     let nearest = null;
     let nearestDistance = Number.POSITIVE_INFINITY;
 
-    for (const hub of TRACKGO_CITY_HUBS) {
+    for (const hub of hubs) {
         const distance = haversineKm(lat, lng, hub.lat, hub.lng);
         if (distance < nearestDistance) {
             nearestDistance = distance;
@@ -199,6 +274,7 @@ function resolveTrackGoGeoFromCoords(lat, lng, now = Date.now()) {
 
 module.exports = {
     TRACKGO_CITY_HUBS,
+    TRACKGO_PANAMA_CITY_HUBS,
     buildEmptyTrackGoGeo,
     resolveTrackGoGeoFromCoords,
 };

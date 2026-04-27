@@ -32,6 +32,20 @@ function hasBusinessStarter(text) {
         "somos lojistas",
         "sou dono de",
         "sou dona de",
+        "tengo un negocio",
+        "tengo una tienda",
+        "tengo un local",
+        "tengo un comercio",
+        "soy comerciante",
+        "soy dueno de",
+        "soy dueÃ±o de",
+        "soy dueÃ±a de",
+        "vendo",
+        "venta de",
+        "ventas de",
+        "trabajo con",
+        "mi negocio es",
+        "mi tienda es",
         "meu comercio e",
         "meu comércio é",
         "meu negocio e",
@@ -115,6 +129,18 @@ function hasBusinessStarter(text) {
         "madeireira",
         "marmoraria",
         "colchoaria",
+        "abarroteria",
+        "abarroteria de",
+        "mini super",
+        "mini super de",
+        "kiosco",
+        "kiosco de",
+        "fonda",
+        "salon de belleza",
+        "sala de belleza",
+        "tienda de",
+        "negocio de",
+        "comercio de",
     ]);
 }
 
@@ -210,6 +236,14 @@ function isLikelyBusinessLine(text) {
         "mercado",
         "mercadinho",
         "mercantil",
+        "abarroteria",
+        "mini super",
+        "minisuper",
+        "tienda",
+        "negocio",
+        "comercio",
+        "kiosco",
+        "fonda",
         "barbearia",
         "barbeiro",
         "salao",
@@ -293,6 +327,7 @@ function isLikelyBusinessLine(text) {
         "agua de coco",
         "água de coco",
         "lojista",
+        "comerciante",
     ]);
 }
 
@@ -348,7 +383,7 @@ function normalizeBusinessLabel(text) {
     if (includesAnyNormalized(s, ["clinica", "clínica", "home care", "consultorio", "consultório"])) return "Clínica";
     if (includesAnyNormalized(s, ["loja de conveniencia", "loja de conveniência"])) return "Loja de conveniência";
     if (s.includes("mercadinho")) return "Mercadinho";
-    if (includesAnyNormalized(s, ["mercado", "mercantil", "mercearia", "armazem", "armazém", "quitanda"])) return "Mercado";
+    if (includesAnyNormalized(s, ["mercado", "mercantil", "mercearia", "armazem", "armazém", "quitanda", "abarroteria", "mini super", "minisuper"])) return "Mercado";
     if (s.includes("padaria")) return "Padaria";
     if (includesAnyNormalized(s, ["farmacia", "farmácia", "drogaria"])) return "Farmácia";
     if (includesAnyNormalized(s, ["oficina", "mecanica", "mecânica", "mecanico", "mecânico"])) return "Oficina";
@@ -374,14 +409,21 @@ function normalizeBusinessLabel(text) {
     if (s.includes("studio")) return "Studio";
     if (s.includes("atelier")) return "Atelier";
     if (s.includes("loja")) return "Loja";
+    if (s.includes("tienda")) return "Tienda";
+    if (includesAnyNormalized(s, ["kiosco", "fonda"])) return raw;
     if (includesAnyNormalized(s, [
         "comercio de",
         "comércio de",
+        "negocio de",
+        "tienda de",
         "casa de",
         "venda de",
         "vendas de",
+        "venta de",
+        "ventas de",
         "trabalho com",
         "trabalhamos com",
+        "trabajo con",
         "revenda de",
     ])) {
         return raw;
@@ -417,7 +459,7 @@ function getBusinessSignals(text) {
         ["açougue", ["acougue", "açougue"]],
         ["bijuterias", ["bijuteria", "bijuterias"]],
         ["clínica", ["clinica", "clínica", "home care", "consultorio", "consultório"]],
-        ["mercado", ["mercado", "mercadinho", "mercantil", "mercearia", "quitanda", "armazem", "armazém"]],
+        ["mercado", ["mercado", "mercadinho", "mercantil", "mercearia", "quitanda", "armazem", "armazém", "abarroteria", "mini super", "minisuper"]],
         ["farmácia", ["farmacia", "farmácia", "drogaria"]],
         ["padaria", ["padaria"]],
         ["oficina", ["oficina", "mecanica", "mecânica", "mecanico", "mecânico"]],
@@ -431,8 +473,8 @@ function getBusinessSignals(text) {
         ["distribuidora", ["distribuidora"]],
         ["box", ["box", "ceasa"]],
         ["banca", ["banca", "barraca", "feira"]],
-        ["loja", ["loja"]],
-        ["comércio", ["comercio", "comércio", "lojista"]],
+        ["loja", ["loja", "tienda"]],
+        ["comércio", ["comercio", "comércio", "lojista", "negocio", "comerciante"]],
         ["cosméticos", ["cosmeticos", "cosméticos", "perfumaria"]],
         ["roupas", ["roupas", "confeccoes", "confecções"]],
         ["acessórios", ["acessorios", "acessórios"]],
@@ -473,6 +515,7 @@ function isPossibleBusinessFallbackTextFactory({ looksLikePersonName }) {
         if (includesAnyNormalized(s, [
             "servicos",
             "serviços",
+            "servicios",
             "utilidades",
             "acessorios",
             "acessórios",
@@ -491,12 +534,15 @@ function isPossibleBusinessFallbackTextFactory({ looksLikePersonName }) {
             "variedades",
             "artigos",
             "produtos",
+            "productos",
             "manutencao",
             "manutenção",
             "assistencia tecnica",
             "assistência técnica",
             "conserto",
             "revenda",
+            "venta",
+            "ventas",
             "distribuicao",
             "distribuição",
             "ceasa",
@@ -509,7 +555,10 @@ function isPossibleBusinessFallbackTextFactory({ looksLikePersonName }) {
             "truck",
             "feira",
             "mercadoria",
+            "mercancia",
+            "mercancia",
             "lojista",
+            "comerciante",
             "espetinho",
             "churrasquinho",
             "agua de coco",
