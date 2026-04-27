@@ -9,9 +9,9 @@ import {
     setPersistence,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getFunctions } from "firebase/functions";
 
-// ✅ workaround: el runtime lo tiene, pero TS a veces no lo expone en v12.x
-// @ts-expect-error - getReactNativePersistence existe en RN bundle, typings pueden faltar
+// @ts-expect-error - getReactNativePersistence existe en RN bundle
 import { getReactNativePersistence } from "firebase/auth";
 
 const firebaseConfig = {
@@ -25,25 +25,18 @@ const firebaseConfig = {
 
 export const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-// ------------------------------
-// AUTH (persistencia real en RN)
-// ------------------------------
 declare global {
     // eslint-disable-next-line no-var
     var __TRACKGO_AUTH__: ReturnType<typeof getAuth> | undefined;
 }
 
 function getOrInitAuth() {
-    // Web: usa getAuth + persistence del browser
     if (Platform.OS === "web") {
         const a = getAuth(app);
-        // No es obligatorio, pero recomendado:
         setPersistence(a, browserLocalPersistence).catch(() => { });
         return a;
     }
 
-    // Native (Android/iOS): necesitamos initializeAuth + AsyncStorage
-    // ✅ Guardamos en global para sobrevivir a Fast Refresh / Dev Client
     if (globalThis.__TRACKGO_AUTH__) return globalThis.__TRACKGO_AUTH__;
 
     const a = initializeAuth(app, {
@@ -55,5 +48,5 @@ function getOrInitAuth() {
 }
 
 export const auth = getOrInitAuth();
-
 export const db = getFirestore(app);
+export const functions = getFunctions(app, "us-central1");

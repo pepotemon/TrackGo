@@ -2,7 +2,7 @@ const {
     onDocumentCreated,
     onDocumentUpdated,
 } = require("firebase-functions/v2/firestore");
-
+const { createManagedUser } = require("./src/users/createManagedUser");
 const { onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { getAuth } = require("firebase-admin/auth");
@@ -510,7 +510,7 @@ exports.reminderMissingInfo = onSchedule(
         maxRemindersPerClient: 2,
     })
 );
-
+exports.createManagedUser = createManagedUser;
 exports.whatsappWebhook = onRequest(
     {
         region: "us-central1",

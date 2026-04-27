@@ -8,9 +8,10 @@ import {
     updateDoc,
     where,
 } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../../config/firebase";
 import type { UserDoc, UserGeoCoverage, UserRole } from "../../types/models";
 import { col, docRef } from "../firestore";
-
 function safeString(value: unknown) {
     return String(value ?? "").trim();
 }
@@ -247,4 +248,31 @@ export async function updateUserGeoCoverage(
         primaryGeoCoverageLabel: normalized[0]?.displayLabel ?? null,
         updatedAt: Date.now(),
     });
+}
+
+export type CreateManagedUserInput = {
+    name: string;
+    email: string;
+    password: string;
+    role?: UserRole;
+    ratePerVisit?: number;
+    billingMode?: "per_visit" | "weekly_subscription";
+    weeklySubscriptionAmount?: number;
+    weeklySubscriptionCost?: number;
+    weeklySubscriptionActive?: boolean;
+    whatsappPhone?: string;
+    geoCoverage?: UserGeoCoverage[];
+    primaryGeoCoverageLabel?: string | null;
+    autoAssignEnabled?: boolean;
+    autoAssignDailyLimit?: number | null;
+};
+
+export async function createManagedUser(input: CreateManagedUserInput) {
+    const fn = httpsCallable(functions, "createManagedUser");
+    const res = await fn(input);
+
+    return res.data as {
+        uid: string;
+        email: string;
+    };
 }

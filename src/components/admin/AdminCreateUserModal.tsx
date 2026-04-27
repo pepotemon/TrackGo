@@ -12,8 +12,8 @@ import {
     TextInput,
     View,
 } from "react-native";
-import { upsertUserDoc } from "../../data/repositories/usersRepo";
-import type { UserBillingMode, UserDoc, UserGeoCoverage } from "../../types/models";
+import { createManagedUser } from "../../data/repositories/usersRepo";
+import type { UserBillingMode, UserGeoCoverage } from "../../types/models";
 
 type AdminCreateUserModalProps = {
     open: boolean;
@@ -109,7 +109,9 @@ function normalizeCoverageList(items: UserGeoCoverage[]) {
         } else if (!item?.stateLabel || !item?.cityLabel) {
             continue;
         }
+
         if (seen.has(item.id)) continue;
+
         seen.add(item.id);
         out.push(item);
     }
@@ -152,7 +154,7 @@ export default function AdminCreateUserModal({
     onClose,
     onCreated,
 }: AdminCreateUserModalProps) {
-    const [uid, setUid] = useState("");
+    const [password, setPassword] = useState("");
     const [name, setName] = useState("");
     const [email, setEmail] = useState("");
     const [whatsappPhoneNew, setWhatsappPhoneNew] = useState("");
@@ -177,7 +179,7 @@ export default function AdminCreateUserModal({
     );
 
     const resetForm = () => {
-        setUid("");
+        setPassword("");
         setName("");
         setEmail("");
         setWhatsappPhoneNew("");
@@ -203,6 +205,7 @@ export default function AdminCreateUserModal({
 
     const addCoverage = () => {
         const item = makeCoverageItem(newCoverageState, newCoverageCity);
+
         if (!item) {
             setErr("Debes indicar estado y ciudad.");
             return;
@@ -230,9 +233,9 @@ export default function AdminCreateUserModal({
     const registerProfile = async () => {
         setErr(null);
 
-        const cleanUid = uid.trim();
+        const cleanPassword = password.trim();
         const cleanName = name.trim();
-        const cleanEmail = email.trim();
+        const cleanEmail = email.trim().toLowerCase();
         const cleanWhatsapp = normalizePhone(whatsappPhoneNew);
         const rate = Number(onlyNumberLike(ratePerVisitNew)) || 0;
         const weeklyAmount = Number(onlyNumberLike(weeklySubscriptionAmount)) || 0;
@@ -240,8 +243,18 @@ export default function AdminCreateUserModal({
         const dailyLimitRaw = onlyNumberLike(autoAssignDailyLimit);
         const dailyLimit = dailyLimitRaw ? Number(dailyLimitRaw) : null;
 
-        if (!cleanUid) {
-            setErr("UID es obligatorio. Copia el UID desde Firebase Auth.");
+        if (!cleanEmail) {
+            setErr("Email es obligatorio.");
+            return;
+        }
+
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+            setErr("Email inválido.");
+            return;
+        }
+
+        if (cleanPassword.length < 6) {
+            setErr("La contraseña debe tener mínimo 6 caracteres.");
             return;
         }
 
@@ -251,14 +264,13 @@ export default function AdminCreateUserModal({
         }
 
         setSaving(true);
+
         try {
-            const docData: UserDoc = {
-                id: cleanUid,
+            await createManagedUser({
                 name: cleanName || "Usuario",
                 email: cleanEmail,
+                password: cleanPassword,
                 role: "user",
-                active: true,
-                createdAt: Date.now(),
                 ratePerVisit: rate,
                 billingMode,
                 weeklySubscriptionAmount: weeklyAmount,
@@ -267,14 +279,9 @@ export default function AdminCreateUserModal({
                 whatsappPhone: cleanWhatsapp,
                 geoCoverage: normalizedCoverage,
                 primaryGeoCoverageLabel: normalizedCoverage[0]?.displayLabel ?? null,
-
                 autoAssignEnabled,
                 autoAssignDailyLimit: autoAssignEnabled ? dailyLimit : null,
-                autoAssignPriority: 1,
-                assignmentMode: "round_robin",
-            };
-
-            await upsertUserDoc(docData);
+            });
 
             resetForm();
             onClose();
@@ -290,19 +297,28 @@ export default function AdminCreateUserModal({
         <Modal visible={open} transparent animationType="fade" onRequestClose={handleClose}>
             <View style={styles.modalOverlay}>
                 <KeyboardAvoidingView
-                    behavior={Platform.OS === "ios" ? "padding" : undefined}
+                    behavior={Platform.OS === "ios" ? "padding" : "height"}
                     style={styles.modalWrap}
                 >
                     <View style={styles.modalCard}>
                         <View style={styles.modalHeader}>
                             <Text style={styles.modalTitle}>Registrar perfil</Text>
-                            <Pressable onPress={handleClose} style={styles.modalClose}>
+
+                            <Pressable
+                                onPress={handleClose}
+                                style={({ pressed }) => [
+                                    styles.modalClose,
+                                    pressed && styles.btnPressed,
+                                    saving && styles.btnDisabled,
+                                ]}
+                                disabled={saving}
+                            >
                                 <Ionicons name="close" size={18} color={COLORS.text} />
                             </Pressable>
                         </View>
 
                         <Text style={styles.modalHint}>
-                            Crea el usuario en Firebase Auth, copia el UID y regístralo aquí.
+                            Crea el acceso del usuario directamente. El UID se genera automáticamente en Firebase Auth.
                         </Text>
 
                         <ScrollView
@@ -310,18 +326,6 @@ export default function AdminCreateUserModal({
                             showsVerticalScrollIndicator={false}
                             keyboardShouldPersistTaps="handled"
                         >
-                            <View style={styles.field}>
-                                <Text style={styles.label}>UID *</Text>
-                                <TextInput
-                                    placeholder="UID de Firebase Auth"
-                                    placeholderTextColor={COLORS.muted}
-                                    value={uid}
-                                    onChangeText={setUid}
-                                    autoCapitalize="none"
-                                    style={styles.input}
-                                />
-                            </View>
-
                             <View style={styles.grid2}>
                                 <View style={[styles.field, { flex: 1 }]}>
                                     <Text style={styles.label}>Nombre</Text>
@@ -335,16 +339,32 @@ export default function AdminCreateUserModal({
                                 </View>
 
                                 <View style={[styles.field, { flex: 1 }]}>
-                                    <Text style={styles.label}>Email</Text>
+                                    <Text style={styles.label}>Email *</Text>
                                     <TextInput
-                                        placeholder="Opcional"
+                                        placeholder="usuario@email.com"
                                         placeholderTextColor={COLORS.muted}
                                         value={email}
                                         onChangeText={setEmail}
                                         autoCapitalize="none"
+                                        autoCorrect={false}
+                                        keyboardType="email-address"
                                         style={styles.input}
                                     />
                                 </View>
+                            </View>
+
+                            <View style={styles.field}>
+                                <Text style={styles.label}>Contraseña *</Text>
+                                <TextInput
+                                    placeholder="Mínimo 6 caracteres"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={password}
+                                    onChangeText={setPassword}
+                                    secureTextEntry
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    style={styles.input}
+                                />
                             </View>
 
                             <View style={styles.field}>
@@ -413,13 +433,16 @@ export default function AdminCreateUserModal({
                                             name="calendar-outline"
                                             size={15}
                                             color={
-                                                billingMode === "weekly_subscription" ? "#93C5FD" : COLORS.muted
+                                                billingMode === "weekly_subscription"
+                                                    ? "#93C5FD"
+                                                    : COLORS.muted
                                             }
                                         />
                                         <Text
                                             style={[
                                                 styles.billingModeText,
-                                                billingMode === "weekly_subscription" && styles.billingModeTextActive,
+                                                billingMode === "weekly_subscription" &&
+                                                styles.billingModeTextActive,
                                             ]}
                                         >
                                             Semanal
@@ -466,6 +489,7 @@ export default function AdminCreateUserModal({
                                                     Si una semana no paga, luego la marcamos como no pagada.
                                                 </Text>
                                             </View>
+
                                             <Switch
                                                 value={weeklySubscriptionActive}
                                                 onValueChange={setWeeklySubscriptionActive}
@@ -502,9 +526,11 @@ export default function AdminCreateUserModal({
                                         horizontal
                                         showsHorizontalScrollIndicator={false}
                                         contentContainerStyle={styles.stateRow}
+                                        keyboardShouldPersistTaps="handled"
                                     >
                                         {BRAZIL_STATES.map((state) => {
                                             const active = newCoverageState === state;
+
                                             return (
                                                 <Pressable
                                                     key={state}
@@ -539,6 +565,7 @@ export default function AdminCreateUserModal({
                                             onChangeText={setNewCoverageCity}
                                             style={[styles.input, { flex: 1 }]}
                                         />
+
                                         <Pressable
                                             onPress={addCoverage}
                                             style={({ pressed }) => [
@@ -558,6 +585,7 @@ export default function AdminCreateUserModal({
                                                 <Text style={styles.coveragePillText} numberOfLines={1}>
                                                     {coverage.displayLabel}
                                                 </Text>
+
                                                 <Pressable
                                                     onPress={() => removeCoverage(coverage.id)}
                                                     style={styles.coverageRemoveBtn}
@@ -768,6 +796,7 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: "900",
     },
+
     billingEditor: {
         gap: 12,
         padding: 12,
@@ -807,6 +836,7 @@ const styles = StyleSheet.create({
     billingModeTextActive: {
         color: "#93C5FD",
     },
+
     countryCoverageBtn: {
         minHeight: 42,
         borderRadius: 14,
@@ -824,6 +854,7 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "900",
     },
+
     stateRow: {
         gap: 8,
         paddingRight: 8,
@@ -850,6 +881,7 @@ const styles = StyleSheet.create({
     statePillTextActive: {
         color: "#C4B5FD",
     },
+
     addCoverageRow: {
         flexDirection: "row",
         gap: 10,
@@ -863,6 +895,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
     },
+
     coverageWrap: {
         flexDirection: "row",
         flexWrap: "wrap",
@@ -969,7 +1002,12 @@ const styles = StyleSheet.create({
         borderColor: "rgba(248,113,113,0.4)",
         backgroundColor: "rgba(248,113,113,0.10)",
     },
-    errorText: { color: COLORS.rejected, fontSize: 12, fontWeight: "900", flex: 1 },
+    errorText: {
+        color: COLORS.rejected,
+        fontSize: 12,
+        fontWeight: "900",
+        flex: 1,
+    },
 
     ghostBtn: {
         flex: 1,
@@ -984,7 +1022,11 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         gap: 10,
     },
-    ghostBtnText: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
+    ghostBtnText: {
+        color: COLORS.text,
+        fontWeight: "900",
+        fontSize: 14,
+    },
     primaryBtn: {
         flex: 1,
         height: 50,
@@ -995,7 +1037,16 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         gap: 10,
     },
-    primaryBtnText: { color: "#fff", fontWeight: "900", fontSize: 14 },
-    btnPressed: { transform: [{ scale: 0.99 }], opacity: 0.96 },
-    btnDisabled: { opacity: 0.55 },
+    primaryBtnText: {
+        color: "#fff",
+        fontWeight: "900",
+        fontSize: 14,
+    },
+    btnPressed: {
+        transform: [{ scale: 0.99 }],
+        opacity: 0.96,
+    },
+    btnDisabled: {
+        opacity: 0.55,
+    },
 });
